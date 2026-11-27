@@ -34,6 +34,55 @@ impl InstanceId {
     }
 }
 
+/// 生きている資源の数。資源が回収されたことを外から確かめるのに使う。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Census {
+    processes: u32,
+    threads: u32,
+    objects: u32,
+    backings: u32,
+    timers: u32,
+    ios: u32,
+}
+
+impl Census {
+    /// プロセスの数。
+    #[must_use]
+    pub const fn processes(&self) -> u32 {
+        self.processes
+    }
+
+    /// スレッドの数。
+    #[must_use]
+    pub const fn threads(&self) -> u32 {
+        self.threads
+    }
+
+    /// 待機可能な資源の数。
+    #[must_use]
+    pub const fn objects(&self) -> u32 {
+        self.objects
+    }
+
+    /// メモリの実体の数。
+    #[must_use]
+    pub const fn backings(&self) -> u32 {
+        self.backings
+    }
+
+    /// タイマの数。
+    #[must_use]
+    pub const fn timers(&self) -> u32 {
+        self.timers
+    }
+
+    /// I/O 要求の数。
+    #[must_use]
+    pub const fn ios(&self) -> u32 {
+        self.ios
+    }
+}
+
 /// 貸し出し中の実行権の記録。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Lent {
@@ -124,6 +173,19 @@ impl Kernel {
     #[must_use]
     pub const fn now(&self) -> Instant {
         self.now
+    }
+
+    /// 生きている資源の数。
+    #[must_use]
+    pub fn census(&self) -> Census {
+        Census {
+            processes: self.processes.len(),
+            threads: self.threads.len(),
+            objects: self.objects.len(),
+            backings: self.backings.len(),
+            timers: self.timers.len(),
+            ios: self.ios.len(),
+        }
     }
 
     /// 外へ求める処理を、出した順に一つ取り出す。

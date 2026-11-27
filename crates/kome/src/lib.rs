@@ -55,7 +55,7 @@ pub use error::{Error, Invariant, Refusal, Resource};
 pub use id::{BackingId, Id, IoId, Kind, ObjectId, ProcessId, Tag, ThreadId, TimerId, kind};
 pub use input::{Input, Reply};
 pub use io::{CancelReply, HostError, IoLinks, IoOutcome, IoPhase, IoSettled};
-pub use kernel::{InstanceId, Kernel};
+pub use kernel::{Census, InstanceId, Kernel};
 pub use limits::Limits;
 pub use mem::{MapGen, MapSource, MappingInfo, MemFault, MemFaultKind, Span};
 pub use object::{SignalMode, SignalOp, SignalSpec};

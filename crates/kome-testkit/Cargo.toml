@@ -6,8 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish = false
+description = "kome の決定的シミュレーション: バイト列から操作列を作り、履歴の監視と独立したモデルで確かめる"
 
 [dependencies]
+kome = { path = "../kome" }
+
+[dev-dependencies]
+proptest = "1.12"
 
 [lints]
 workspace = true

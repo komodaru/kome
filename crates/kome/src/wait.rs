@@ -216,8 +216,9 @@ impl Kernel {
             return Err(Error::Broken(Invariant::WaitOnce));
         };
         self.consume(wait.targets.as_slice(), outcome)?;
-        self.detach_wait(thread, &wait)?;
-        self.effects.emit(Effect::WaitDone { thread, outcome })
+        // 結果の通知を、対象の破棄の通知より先に出す。
+        self.effects.emit(Effect::WaitDone { thread, outcome })?;
+        self.detach_wait(thread, &wait)
     }
 
     /// 資源の数が変わった後、その資源を待つ待機を登録順に評価して確定する。
