@@ -4,6 +4,12 @@
 # 壊した状態を検査が検出することの試験 (caught)、守られていることの試験 (tests)、
 # Kani の証明 (proofs)、TLA+ の性質 (models、「モジュール:性質」)、範囲 (scope)。
 #
+# 証明があれば proved に、何を示したかと前提 (小さな上限、確保の成否) と、示していないことを書く。
+# モデルがあれば、次の三つを分けて書く。
+#   modelled: モデルが調べること (設計についての検査で、Rust のコードの検査ではない)
+#   tied:     実装から生成した表がモデルと Rust を結ぶ範囲と、結ばれていない範囲
+#   tested:   結ばれていない範囲を、実装のどの試験が見るか
+#
 # kome-lint の ledger 規則が、ここ・crates/kome/src/error.rs の Invariant・試験・証明・
 # モデルが食い違わないことを確かめる。models に書けるのは、正しい設定で検査され、
 # 誤りの変種 (tla/expect.tsv) で破れる性質だけである。
@@ -66,6 +72,7 @@ proofs = [
     "an_id_from_another_issuer_never_resolves",
 ]
 models = []
+proved = "表を使う小さな上限での証明。前提: 表の上限は 1、記憶域の確保が成功した場合、作成・削除・再作成が 1 回ずつ。その中で、最初の世代と実行インスタンスの識別は全ての値。複数のスロットを持つ表と長い操作の列は示していない (試験と決定的シミュレーションが見る)。"
 scope = "スロットごとの世代と発行元で見分ける。世代を使い切ったスロットは二度と使わない。復元した状態は、写しの時点までの ID を引き継ぐ。実行インスタンスの識別が一意であることは実行統括 (kome の外) が守る。ゲストに見せるハンドルの番号は Personality が持ち、ここには含まない。"
 
 [[invariant]]
@@ -89,6 +96,10 @@ models = [
     "IoLifecycle:NoWakeBeforeOutput",
     "IoLifecycle:NoReleaseInFlight",
 ]
+proved = "io_step の一歩について、全ての状態・出来事・結果の値。前提は無い。出来事の列についての性質は、一歩の性質の繰り返しとして成り立つ。Kernel が io_step の周りで行う通知・固定・Effect の発行は示していない。"
+modelled = "IoLifecycle は一つの要求について、ホストが完了を重複して送る場合と取消の後に完了が届く場合を含む全ての順序を調べる。調べるのは設計であり、Rust のコードではない。要求は一つで、探索は有限。"
+tied = "受理する遷移の表 IoTable は io.rs の io_step から生成し、試験 the_tla_table_is_io_step が実装との一致を確かめる。待機を起こす時点と解放の時点はモデルが自分で書いており、実装と機械的には結ばれていない。"
+tested = "待機を起こすのが公開の後であること、進行中に解放しないことが実装で成り立つことは、tests の試験と決定的シミュレーションが見る。複数の要求が混ざる場合も同じ。"
 scope = "一つの要求の進行。ホストが完了を重複して送ること、取消の後に正常完了が届くことを含む。転送の内容とバッファは Personality と Host が持つ。"
 
 [[invariant]]
@@ -109,6 +120,9 @@ models = [
     "WaitRace:OneOutcome",
     "WaitRace:AllOrNothing",
 ]
+modelled = "WaitRace は 3 スレッド・2 資源・資源ごとの通知 2 回までの全ての順序で、待機の開始・通知・登録順の評価・期限の競合を調べる。調べるのは設計であり、Rust のコードではない。"
+tied = "成立の判定と消費の表 WaitTable は Kernel::wait を実際に動かして生成し、試験 the_tla_wait_table_is_the_kernel が一致を確かめる。待機の列の扱い (登録順の評価、期限、中断) はモデルが自分で書いており、実装と機械的には結ばれていない。"
+tested = "結果が一度だけ確定すること、「すべて」が一括で消費することが実装で成り立つことは、audit の数え直し、tests の試験、決定的シミュレーションが見る。中断とスレッドの終了による確定はモデルに無く、試験だけが見る。"
 scope = "成立・期限・中断・スレッドの終了のどれか一つで終わる。「すべて」は全対象が同時に成立したときにだけ、まとめて消費する。"
 
 [[invariant]]
@@ -127,6 +141,9 @@ proofs = []
 models = [
     "WaitRace:NoLostWake",
 ]
+modelled = "WaitRace は 3 スレッド・2 資源・資源ごとの通知 2 回までの全ての順序で、確認と登録が一つの状態更新であれば成立した待機が待ち続けないことを調べる。確認と登録を分けた変種では反例が出る。"
+tied = "成立の判定と消費の表 WaitTable は Kernel::wait を実際に動かして生成する。確認と登録が一つの更新であることは、実装では Kernel を &mut で一つずつ更新する型の制約から来ており、モデルとは機械的に結ばれていない。"
+tested = "同じ資源を待つ待機を登録順に評価することが実装で成り立つことは、tests の試験と決定的シミュレーションが見る。"
 scope = "確認と登録は一つの状態更新で行う。同じ資源を待つ待機は登録順に評価する。"
 
 [[invariant]]
@@ -172,6 +189,7 @@ proofs = [
     "page_size_divides_is_remainder_zero",
 ]
 models = []
+proved = "範囲とページの大きさの計算について、u64 の全ての値。前提は無い。マッピングの表そのもの (重ならない、整列している、幅に収まる) は示していない (audit の数え直しと決定的シミュレーションが見る)。"
 scope = "決定的シミュレーションは、ページごとの独立したモデルと全ページの見え方を比べる。粒度は Personality が選ぶ。"
 
 [[invariant]]
@@ -208,10 +226,12 @@ tests = [
 ]
 proofs = [
     "io_promises_cover_every_emission",
-    "effects_never_promise_beyond_the_limit",
+    "seats_never_promise_beyond_the_limit",
+    "seats_return_only_what_was_promised",
     "effects_emit_exactly_what_was_promised",
 ]
 models = []
+proved = "席の勘定 (Seats) は整数だけなので、上限・キューの数・予約の数の全ての値について示す。I/O の遷移が出す Effect が予約に収まることは、全ての状態と出来事について示す。勘定とキューの中身が食い違わないこと (effects_emit_exactly_what_was_promised) は小さな上限での証明。前提: 上限 2、記憶域の確保が成功した場合、予約 2 以下。それより大きい上限では示していない (試験が見る)。"
 scope = "操作は、将来出しうる Effect の席を受理の時点で予約する。席が無ければ受理の前に不足を返す。"
 
 [[invariant]]
@@ -243,6 +263,10 @@ tests = [
     "crates/kome/src/tests.rs::periodic_timer_refires_and_stops_when_disarmed",
     "crates/kome/src/tests.rs::a_period_that_leaves_the_time_range_stops_the_timer",
     "crates/kome/src/tests.rs::the_shortest_period_still_lets_time_advance",
+    "crates/kome/src/tests.rs::a_long_jump_returns_after_a_bounded_amount_of_work",
+    "crates/kome/src/tests.rs::splitting_an_advance_changes_no_outcome",
+    "crates/kome/src/tests.rs::deadlines_of_one_instant_are_never_split",
+    "crates/kome/src/tests.rs::catching_up_a_timer_set_in_the_past_is_split_too",
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
 ]
 proofs = [
@@ -250,7 +274,8 @@ proofs = [
     "a_period_moves_the_deadline_forward",
 ]
 models = []
-scope = "時刻は外から与える仮想時刻で、戻らない。実時間との対応は Host が持つ。周期と周期の下限は 0 を表せない型 (Period) で、周期タイマの次の期限は必ず後になる。"
+proved = "時刻の加算と周期の加算について、u64 の全ての値。前提は無い。期限の列の順序と advance の処理は示していない (audit の数え直し、試験、決定的シミュレーションが見る)。"
+scope = "時刻は外から与える仮想時刻で、戻らない。実時間との対応は Host が持つ。周期と周期の下限は 0 を表せない型 (Period) で、周期タイマの次の期限は必ず後になる。一度の advance が処理する期限の数には目安 (Limits::advance_batch) があり、残りがあれば区切って返る。区切っても、起床の順序・結果・通知の数は変わらない。"
 
 [[invariant]]
 id = "PROC-1"
@@ -276,6 +301,9 @@ models = [
     "ProcessExit:NoReclaimInFlight",
     "ProcessExit:KilledAreInterrupted",
 ]
+modelled = "ProcessExit は 3 スレッドと一つの I/O について、終了の要求・実行権の返却・完了の全ての順序を調べる。調べるのは設計であり、Rust のコードではない。"
+tied = "スレッドごとの終了の表 ExitTable (ExitThread、ExitFinish、ExitComplete) は Kernel を実際に動かして生成し、試験 the_tla_exit_table_is_the_kernel が一致を確かめる。I/O の遷移は IoTable を使う。回収の時点と資源の解放はモデルが自分で書いており、実装と機械的には結ばれていない。"
+tested = "終了済みのプロセスが資源を持たないこと、所属関係が相互に一致することが実装で成り立つことは、audit の数え直し、tests の試験、決定的シミュレーションが見る。"
 scope = "モデルはスレッド 3 つ、I/O 一つ、参照一つのプロセス一つ。終了は、実行中のスレッドが戻り、応答待ちの I/O が終端するまで回収を待つ。親子関係とジョブは Personality が上に作る。"
 
 [[invariant]]

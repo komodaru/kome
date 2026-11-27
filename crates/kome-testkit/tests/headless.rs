@@ -97,7 +97,8 @@ impl Runtime {
     fn advance_to_next(&mut self) -> Vec<Arrived> {
         let next = [self.host.next_completion(), self.k.next_deadline()].into_iter().flatten().min();
         let to = next.expect("待つものがある");
-        self.k.advance(to.max(self.k.now())).unwrap();
+        let to = to.max(self.k.now());
+        while self.k.advance(to).unwrap().more() {}
         self.pump();
         let arrived = self.host.arrivals(self.k.now());
         for arrival in &arrived {

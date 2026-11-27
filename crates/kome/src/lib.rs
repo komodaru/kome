@@ -66,4 +66,5 @@ pub use process::{ExitCode, ProcessCreated, ProcessPhase};
 pub use sched::{NotRelinquished, Budget, RunGen, RunPermit, Stop, ThreadFate, WorkerId};
 pub use thread::{Start, ThreadCreated, ThreadPhase};
 pub use time::{Deadline, Duration, Instant, Period};
+pub use timer::Advanced;
 pub use wait::{Interruptible, WaitMode, WaitOutcome, WaitStart};

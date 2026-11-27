@@ -1,12 +1,17 @@
 //! Kani による証明。`cargo kani -p kome` (scripts/ci/kani.sh) で動かす。
 //!
-//! 入力の全域について成り立つことを示す。試験が拾う具体例ではなく、境界 (`u64` の端、
-//! 世代の使い切り、キューの満杯) を含む全ての値を対象にする。
+//! 証明には二種類ある。どちらであるかと前提は、証明ごとに `docs/proofs.tsv` に書く
+//! (`kome-lint` の ledger が、この表と照合する)。
+//!
+//! - 整数だけの関数 (範囲、時刻、周期、I/O の遷移、席の勘定) は、引数の全ての値について示す。
+//! - 表やキューを使う証明 (ID、`Effect` の発行) は、小さな上限と、決まった長さの操作の列に
+//!   限って示す。記憶域の確保が成功した場合だけを対象にする。上限や列の長さを変えた場合は
+//!   示していない。その部分は試験と決定的シミュレーションが見る。
 
 use core::num::NonZeroU32;
 
 use crate::addr::{GuestAddr, GuestRange, PageSize};
-use crate::effect::{Effect, Effects};
+use crate::effect::{Effect, Effects, Seats};
 use crate::error::Error;
 use crate::id::{Arena, IoId, kind};
 use crate::io::{HostError, IoEmit, IoEvent, IoOutcome, IoState, io_step};
@@ -174,34 +179,48 @@ fn some_io() -> IoId {
     id.unwrap()
 }
 
-/// 予約の数え方は回り込まず、キューと予約の合計は上限を超えない (台帳 FX-1)。
-/// 断られた予約は何も変えない。
+fn any_seats() -> (Seats, u64) {
+    let mut seats = Seats::new(kani::any());
+    let queued: u64 = kani::any();
+    // 予約できた状態から始める。空の勘定から予約できる数は、キューの数と合わせて上限以下である。
+    kani::assume(seats.promise(queued, kani::any()).is_ok());
+    (seats, queued)
+}
+
+/// 席の勘定は回り込まず、キューと予約の合計は上限を超えない (台帳 FX-1)。断られた予約は何も変えない。
+/// 上限、キューの数、予約の数は全ての値。勘定は整数だけなので、確保の成否を前提にしない。
 #[kani::proof]
-fn effects_never_promise_beyond_the_limit() {
-    let limit: u32 = kani::any();
-    kani::assume(limit <= 2);
-    let made = Effects::new(limit);
-    kani::assume(made.is_ok());
-    let mut effects = made.unwrap();
-    let first: u32 = kani::any();
-    let second: u32 = kani::any();
-    let fits = u64::from(first) <= u64::from(limit);
-    assert!(effects.promise(first).is_ok() == fits);
-    let held = if fits { first } else { 0 };
-    assert!(effects.promised() == held);
-    let fits = u64::from(held) + u64::from(second) <= u64::from(limit);
-    match effects.promise(second) {
-        Ok(()) => assert!(fits && effects.promised() == held + second),
-        Err(error) => assert!(!fits && matches!(error, Error::Exhausted(_)) && effects.promised() == held),
+fn seats_never_promise_beyond_the_limit() {
+    let (mut seats, queued) = any_seats();
+    assert!(seats.within_limit(queued));
+    let (limit, held) = (seats.limit(), seats.promised());
+    let count: u32 = kani::any();
+    let fits = u128::from(queued) + u128::from(held) + u128::from(count) <= u128::from(limit);
+    assert!(seats.room_for(queued, count).is_ok() == fits);
+    match seats.promise(queued, count) {
+        Ok(()) => assert!(fits && u64::from(seats.promised()) == u64::from(held) + u64::from(count)),
+        Err(error) => assert!(!fits && matches!(error, Error::Exhausted(_)) && seats.promised() == held),
     }
-    assert!(effects.within_limit());
+    assert!(seats.within_limit(queued) && seats.limit() == limit);
+}
+
+/// 予約を返すと、返した数だけ減る。持っている数より多くは返せず、そのときは何も変えない。
+/// 予約した `Effect` を出すとき (一席を返してキューが一つ増える) も、合計は上限を超えない (台帳 FX-1)。
+#[kani::proof]
+fn seats_return_only_what_was_promised() {
+    let (mut seats, queued) = any_seats();
+    let held = seats.promised();
     let back: u32 = kani::any();
-    let before = effects.promised();
-    match effects.forgo(back) {
-        Ok(()) => assert!(back <= before && effects.promised() == before - back),
-        Err(error) => assert!(back > before && matches!(error, Error::Broken(_))),
+    match seats.forgo(back) {
+        Ok(()) => assert!(back <= held && seats.promised() == held - back),
+        Err(error) => assert!(back > held && matches!(error, Error::Broken(_)) && seats.promised() == held),
     }
-    assert!(effects.within_limit());
+    assert!(seats.within_limit(queued));
+    // 発行: 一席を返せたなら、キューが一つ増えても上限に収まる。
+    let before = seats.promised();
+    if seats.forgo(1).is_ok() {
+        assert!(before >= 1 && queued < u64::MAX && seats.within_limit(queued + 1));
+    }
 }
 
 /// 予約した `Effect` は必ず出せる。予約していない `Effect` は出せない (台帳 FX-1)。

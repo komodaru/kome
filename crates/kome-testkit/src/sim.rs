@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::num::NonZeroU32;
 
 use kome::{
     Access, AddrWidth, BackingId, BackingOffset, Budget, CancelReply, Completion, CompletionKind, Deadline, Duration,
@@ -36,6 +37,8 @@ pub fn limits() -> Limits {
         .with_wait_targets(3)
         .with_holdings(8)
         .with_quantum(Budget::new(10))
+        // advance が途中で区切って返る経路を通すため、目安を小さくする。
+        .with_advance_batch(NonZeroU32::MIN.saturating_add(1))
 }
 
 /// 確かめた性質が破れた。
@@ -665,7 +668,27 @@ impl Sim {
                     (true, Some(next)) => next.max(self.k.now()),
                     (true, None) | (false, _) => Instant::from_nanos(now.saturating_add(r.below(8).saturating_mul(35))),
                 };
-                done(self.quiet(|k| k.advance(to)).map(|_| ()))
+                // 一度の advance は目安の数で区切って返る。残っている間は同じ時刻で呼び直し、
+                // 区切りごとに、時刻が戻らず、渡した時刻を越えず、仕事が進んでいることを確かめる。
+                loop {
+                    let before = self.k.now();
+                    let advanced = match self.quiet(|k| k.advance(to)) {
+                        Ok(advanced) => advanced,
+                        Err(error) => break done(Err(error)),
+                    };
+                    if advanced.reached() != self.k.now() || advanced.reached() < before || advanced.reached() > to {
+                        return Err(format!("advance の到達時刻がおかしい: {advanced:?} (前 {before:?}、先 {to:?})"));
+                    }
+                    if !advanced.more() {
+                        if advanced.reached() != to {
+                            return Err(format!("残りが無いのに、渡した時刻に届いていない: {advanced:?}"));
+                        }
+                        break done(Ok(()));
+                    }
+                    if advanced.fired() == 0 {
+                        return Err(format!("残りがあるのに、一つも処理していない: {advanced:?}"));
+                    }
+                }
             }
             27 | 28 => {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };

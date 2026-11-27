@@ -121,8 +121,63 @@ plain_try_clone!(Effect);
 
 impl TryClone for Effects {
     fn try_clone(&self) -> Result<Effects, Error> {
-        let Effects { queue, promised, limit } = self;
-        Ok(Effects { queue: queue.try_clone()?, promised: *promised, limit: *limit })
+        let Effects { queue, seats } = self;
+        Ok(Effects { queue: queue.try_clone()?, seats: *seats })
+    }
+}
+
+/// 席の勘定。キューの中身を持たず、整数だけで数える。
+///
+/// キューに入っている数は呼び出し側が渡す。確保を伴わないので、Kani は上限・予約数・キューの数の
+/// 全ての値について、予約が上限を超えないことを確かめられる (証明 `seats_never_promise_beyond_the_limit`)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Seats {
+    /// まだ出していないが、出すことを約束した `Effect` の数。
+    promised: u32,
+    limit: u32,
+}
+
+impl Seats {
+    pub(crate) const fn new(limit: u32) -> Seats {
+        Seats { promised: 0, limit }
+    }
+
+    /// キューに `queued` 個あるときに使っている席の数。
+    fn used(&self, queued: u64) -> u64 {
+        queued.saturating_add(u64::from(self.promised))
+    }
+
+    /// キューに `queued` 個あるとき、あと `count` 個を予約できるか。
+    pub(crate) fn room_for(&self, queued: u64, count: u32) -> Result<(), Error> {
+        if self.used(queued).saturating_add(u64::from(count)) > u64::from(self.limit) {
+            return Err(Error::Exhausted(Resource::Effects));
+        }
+        Ok(())
+    }
+
+    /// `count` 個の席を予約する。
+    pub(crate) fn promise(&mut self, queued: u64, count: u32) -> Result<(), Error> {
+        self.room_for(queued, count)?;
+        self.promised = self.promised.checked_add(count).ok_or(Error::Broken(Invariant::EffectsKept))?;
+        Ok(())
+    }
+
+    /// 使わなかった予約を返す。予約した `Effect` を出すときも、その一席をここで返す。
+    pub(crate) fn forgo(&mut self, count: u32) -> Result<(), Error> {
+        self.promised = self.promised.checked_sub(count).ok_or(Error::Broken(Invariant::EffectsKept))?;
+        Ok(())
+    }
+
+    pub(crate) const fn promised(&self) -> u32 {
+        self.promised
+    }
+
+    pub(crate) const fn limit(&self) -> u32 {
+        self.limit
+    }
+
+    pub(crate) fn within_limit(&self, queued: u64) -> bool {
+        self.used(queued) <= u64::from(self.limit)
     }
 }
 
@@ -130,9 +185,7 @@ impl TryClone for Effects {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Effects {
     queue: Queue<Effect>,
-    /// まだ出していないが、出すことを約束した `Effect` の数。
-    promised: u32,
-    limit: u32,
+    seats: Seats,
 }
 
 impl Effects {
@@ -141,38 +194,26 @@ impl Effects {
         let mut queue = Queue::new();
         let total = usize::try_from(limit).map_err(|_| Error::Exhausted(Resource::HostMemory))?;
         queue.reserve_total(total)?;
-        Ok(Effects { queue, promised: 0, limit })
+        Ok(Effects { queue, seats: Seats::new(limit) })
     }
 
-    fn used(&self) -> u64 {
-        let queued = u64::try_from(self.queue.len()).unwrap_or(u64::MAX);
-        queued.saturating_add(u64::from(self.promised))
-    }
-
-    /// あと `count` 個を予約できるか。
-    pub(crate) fn room_for(&self, count: u32) -> Result<(), Error> {
-        if self.used().saturating_add(u64::from(count)) > u64::from(self.limit) {
-            return Err(Error::Exhausted(Resource::Effects));
-        }
-        Ok(())
+    fn in_queue(&self) -> u64 {
+        u64::try_from(self.queue.len()).unwrap_or(u64::MAX)
     }
 
     /// `count` 個の席を予約する。
     pub(crate) fn promise(&mut self, count: u32) -> Result<(), Error> {
-        self.room_for(count)?;
-        self.promised = self.promised.saturating_add(count);
-        Ok(())
+        self.seats.promise(self.in_queue(), count)
     }
 
     /// 使わなかった予約を返す。
     pub(crate) fn forgo(&mut self, count: u32) -> Result<(), Error> {
-        self.promised = self.promised.checked_sub(count).ok_or(Error::Broken(Invariant::EffectsKept))?;
-        Ok(())
+        self.seats.forgo(count)
     }
 
     /// 予約済みの `Effect` を出す。
     pub(crate) fn emit(&mut self, effect: Effect) -> Result<(), Error> {
-        self.forgo(1)?;
+        self.seats.forgo(1)?;
         self.queue.push_back_within(effect).map_err(|_| Error::Broken(Invariant::EffectsKept))
     }
 
@@ -185,7 +226,7 @@ impl Effects {
     }
 
     pub(crate) fn promised(&self) -> u32 {
-        self.promised
+        self.seats.promised()
     }
 
     pub(crate) fn queued(&self) -> usize {
@@ -193,12 +234,12 @@ impl Effects {
     }
 
     pub(crate) fn within_limit(&self) -> bool {
-        self.used() <= u64::from(self.limit)
+        self.seats.within_limit(self.in_queue())
     }
 
     /// 上限ぶんの `Effect` を確保なしで出せる容量があるか。
     pub(crate) fn reserved(&self) -> bool {
-        usize::try_from(self.limit).is_ok_and(|limit| self.queue.capacity() >= limit)
+        usize::try_from(self.seats.limit()).is_ok_and(|limit| self.queue.capacity() >= limit)
     }
 
     /// キューの余った容量を捨てる。検査が違反を検出できることを確かめる試験のための入口。
@@ -210,13 +251,13 @@ impl Effects {
     /// 上限を書き換える。検査が違反を検出できることを確かめる試験のための入口。
     #[cfg(test)]
     pub(crate) fn corrupt_limit(&mut self, limit: u32) {
-        self.limit = limit;
+        self.seats.limit = limit;
     }
 
     /// 予約数を書き換える。検査が違反を検出できることを確かめる試験のための入口。
     #[cfg(test)]
     pub(crate) fn corrupt_promised(&mut self, promised: u32) {
-        self.promised = promised;
+        self.seats.promised = promised;
     }
 }
 

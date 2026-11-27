@@ -5,8 +5,13 @@
 //! を見て次に起こす時刻を決める。試験は実時間を待たず、次の期限へ時刻を進める。
 //!
 //! タイマは待機可能な資源に結び付き、期限が来るとその数を 1 増やす (上限で止まる)。
-//! 周期の下限は [`crate::Limits::min_period`] で、一度の `advance` が処理する回数の
-//! 上限を呼び出し側が決められるようにする。
+//! 周期の下限は [`crate::Limits::min_period`] である。
+//!
+//! 一度の `advance` が処理する期限の数には目安 ([`crate::Limits::advance_batch`]) がある。
+//! 時刻を大きく進めると、周期タイマは過ぎた回数だけ通知する。その数は進めた長さに比例するので、
+//! `advance` は目安の数を処理したところで返り、どこまで進んだかと、まだ残っているかを返す
+//! ([`Advanced`])。呼び出し側は、残っている間、同じ時刻でもう一度呼ぶ。通知をまとめたり
+//! 間引いたりはしない。待機の起床の順序と、消費する資源の数が変わってしまうからである。
 
 use crate::error::{Error, Invariant, Refusal};
 use crate::id::{ObjectId, ProcessId, TimerId};
@@ -15,6 +20,35 @@ use crate::process::Life;
 use crate::store::plain_try_clone;
 use crate::time::{Instant, Period};
 use crate::wait::WaitOutcome;
+
+/// [`Kernel::advance`] の結果。
+#[must_use = "more() が真なら、まだ期限が残っている。同じ時刻でもう一度 advance を呼ぶ"]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Advanced {
+    fired: u32,
+    reached: Instant,
+    more: bool,
+}
+
+impl Advanced {
+    /// この呼び出しで処理した期限の数。
+    #[must_use]
+    pub const fn fired(&self) -> u32 {
+        self.fired
+    }
+
+    /// 進んだ先の仮想時刻。[`Advanced::more`] が偽なら、渡した時刻と同じ。
+    #[must_use]
+    pub const fn reached(&self) -> Instant {
+        self.reached
+    }
+
+    /// 渡した時刻までに処理する期限が、まだ残っているか。
+    #[must_use]
+    pub const fn more(&self) -> bool {
+        self.more
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Armed {
@@ -82,13 +116,31 @@ impl Kernel {
         self.unpin(entry.object)
     }
 
-    /// 仮想時刻を `to` へ進め、期限の来た待機とタイマを順に処理する。処理した数を返す。
-    pub fn advance(&mut self, to: Instant) -> Result<u32, Error> {
+    /// 仮想時刻を `to` へ進め、期限の来た待機とタイマを (時刻, 登録順) の順に処理する。
+    ///
+    /// 処理した数が [`crate::Limits::advance_batch`] に達したら、同じ時刻の期限を処理し終えた
+    /// ところで返る。そのとき時刻は最後に処理した期限の時刻までしか進まず (過去の時刻に設定された
+    /// タイマの分を処理している間は現在のまま)、[`Advanced::more`] が
+    /// 真になる。残りは、同じ `to` でもう一度呼ぶと続きから処理する。
+    ///
+    /// 一度の呼び出しの仕事は、目安の数に、一つの時刻に並ぶ期限の数 (待機とタイマの数以下) を
+    /// 足した数を超えない。
+    pub fn advance(&mut self, to: Instant) -> Result<Advanced, Error> {
         if to < self.now {
             return Err(Error::Refused(Refusal::TimeReversed));
         }
+        let batch = self.limits.advance_batch().get();
         let mut fired = 0u32;
+        // 直前に処理した期限の時刻 (設定された時刻。過去に設定されたタイマでは現在より前になる)。
+        let mut last: Option<Instant> = None;
         while let Some(entry) = self.due.get(0).copied().filter(|entry| entry.at <= to) {
+            // 区切ってよいのは、次の期限の時刻が直前に処理した期限と違うときだけである。同じ時刻の
+            // 途中で区切ると、同時に期限が来た待機の一部だけを起こして返ることになる。周期は 0 で
+            // ないので、一つのタイマが同じ時刻に並び続けることはない。
+            if fired >= batch && last != Some(entry.at) {
+                return Ok(Advanced { fired, reached: self.now, more: true });
+            }
+            last = Some(entry.at);
             // 先頭を外せなければ同じ期限を繰り返すことになるので、内部の障害として止める。
             if self.due.remove(0).is_none() {
                 return Err(Error::Broken(Invariant::TimeOrder));
@@ -113,7 +165,7 @@ impl Kernel {
             }
         }
         self.now = to;
-        Ok(fired)
+        Ok(Advanced { fired, reached: to, more: false })
     }
 
     /// 最も早い期限。無ければ `None`。

@@ -1,5 +1,7 @@
 //! 資源の上限。kome の表はすべてここで上限を持つ。
 
+use core::num::NonZeroU32;
+
 use crate::sched::Budget;
 use crate::time::{Duration, Period};
 
@@ -64,11 +66,19 @@ limits! {
     quantum / with_quantum: Budget = Budget::new(100_000);
     /// 周期タイマの周期の下限。これより短い周期は拒否する。0 にはできない。
     min_period / with_min_period: Period = DEFAULT_MIN_PERIOD;
+    /// 一度の [`crate::Kernel::advance`] が処理する期限の数の目安。これだけ処理したら、同じ時刻の
+    /// 期限を処理し終えたところで返る。0 にはできない。
+    advance_batch / with_advance_batch: NonZeroU32 = DEFAULT_ADVANCE_BATCH;
 }
 
 const DEFAULT_MIN_PERIOD: Period = match Period::new(Duration::from_nanos(100_000)) {
     Some(period) => period,
     None => Period::MIN,
+};
+
+const DEFAULT_ADVANCE_BATCH: NonZeroU32 = match NonZeroU32::new(4096) {
+    Some(batch) => batch,
+    None => NonZeroU32::MIN,
 };
 
 impl Default for Limits {

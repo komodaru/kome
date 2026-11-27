@@ -8,6 +8,7 @@ use crate::{Repo, Report, Rule};
 const KOME_SRC: &str = "crates/kome/src/";
 const KOME_MANIFEST: &str = "crates/kome/Cargo.toml";
 const KERNEL_RS: &str = "crates/kome/src/kernel.rs";
+const TIMER_RS: &str = "crates/kome/src/timer.rs";
 const SIM_RS: &str = "crates/kome-testkit/src/sim.rs";
 const MEMORY_MD: &str = "docs/memory.md";
 const ARCHITECTURE_MD: &str = "docs/architecture.md";
@@ -160,7 +161,13 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("crates/kome/src/proofs.rs", |text| text.replacen("#[kani::proof]\n", "", 1)),
             |repo| repo.edit(PROOFS_TSV, |text| text.replace("instant_add_never_wraps\t-\t", "instant_add_never_overflows\t-\t")),
             |repo| repo.edit("crates/kome/src/proofs.rs", |text| text.replace("#[kani::unwind(4)]", "#[kani::unwind(9)]")),
-            |repo| repo.edit(PROOFS_TSV, |text| text.replace("an_exhausted_slot_is_retired\t3\t表", "an_exhausted_slot_is_retired\t3\t \n# 表")),
+            |repo| repo.edit(PROOFS_TSV, |text| text.replace("an_exhausted_slot_is_retired\t3\t小", "an_exhausted_slot_is_retired\t3\t \n# 小")),
+            |repo| repo.edit(PROOFS_TSV, |text| text.replace("an_exhausted_slot_is_retired\t3\t小さな上限での証明。前提: ", "an_exhausted_slot_is_retired\t3\t")),
+            |repo| repo.edit(LEDGER, |text| text.replace("proved = \"時刻の加算", "remark = \"時刻の加算")),
+            |repo| repo.edit(LEDGER, |text| text.replace("proved = \"表を使う小さな上限での証明。前提: ", "proved = \"全ての値について示す。")),
+            |repo| repo.edit(LEDGER, |text| text.replace("tied = \"受理する遷移の表 IoTable は", "tied = \"受理する遷移の表は")),
+            |repo| repo.edit(LEDGER, |text| text.replace("tested = \"同じ資源を待つ待機を", "remark = \"同じ資源を待つ待機を")),
+            |repo| repo.edit(LEDGER, |text| text.replacen("id = \"RUN-2\"", "id = \"RUN-2\"\nmodelled = \"実行待ち行列の全ての順序\"", 1)),
             |repo| repo.remove(PROOFS_TSV),
         ],
     },
@@ -265,6 +272,21 @@ pub const RULES: &[Rule] = &[
         breaks: &[
             |repo| repo.edit("crates/kome-testkit/src/host.rs", |text| text.replace("match self.memory.entry(backing) {", "match self.memory.insert(backing, vec![0; len]) {")),
             |repo| repo.edit(SIM_RS, |text| text.replace("self.blocked.insert(thread, targets);", "if self.blocked.insert(thread, targets).is_some() { return Err(String::new()); }")),
+        ],
+    },
+    Rule {
+        id: "advance-bounded",
+        about: "一度の advance の仕事には目安があり、呼び出し側は残りが無くなるまで呼び直す",
+        check: advance_bounded,
+        breaks: &[
+            |repo| repo.edit(TIMER_RS, |text| text.replace("if fired >= batch && last != Some(entry.at) {", "if false {")),
+            |repo| repo.edit(TIMER_RS, |text| text.replace("if fired >= batch && last != Some(entry.at) {", "if fired >= batch {")),
+            |repo| repo.edit(TIMER_RS, |text| text.replace("pub fn advance(&mut self, to: Instant) -> Result<Advanced, Error> {", "pub fn advance(&mut self, to: Instant) -> Result<u32, Error> {")),
+            |repo| repo.edit(TIMER_RS, |text| text.replace("#[must_use = \"more() が真なら", "#[doc = \"more() が真なら")),
+            |repo| repo.edit("crates/kome-testkit/tests/headless.rs", |text| text.replace("while self.k.advance(to).unwrap().more() {}", "let _ = self.k.advance(to).unwrap();")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("if !advanced.more() {", "if true {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("        .with_advance_batch(NonZeroU32::MIN.saturating_add(1))\n", "")),
+            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("Input::Advance(to) => Reply::Advanced(self.advance(to)?),", "Input::Advance(to) => Reply::Count(self.advance(to)?.fired()),")),
         ],
     },
     Rule {
@@ -737,6 +759,19 @@ fn ledger(repo: &Repo, report: &mut Report) {
     let mut in_ledger = BTreeSet::new();
     let mut cited_proofs = BTreeSet::new();
     let expect = expectations(repo);
+    let mut unwinds: Vec<(String, String)> = Vec::new();
+    let mut pending: Option<String> = None;
+    for line in repo.text(proofs_rs).lines() {
+        if line == "#[kani::proof]" {
+            pending = Some("-".to_owned());
+        } else if let Some(count) = line.strip_prefix("#[kani::unwind(").and_then(|rest| rest.strip_suffix(")]")) {
+            pending = pending.map(|_| count.to_owned());
+        } else if let Some(name) = line.strip_prefix("fn ").and_then(|rest| rest.split('(').next())
+            && let Some(unwind) = pending.take()
+        {
+            unwinds.push((name.to_owned(), unwind));
+        }
+    }
     for entry in entries {
         let field = |key: &str| entry.get(key).and_then(toml::Value::as_str).unwrap_or("");
         let id = field("id");
@@ -777,6 +812,27 @@ fn ledger(repo: &Repo, report: &mut Report) {
             }
             cited_proofs.insert(proof);
         }
+        // 証明とモデルが何を示し、何を示していないかを、項目ごとに書く。
+        let cited = strings(entry, "proofs");
+        if cited.is_empty() != field("proved").trim().is_empty() {
+            bad("proved は、proofs があるときにだけ書く (何を示したか、前提、示していないこと)".to_owned());
+        }
+        let bounded = cited.iter().any(|proof| unwinds.iter().any(|(name, unwind)| name == proof && unwind != "-"));
+        if bounded && !(field("proved").contains("小さな上限") && field("proved").contains("前提:")) {
+            bad("ループ展開の上限を持つ証明を挙げているのに、proved に「小さな上限」と「前提:」が無い".to_owned());
+        }
+        let modules: BTreeSet<String> =
+            strings(entry, "models").iter().filter_map(|model| model.split_once(':')).map(|(module, _)| module.to_owned()).collect();
+        for key in ["modelled", "tied", "tested"] {
+            if modules.is_empty() != field(key).trim().is_empty() {
+                bad(format!("{key} は、models があるときにだけ書く (モデルが調べること、生成した表が結ぶ範囲、試験が見る範囲)"));
+            }
+        }
+        for (module, table, _) in GENERATED {
+            if modules.contains(module) && !field("tied").contains(table) {
+                bad(format!("tied が、{module} と実装を結ぶ表 {table} に触れていない"));
+            }
+        }
         for model in strings(entry, "models") {
             let Some((module, property)) = model.split_once(':') else {
                 bad(format!("models の {model} は「モジュール:性質」と書く"));
@@ -812,19 +868,6 @@ fn ledger(repo: &Repo, report: &mut Report) {
             Some((cells.next()?, cells.next()?, cells.next()?))
         })
         .collect();
-    let mut unwinds: Vec<(String, String)> = Vec::new();
-    let mut pending: Option<String> = None;
-    for line in repo.text(proofs_rs).lines() {
-        if line == "#[kani::proof]" {
-            pending = Some("-".to_owned());
-        } else if let Some(count) = line.strip_prefix("#[kani::unwind(").and_then(|rest| rest.strip_suffix(")]")) {
-            pending = pending.map(|_| count.to_owned());
-        } else if let Some(name) = line.strip_prefix("fn ").and_then(|rest| rest.split('(').next())
-            && let Some(unwind) = pending.take()
-        {
-            unwinds.push((name.to_owned(), unwind));
-        }
-    }
     for (name, unwind) in &unwinds {
         let row = bounds.iter().find(|(listed, _, _)| listed == name);
         match row {
@@ -834,6 +877,9 @@ fn ledger(repo: &Repo, report: &mut Report) {
             }
             Some((_, _, range)) if range.trim().is_empty() => {
                 report.add_at(repo, PROOFS_TSV, name, format!("{name}: 範囲が空"));
+            }
+            Some((_, _, range)) if unwind != "-" && !range.starts_with("小さな上限での証明。前提: ") => {
+                report.add_at(repo, PROOFS_TSV, name, format!("{name}: ループ展開の上限を持つ証明の範囲は「小さな上限での証明。前提: 」で始める"));
             }
             Some(_) => {}
         }
@@ -851,6 +897,16 @@ fn ledger(repo: &Repo, report: &mut Report) {
         report.add_at(repo, proofs_rs, &format!("fn {name}("), format!("{name} に #[kani::proof] が無い"));
     }
 }
+
+/// モデル、実装から生成した表、その表が定める関係。
+const GENERATED: [(&str, &str, &str); 6] = [
+    ("IoLifecycle", "IoTable", "IoStep"),
+    ("WaitRace", "WaitTable", "WaitDecide"),
+    ("ProcessExit", "IoTable", "IoStep"),
+    ("ProcessExit", "ExitTable", "ExitThread"),
+    ("ProcessExit", "ExitTable", "ExitFinish"),
+    ("ProcessExit", "ExitTable", "ExitComplete"),
+];
 
 fn tla_listed(repo: &Repo, report: &mut Report) {
     let expect = expectations(repo);
@@ -882,15 +938,7 @@ fn tla_listed(repo: &Repo, report: &mut Report) {
             report.add_at(repo, EXPECT, module, format!("{module}: 違反なしの設定と、反例の出る変種の両方が要る"));
         }
     }
-    let generated = [
-        ("IoLifecycle", "IoTable", "IoStep"),
-        ("WaitRace", "WaitTable", "WaitDecide"),
-        ("ProcessExit", "IoTable", "IoStep"),
-        ("ProcessExit", "ExitTable", "ExitThread"),
-        ("ProcessExit", "ExitTable", "ExitFinish"),
-        ("ProcessExit", "ExitTable", "ExitComplete"),
-    ];
-    for (model, table, relation) in generated {
+    for (model, table, relation) in GENERATED {
         let path = format!("tla/{model}.tla");
         let text = repo.text(&path);
         let extends = text.lines().any(|line| line.starts_with("EXTENDS") && line.contains(table));
@@ -1147,6 +1195,67 @@ fn permit_returned(repo: &Repo, report: &mut Report) {
     let input = "crates/kome/src/input.rs";
     if !repo.text(input).contains("Err(NotRelinquished::Rejected(permit, reason)) => Reply::Returned(permit, reason),") {
         report.add_at(repo, input, "Input::Relinquish", "Kernel::apply が、受理されなかった実行権を返答に入れて返していない");
+    }
+}
+
+/// 関数の本体の行の範囲を集める。
+#[derive(Default)]
+struct Bodies(Vec<(String, usize, usize)>);
+
+impl Bodies {
+    fn push(&mut self, name: &syn::Ident, block: &syn::Block) {
+        let span = block.brace_token.span;
+        self.0.push((name.to_string(), span.open().start().line, span.close().end().line));
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for Bodies {
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        self.push(&node.sig.ident, &node.block);
+        syn::visit::visit_item_fn(self, node);
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        self.push(&node.sig.ident, &node.block);
+        syn::visit::visit_impl_item_fn(self, node);
+    }
+}
+
+fn advance_bounded(repo: &Repo, report: &mut Report) {
+    let timer = repo.text(TIMER_RS);
+    // 区切るのは、目安に達していて、次の期限の時刻が直前に処理した期限と違うときだけ。
+    if !timer.contains("if fired >= batch && last != Some(entry.at) {") || !timer.contains("let batch = self.limits.advance_batch().get();") {
+        report.add_at(repo, TIMER_RS, "pub fn advance(", "advance が、目安の数を処理したところ (同じ時刻の期限を処理し終えたところ) で返っていない");
+    }
+    if !timer.contains("pub fn advance(&mut self, to: Instant) -> Result<Advanced, Error> {") {
+        report.add_at(repo, TIMER_RS, "pub fn advance(", "advance が、進んだ時刻と残りの有無 (Advanced) を返していない");
+    }
+    if !timer.contains("#[must_use = \"more() が真なら") {
+        report.add_at(repo, TIMER_RS, "pub struct Advanced", "Advanced を捨てても警告が出ない (#[must_use] が無い)");
+    }
+    let input = "crates/kome/src/input.rs";
+    if !repo.text(input).contains("Input::Advance(to) => Reply::Advanced(self.advance(to)?),") {
+        report.add_at(repo, input, "Input::Advance(to)", "Kernel::apply が、advance の結果 (Advanced) をそのまま返答に入れていない");
+    }
+    if !repo.text(SIM_RS).contains("        .with_advance_batch(NonZeroU32::MIN.saturating_add(1))\n") {
+        report.add_at(repo, SIM_RS, "pub fn limits()", "決定的シミュレーションが、advance が区切って返る経路を通らない (目安を小さくする)");
+    }
+    // kome の外で advance を呼ぶ関数は、残りがあるかを見る。
+    for (path, text) in repo.under("", ".rs") {
+        if path.starts_with(KOME_SRC) || path.starts_with("crates/kome-lint/") {
+            continue;
+        }
+        let Ok(file) = syn::parse_file(text) else { continue };
+        let mut bodies = Bodies::default();
+        syn::visit::Visit::visit_file(&mut bodies, &file);
+        let lines: Vec<&str> = text.lines().collect();
+        for (name, first, last) in &bodies.0 {
+            let body = lines.get(first.saturating_sub(1)..*last).unwrap_or(&[]);
+            let calls = body.iter().any(|line| line.contains(".advance("));
+            if calls && !body.iter().any(|line| line.contains(".more()")) {
+                report.add(path, *first, format!("`{name}` は advance を呼ぶが、残りがあるか (Advanced::more) を見ていない"));
+            }
+        }
     }
 }
 

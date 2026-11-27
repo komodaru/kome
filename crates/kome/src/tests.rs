@@ -529,8 +529,8 @@ fn a_wait_times_out_exactly_once_at_its_deadline() {
     let started = k.wait(t, &[e], WaitMode::Any, Deadline::At(at(100)), Interruptible::No);
     assert_eq!(ok!(k, started), WaitStart::Blocked);
     assert_eq!(k.next_deadline(), Some(at(100)));
-    assert_eq!(ok!(k, k.advance(at(99))), 0);
-    assert_eq!(ok!(k, k.advance(at(100))), 1);
+    assert_eq!(ok!(k, k.advance(at(99))).fired(), 0);
+    assert_eq!(ok!(k, k.advance(at(100))).fired(), 1);
     assert_eq!(drain(&mut k), vec![Effect::WaitDone { thread: t, outcome: WaitOutcome::TimedOut }]);
     // 時間切れの後に来た通知は、確定済みの待機を変えない。
     ok!(k, k.signal(e, SignalOp::Set(1)));
@@ -549,7 +549,7 @@ fn a_pure_sleep_ends_only_by_time() {
         let started = k.wait(t, &[], mode, Deadline::At(at(k.now().nanos() + 10)), Interruptible::No);
         assert_eq!(ok!(k, started), WaitStart::Blocked, "対象の無い待機が成立した");
         let to = k.next_deadline().unwrap();
-        assert_eq!(ok!(k, k.advance(to)), 1);
+        assert_eq!(ok!(k, k.advance(to)).fired(), 1);
         assert_eq!(drain(&mut k), vec![Effect::WaitDone { thread: t, outcome: WaitOutcome::TimedOut }]);
     }
 }
@@ -570,7 +570,7 @@ fn same_instant_deadlines_fire_in_registration_order() {
     assert_eq!(trap(&mut k, W0), second);
     let started = k.wait(second, &[sem], WaitMode::Any, Deadline::At(at(10)), Interruptible::No);
     assert_eq!(ok!(k, started), WaitStart::Blocked);
-    assert_eq!(ok!(k, k.advance(at(10))), 2, "タイマで起きた待機の期限まで処理した");
+    assert_eq!(ok!(k, k.advance(at(10))).fired(), 2, "タイマで起きた待機の期限まで処理した");
     assert_eq!(
         drain(&mut k),
         vec![
@@ -593,7 +593,7 @@ fn periodic_timer_refires_and_stops_when_disarmed() {
         Err(Error::Refused(Refusal::PeriodTooShort))
     );
     ok!(k, k.arm_timer(timer, at(5), Some(min)));
-    assert_eq!(ok!(k, k.advance(at(5 + 2 * period.nanos()))), 3);
+    assert_eq!(ok!(k, k.advance(at(5 + 2 * period.nanos()))).fired(), 3);
     assert_eq!(k.signal_count(sem), Ok(3));
     assert_eq!(k.next_deadline(), Some(at(5 + 3 * period.nanos())));
     // 置き換え: 古い期限は残らない。
@@ -615,9 +615,9 @@ fn a_timer_set_in_the_past_fires_at_the_current_time() {
     let (p, _) = process(&mut k);
     let e = event(&mut k, p);
     let timer = ok!(k, k.create_timer(p, e));
-    ok!(k, k.advance(at(1000)));
+    assert!(!ok!(k, k.advance(at(1000))).more());
     ok!(k, k.arm_timer(timer, at(10), None));
-    assert_eq!(ok!(k, k.advance(at(1000))), 1);
+    assert_eq!(ok!(k, k.advance(at(1000))).fired(), 1);
     assert_eq!(k.now(), at(1000));
     assert_eq!(k.signal_count(e), Ok(1));
 }
@@ -629,7 +629,7 @@ fn a_period_that_leaves_the_time_range_stops_the_timer() {
     let e = event(&mut k, p);
     let timer = ok!(k, k.create_timer(p, e));
     ok!(k, k.arm_timer(timer, at(u64::MAX - 5), Some(Limits::DEFAULT.min_period())));
-    assert_eq!(ok!(k, k.advance(at(u64::MAX))), 1);
+    assert_eq!(ok!(k, k.advance(at(u64::MAX))).fired(), 1);
     assert_eq!(k.next_deadline(), None);
     assert!(!ok!(k, k.disarm_timer(timer)));
 }
@@ -1057,8 +1057,9 @@ fn apply_is_the_same_as_calling_the_method() {
     let reply = by_input.apply(Input::Wait(t, &[], WaitMode::Any, Deadline::At(at(9)), Interruptible::No));
     assert_eq!(reply, Ok(Reply::Wait(WaitStart::Blocked)));
     by_call.wait(t, &[], WaitMode::Any, Deadline::At(at(9)), Interruptible::No).unwrap();
-    assert_eq!(by_input.apply(Input::Advance(at(9))), Ok(Reply::Count(1)));
-    by_call.advance(at(9)).unwrap();
+    let advanced = by_call.advance(at(9)).unwrap();
+    assert_eq!((advanced.fired(), advanced.reached(), advanced.more()), (1, at(9), false));
+    assert_eq!(by_input.apply(Input::Advance(at(9))), Ok(Reply::Advanced(advanced)));
     assert_eq!(by_input, by_call);
     // Effect の取り出しも入力である。
     let polled = by_call.poll_effect();
@@ -2217,10 +2218,142 @@ fn the_shortest_period_still_lets_time_advance() {
     let sem = semaphore(&mut k, p, 0, 1000);
     let timer = ok!(k, k.create_timer(p, sem));
     ok!(k, k.arm_timer(timer, at(0), Some(Period::MIN)));
-    assert_eq!(ok!(k, k.advance(at(0))), 1);
+    assert_eq!(ok!(k, k.advance(at(0))).fired(), 1);
     assert_eq!(k.next_deadline(), Some(at(1)));
-    assert_eq!(ok!(k, k.advance(at(9))), 9);
+    assert_eq!(ok!(k, k.advance(at(9))).fired(), 9);
     assert_eq!((k.now(), k.signal_count(sem), k.next_deadline()), (at(9), Ok(10), Some(at(10))));
+}
+
+// ---- 一度の advance の仕事は進めた長さに比例しない (レビュー 3.2 の再現例) ----
+
+fn batch_of(count: u32) -> Limits {
+    Limits::DEFAULT.with_min_period(Period::MIN).with_advance_batch(core::num::NonZeroU32::new(count).unwrap())
+}
+
+/// `to` に届くまで advance を呼び直し、呼んだ回数と、処理した期限の合計を返す。
+fn advance_fully(k: &mut Kernel, to: Instant, batch: u32, crowd: u32) -> (u32, u64) {
+    let (mut calls, mut total) = (0u32, 0u64);
+    loop {
+        let before = k.now();
+        let advanced = ok!(k, k.advance(to));
+        calls = calls.saturating_add(1);
+        total = total.saturating_add(u64::from(advanced.fired()));
+        assert!(advanced.fired() <= batch.saturating_add(crowd), "一度の呼び出しが目安を超えて処理した: {advanced:?}");
+        assert_eq!(advanced.reached(), k.now());
+        assert!(before <= advanced.reached() && advanced.reached() <= to);
+        if !advanced.more() {
+            assert_eq!(advanced.reached(), to);
+            return (calls, total);
+        }
+        assert!(advanced.fired() >= batch, "目安に届く前に区切った: {advanced:?}");
+    }
+}
+
+#[test]
+fn a_long_jump_returns_after_a_bounded_amount_of_work() {
+    // 再現例: 最短の周期のタイマを設定して時刻を表せる端まで進めると、一度の呼び出しが、進めた
+    // 長さに比例する回数だけ通知を処理した (終わらないのと変わらない)。
+    let mut k = kernel_with(Limits::DEFAULT.with_min_period(Period::MIN));
+    let batch = Limits::DEFAULT.advance_batch().get();
+    let (p, _) = process(&mut k);
+    let sem = semaphore(&mut k, p, 0, u64::MAX);
+    let timer = ok!(k, k.create_timer(p, sem));
+    ok!(k, k.arm_timer(timer, at(0), Some(Period::MIN)));
+    let advanced = ok!(k, k.advance(at(u64::MAX)));
+    assert_eq!((advanced.fired(), advanced.more()), (batch, true));
+    // 時刻 0 から 1 ずつ batch 回。時刻は最後に処理した期限までしか進まない。
+    assert_eq!(advanced.reached(), at(u64::from(batch) - 1));
+    assert_eq!((k.now(), k.signal_count(sem), k.next_deadline()), (advanced.reached(), Ok(u64::from(batch)), Some(at(u64::from(batch)))));
+    // 続きは同じ時刻で呼び直す。通知は一回も抜けない。
+    let advanced = ok!(k, k.advance(at(u64::MAX)));
+    assert_eq!((advanced.fired(), advanced.more(), advanced.reached()), (batch, true, at(2 * u64::from(batch) - 1)));
+    assert_eq!(k.signal_count(sem), Ok(2 * u64::from(batch)));
+    // 残りが無ければ、渡した時刻に届く。
+    assert!(ok!(k, k.disarm_timer(timer)));
+    let advanced = ok!(k, k.advance(at(u64::MAX)));
+    assert_eq!((advanced.fired(), advanced.more(), advanced.reached()), (0, false, at(u64::MAX)));
+}
+
+/// タイマ 3 つ (うち 1 つは過去の時刻に設定) と、期限つきの待機 4 つが混ざった状況を、時刻 20 まで
+/// 進めたところから 100 まで進め、起きたことを返す。
+fn crowded_run(batch: u32) -> (Vec<Effect>, [u64; 3], Option<Instant>, u64, u32) {
+    let mut k = kernel_with(batch_of(batch));
+    let (p, _) = process(&mut k);
+    let threads = [thread(&mut k, p).0, thread(&mut k, p).0, thread(&mut k, p).0, thread(&mut k, p).0];
+    let [a, b, c] = [semaphore(&mut k, p, 0, 1000), semaphore(&mut k, p, 0, 1000), semaphore(&mut k, p, 0, 1000)];
+    let [on_a, on_b, on_c] = [ok!(k, k.create_timer(p, a)), ok!(k, k.create_timer(p, b)), ok!(k, k.create_timer(p, c))];
+    assert!(!ok!(k, k.advance(at(20))).more());
+    ok!(k, k.arm_timer(on_a, at(23), Period::new(Duration::from_nanos(2))));
+    ok!(k, k.arm_timer(on_b, at(25), Period::new(Duration::from_nanos(5))));
+    // 過去の時刻に設定した周期タイマ: 過ぎた 21 回分を、現在の時刻でまとめずに通知する。
+    ok!(k, k.arm_timer(on_c, at(0), Some(Period::MIN)));
+    let waits: [(&[ObjectId], WaitMode, u64); 4] =
+        [(&[a], WaitMode::Any, 50), (&[a, b], WaitMode::All, 24), (&[], WaitMode::Any, 37), (&[b], WaitMode::Any, 37)];
+    for (thread, (targets, mode, deadline)) in threads.into_iter().zip(waits) {
+        assert_eq!(trap(&mut k, W0), thread);
+        let started = k.wait(thread, targets, mode, Deadline::At(at(deadline)), Interruptible::No);
+        assert_eq!(ok!(k, started), WaitStart::Blocked);
+    }
+    let _ = drain(&mut k);
+    // 一つの時刻に並ぶ期限は、多くてもタイマ 3 つと待機 4 つ。
+    let (calls, total) = advance_fully(&mut k, at(100), batch, 7);
+    let counts = [k.signal_count(a).unwrap(), k.signal_count(b).unwrap(), k.signal_count(c).unwrap()];
+    (drain(&mut k), counts, k.next_deadline(), total, calls)
+}
+
+#[test]
+fn splitting_an_advance_changes_no_outcome() {
+    // 区切らずに処理した結果 (起床の順序と結果、通知の数、次の期限) と、どの区切り方の結果も同じである。
+    let (effects, counts, next, total, calls) = crowded_run(u32::MAX);
+    assert_eq!(calls, 1);
+    assert!(effects.len() >= 4, "待機が四つとも確定していない: {effects:?}");
+    // on_c は時刻 0 から 100 まで 101 回。資源を待つスレッドがいないので、数はそのまま残る。
+    assert_eq!(counts[2], 101);
+    for batch in [1, 2, 3, 7, 20, 21, 22, 64] {
+        let (split_effects, split_counts, split_next, split_total, split_calls) = crowded_run(batch);
+        assert_eq!((&split_effects, split_counts, split_next, split_total), (&effects, counts, next, total), "目安 {batch}");
+        assert!(split_calls > 1, "目安 {batch} で一度も区切らなかった");
+    }
+}
+
+#[test]
+fn deadlines_of_one_instant_are_never_split() {
+    // 目安が 1 でも、同じ時刻に期限が来る待機は一度の呼び出しで全部確定する。一部だけ起こして
+    // 返ると、残りは期限を過ぎたまま待ち続けることになる。
+    let mut k = kernel_with(batch_of(1));
+    let (p, _) = process(&mut k);
+    let threads = [thread(&mut k, p).0, thread(&mut k, p).0, thread(&mut k, p).0];
+    let e = event(&mut k, p);
+    let timer = ok!(k, k.create_timer(p, e));
+    for thread in threads {
+        assert_eq!(trap(&mut k, W0), thread);
+        let started = k.wait(thread, &[], WaitMode::Any, Deadline::At(at(10)), Interruptible::No);
+        assert_eq!(ok!(k, started), WaitStart::Blocked);
+    }
+    ok!(k, k.arm_timer(timer, at(15), None));
+    let _ = drain(&mut k);
+    let advanced = ok!(k, k.advance(at(20)));
+    assert_eq!((advanced.fired(), advanced.reached(), advanced.more()), (3, at(10), true));
+    assert_eq!(drain(&mut k), threads.map(|thread| Effect::WaitDone { thread, outcome: WaitOutcome::TimedOut }).to_vec());
+    assert_eq!(k.next_deadline(), Some(at(15)));
+    let advanced = ok!(k, k.advance(at(20)));
+    assert_eq!((advanced.fired(), advanced.reached(), advanced.more()), (1, at(20), false));
+    assert_eq!(k.signal_count(e), Ok(1));
+}
+
+#[test]
+fn catching_up_a_timer_set_in_the_past_is_split_too() {
+    // 過去の時刻に設定した周期タイマは、過ぎた回数だけ現在の時刻で通知する。この追いつきも
+    // 進めた長さに比例するので、区切って返る。時刻は動かさない。
+    let mut k = kernel_with(batch_of(4));
+    let (p, _) = process(&mut k);
+    let sem = semaphore(&mut k, p, 0, u64::MAX);
+    let timer = ok!(k, k.create_timer(p, sem));
+    assert!(!ok!(k, k.advance(at(1_000_000))).more());
+    ok!(k, k.arm_timer(timer, at(0), Some(Period::MIN)));
+    let advanced = ok!(k, k.advance(at(1_000_000)));
+    assert_eq!((advanced.fired(), advanced.reached(), advanced.more()), (4, at(1_000_000), true));
+    assert_eq!((k.signal_count(sem), k.next_deadline()), (Ok(4), Some(at(4))));
 }
 
 // ---- 保留の記録は増え続けない (レビュー 1.3 の再現例) ----

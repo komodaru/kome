@@ -1,4 +1,5 @@
 # Kani の証明ごとの検証条件と範囲。scripts/ci/kani.sh が結果と一緒に出し、kome-lint の ledger が proofs.rs と照合する。
+# 範囲に「前提」と書いた条件の外では、その証明は何も示していない。
 # 証明	ループ展開の上限 (無ければ -)	範囲
 range_new_never_wraps	-	開始と長さは u64 の全ての値
 range_len_is_none_only_for_everything	-	両端は u64 の全ての値
@@ -8,8 +9,9 @@ instant_add_never_wraps	-	時刻と長さは u64 の全ての値
 a_period_moves_the_deadline_forward	-	時刻と周期の長さは u64 の全ての値
 io_outcome_is_settled_once	-	全ての状態と出来事の組。結果の値は全ての値。遷移は 1 回 (どの列も 1 回の繰り返し)
 io_promises_cover_every_emission	-	全ての状態と出来事の組。遷移は 1 回
-effects_never_promise_beyond_the_limit	-	上限は 2 以下で、キューの確保が成功した場合。予約 2 回と取り消し 1 回で、数は u32 の全ての値
-effects_emit_exactly_what_was_promised	4	上限は 2 で、キューの確保が成功した場合。予約は 2 以下の全ての数。予約した数ちょうどの発行と、その次の 1 回
-a_removed_id_never_resolves_again	3	表の上限は 1 で、確保が成功した場合。最初の世代は最大値を除く全ての値。作成・削除・再作成が 1 回ずつ
-an_exhausted_slot_is_retired	3	表の上限は 1 で、確保が成功した場合。最初の世代は最大値。作成・削除・再作成が 1 回ずつ
-an_id_from_another_issuer_never_resolves	3	表の上限は 1 で、確保が成功した場合。二つの実行インスタンスの識別は、互いに異なる u64 の全ての値。作成が 1 回ずつ
+seats_never_promise_beyond_the_limit	-	上限、キューの数 (u64)、予約の数、足す数は全ての値。前提は無い (勘定は整数だけで、確保しない)
+seats_return_only_what_was_promised	-	上限、キューの数 (u64)、予約の数、返す数は全ての値。前提は無い
+effects_emit_exactly_what_was_promised	4	小さな上限での証明。前提: 上限は 2、キューの確保が成功した場合。予約は 2 以下の全ての数。予約した数ちょうどの発行と、その次の 1 回
+a_removed_id_never_resolves_again	3	小さな上限での証明。前提: 表の上限は 1、確保が成功した場合。最初の世代は最大値を除く全ての値。作成・削除・再作成が 1 回ずつ
+an_exhausted_slot_is_retired	3	小さな上限での証明。前提: 表の上限は 1、確保が成功した場合。最初の世代は最大値。作成・削除・再作成が 1 回ずつ
+an_id_from_another_issuer_never_resolves	3	小さな上限での証明。前提: 表の上限は 1、確保が成功した場合。二つの実行インスタンスの識別は、互いに異なる u64 の全ての値。作成が 1 回ずつ

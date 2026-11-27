@@ -23,6 +23,7 @@ use crate::process::ExitCode;
 use crate::sched::{Budget, NotRelinquished, RunPermit, Stop, ThreadFate, WorkerId};
 use crate::thread::Start;
 use crate::time::{Deadline, Instant, Period};
+use crate::timer::Advanced;
 use crate::wait::{Interruptible, WaitMode, WaitStart};
 
 /// 状態を変える一つの操作。各項目は同名の [`Kernel`] のメソッドに対応し、引数の順も同じである。
@@ -121,8 +122,10 @@ pub enum Reply {
     Returned(RunPermit, Error),
     /// 取り出した `Effect`。無ければ `None`。
     Effect(Option<Effect>),
-    /// 変更前の数 (信号の数、停止要求の数)、処理した期限の数、外したバイト数。
+    /// 変更前の数 (信号の数、停止要求の数)、外したバイト数。
     Count(u64),
+    /// 時刻を進めた結果。
+    Advanced(Advanced),
     /// タイマが設定されていたか。
     WasArmed(bool),
     /// 待機の始まり方。
@@ -172,7 +175,7 @@ impl Kernel {
             Input::ArmTimer(timer, at, period) => self.arm_timer(timer, at, period).map(|()| Reply::Done)?,
             Input::DisarmTimer(timer) => Reply::WasArmed(self.disarm_timer(timer)?),
             Input::DropTimer(timer) => self.drop_timer(timer).map(|()| Reply::Done)?,
-            Input::Advance(to) => Reply::Count(u64::from(self.advance(to)?)),
+            Input::Advance(to) => Reply::Advanced(self.advance(to)?),
             Input::PrepareIo(process, links) => Reply::Io(self.prepare_io(process, links)?),
             Input::IssueIo(io) => self.issue_io(io).map(|()| Reply::Done)?,
             Input::CancelIo(io) => Reply::Cancel(self.cancel_io(io)?),
