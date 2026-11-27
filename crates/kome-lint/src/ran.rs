@@ -9,6 +9,9 @@ use std::collections::BTreeSet;
 use crate::Repo;
 use crate::scan::scan;
 
+/// Loom の検査の置き場。
+const LOOM_TESTS: &str = "crates/kome-host-std/tests/loom.rs";
+
 /// 出力の一行を (試験の名前, 結果) に分ける。
 fn outcome(line: &str) -> Option<(&str, &str)> {
     let rest = line.strip_prefix("test ")?;
@@ -20,6 +23,10 @@ fn outcome(line: &str) -> Option<(&str, &str)> {
 fn required(repo: &Repo, problems: &mut Vec<String>) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for (path, text) in repo.under("crates/", ".rs") {
+        // Loom の検査は別の設定 (`--cfg loom`) でしか組み立てられない。走ったことは scripts/ci/loom.sh が照合する。
+        if path == LOOM_TESTS {
+            continue;
+        }
         match scan(text, false) {
             Ok(found) => {
                 for (name, attrs) in found.fns {

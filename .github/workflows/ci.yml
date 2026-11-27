@@ -130,6 +130,21 @@ jobs:
       - name: flux
         run: scripts/ci/flux.sh
 
+  loom:
+    name: loom
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: loom
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: loom
+        run: scripts/ci/loom.sh
+
   tla:
     name: tla
     runs-on: ubuntu-latest

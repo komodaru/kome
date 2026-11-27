@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/kome", "crates/kome-testkit", "crates/kome-lint"]
+members = ["crates/kome", "crates/kome-testkit", "crates/kome-lint", "crates/kome-host-std"]
 exclude = ["fuzz"]
 
 [workspace.package]
@@ -13,7 +13,7 @@ repository = "https://github.com/komodaru/kome"
 # これより厳しい表を自分で持つ (kome-lint の required-lints が両方を照合する)。
 [workspace.lints.rust]
 unsafe_code = "forbid"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(loom)", "cfg(loom_broken)"] }
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

@@ -1,0 +1,19 @@
+[package]
+name = "kome-host-std"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+description = "kome の参照ホスト: 実スレッドの worker が、一つの書き手を通して kome を動かす"
+
+[dependencies]
+kome = { path = "../kome" }
+
+# 並行の検査 (`RUSTFLAGS="--cfg loom"`) のときだけ、同期の部品を Loom のものに差し替える。
+[target.'cfg(loom)'.dependencies]
+loom = "0.7.3"
+
+[lints]
+workspace = true

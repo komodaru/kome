@@ -16,7 +16,8 @@ kome は、複数の OS Personality に共通する状態管理だけを持つ�
   検査: lint `no-std`、CI の `wasm32v1-none` と `thumbv7em-none-eabi` のビルド。
 - kome は特定の OS・ホスト・実行基盤の語彙 (関数名、構造体、状態コード) を持たない。
   検査: lint `host-vocabulary`。
-- 試験基盤 (`kome-testkit`) と規則の検査 (`kome-lint`) は `std` を使う。kome はどちらにも依存しない。
+- 試験基盤 (`kome-testkit`)、規則の検査 (`kome-lint`)、参照ホスト (`kome-host-std`) は `std` を使う。
+  kome はどれにも依存しない。
 
 ## kome が所有するもの
 
@@ -126,6 +127,32 @@ kome は、複数の OS Personality に共通する状態管理だけを持つ�
 
 実行中のスレッドへの終了要求は、そのスレッドが実行権を返したときに確定する。
 
+### 参照ホスト (`kome-host-std`)
+
+一つの書き手を、実スレッドの worker でどう守るかの見本である。状態 (`Kernel`、文脈の置き場、
+Personality) を一つの錠の中に置き、worker は次の順で動く。
+
+1. 錠を取り、`grant` で実行権を借り、`start_run` で文脈を取り出す。
+2. 錠を放し、ゲストを実行する。並行に進むのはここだけである。
+3. 錠を取り、`finish_run` で文脈を戻して実行権を返し、Personality に続きを任せ、待っている者を起こす。
+
+貸せるスレッドが無ければ、錠を放すのと待ち始めるのを一つの操作で行い、最も近い期限 (`next_deadline`)
+か次の変化で起きる。実行中の worker への中断 (`Effect::Interrupt`) は、実行の世代を名指しした求めとして
+錠の外から読める場所に置くので、実行器は錠を取らずに止まれる。前の実行への求めが次の実行を止めることは無い。
+
+この順序が通知を取りこぼさず、どのスレッドも決まった回数だけ実行して終了することは、Loom が
+スレッドの進み方を試して確かめる (`scripts/ci/loom.sh`)。試す範囲は次のとおり。
+
+| 筋書き | 試す進み方 |
+| --- | --- |
+| worker 一つ、スレッド一本 (一度譲ってから終了)、終了を待つ者 | 全て |
+| worker 二つ、スレッド一本 (一度譲ってから終了)、終了を待つ者 | 自分からは止まらない場所での切り替えが 5 回まで |
+| worker 二つ、スレッド二本 (すぐ終了)、終了を待つ者 | 同じく 5 回まで |
+
+Loom が見るのは錠と通知の順序で、時刻は進めない (期限で起きる経路は実スレッドの試験が見る)。
+通知を一つ抜いた変種 (`--cfg loom_broken`) が行き詰まりとして見つかることも、同じスクリプトが確かめる。
+検査: lint `host-single-writer`。
+
 ## 写しと復元
 
 `Kernel` は複製できない。同じ実行インスタンスの状態が二つあると、一つの実行権や完了通知を
@@ -163,4 +190,6 @@ lint `foreign-ids-tested` (ID を受け取る全ての引数に、別インス�
 | 新しい遷移の検証が抜けない | lint `ledger`、`operations-covered`、`tla-listed` |
 | 走らなかった試験が合格に混ざらない | `scripts/ci/test.sh` の照合、lint `no-skipped-tests` |
 | 確保しないと約束した操作が確保しない | `checks/noalloc` (`docs/memory.md`) |
+| 値の範囲で決まる性質を全ての値について確かめる | Flux の篩型 (`docs/flux.md`)、lint `refinements-kept` |
+| 実スレッドのホストが一つの書き手を守る | Loom (`scripts/ci/loom.sh`)、lint `host-single-writer` |
 | その場で検査を黙らせない | lint `no-local-allow`、`escape-comments`、`ci-required` |

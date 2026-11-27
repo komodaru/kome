@@ -19,6 +19,7 @@
 | --- | --- |
 | `crates/kome` | カーネル本体 |
 | `crates/kome-testkit` | 決定的シミュレーション (バイト列 → 操作列)、制御可能なホスト、ページごとの独立モデル |
+| `crates/kome-host-std` | 参照ホスト: 実スレッドの worker が一つの錠を通して kome を動かす。Loom で進み方を試す |
 | `crates/kome-lint` | 設計上の規則の検査。規則ごとに、検出しなければならない壊し方を持つ |
 | `docs/architecture.md` | 責務と依存方向、入力と出力、実行権、写しと復元 |
 | `docs/memory.md` | メモリ契約: ゲストのメモリの管理と、kome 自身が確保する操作・確保しない操作 |
@@ -39,6 +40,7 @@ cargo test --manifest-path checks/noalloc/Cargo.toml       # 確保しないと�
 cargo build -p kome --target wasm32v1-none                 # OS もホストも無いターゲット
 scripts/ci/tla.sh                                          # TLC。正しい設定は違反なし、誤りの変種は反例
 scripts/ci/kani.sh                                         # Kani の証明を一つずつ (検証条件と範囲つき)
+scripts/ci/loom.sh                                         # Loom: 参照ホストの worker の進み方
 scripts/ci/flux.sh                                         # 篩型 (Flux): 範囲計算と容量の会計を全ての値について
 cargo mutants -p kome --profile mutants   # 変異試験 (週次)
 ```

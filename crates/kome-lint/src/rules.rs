@@ -23,6 +23,9 @@ const PIPES_RS: &str = "crates/kome-testkit/src/pipes.rs";
 const IPC_RS: &str = "crates/kome/src/ipc.rs";
 const OBJECT_RS: &str = "crates/kome/src/object.rs";
 const BACKEND_RS: &str = "crates/kome/src/backend.rs";
+const HOST_RS: &str = "crates/kome-host-std/src/lib.rs";
+const LOOM_RS: &str = "crates/kome-host-std/tests/loom.rs";
+const LOOM_SH: &str = "scripts/ci/loom.sh";
 const FLUX_TSV: &str = "docs/flux.tsv";
 const FLUX_SH: &str = "scripts/ci/flux.sh";
 const ADDR_RS: &str = "crates/kome/src/addr.rs";
@@ -293,6 +296,26 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("total <= owner.quota.mapped_bytes()", "total <= u64::MAX")),
             |repo| repo.edit("crates/kome/src/process.rs", |text| text.replace("self.limits.holdings().min(quota)", "self.limits.holdings()")),
             |repo| repo.edit(SIM_RS, |text| text.replace("Ok(()) if after > quota => Err(", "Ok(()) if false => Err(")),
+        ],
+    },
+    Rule {
+        id: "host-single-writer",
+        about: "参照ホストは錠の外でだけゲストを実行し、同期の部品を Loom に差し替えられる形で使い、Loom がその進み方を試す",
+        check: host_single_writer,
+        breaks: &[
+            |repo| repo.edit(HOST_RS, |text| text.replace("            drop(guard);\n            let stopped = executor.run(", "            let stopped = executor.run(")),
+            |repo| repo.append(HOST_RS, "fn other() -> std::sync::Mutex<u8> { std::sync::Mutex::new(0) }"),
+            |repo| repo.append("crates/kome-host-std/src/store.rs", "use std::sync::atomic::AtomicBool;"),
+            |repo| repo.append(HOST_RS, "fn back(kernel: &mut Kernel, permit: RunPermit) { let _ = kernel.relinquish(permit, kome::Stop::Trap, kome::Budget::new(0)); }"),
+            |repo| repo.edit(HOST_RS, |text| text.replace("            #[cfg(not(loom_broken))]\n            self.inner.changed.notify_all();\n", "")),
+            |repo| repo.edit(HOST_RS, |text| text.replace("        drop(guard);\n        self.inner.changed.notify_all();\n        settled.map(|_| result)", "        drop(guard);\n        settled.map(|_| result)")),
+            |repo| repo.edit(HOST_RS, |text| text.replace("                guard = self.sleep(guard)?;", "                drop(guard);\n                guard = self.lock()?;")),
+            |repo| repo.edit(LOOM_RS, |text| text.replace("    explore(2, 2, 0, Some(5));", "    explore(1, 2, 0, Some(5));")),
+            |repo| repo.edit(LOOM_RS, |text| text.replace("        support::check(&host, &made, yields);\n", "")),
+            |repo| repo.edit(LOOM_SH, |text| text.replace("--cfg loom_broken", "")),
+            |repo| repo.edit(LOOM_SH, |text| text.replace("    if ! grep -q \"^test $name ... ok$\" \"$log\"; then\n", "    if false; then\n")),
+            |repo| repo.edit(LOOM_SH, |text| text.replace("if ! grep -q \"deadlock\" \"$log\"; then", "if false; then")),
+            |repo| repo.edit("crates/kome-host-std/src/sync.rs", |text| text.replace("#[cfg(loom)]\n", "#[cfg(any())]\n")),
         ],
     },
     Rule {
@@ -1382,6 +1405,75 @@ fn independent_model(repo: &Repo, report: &mut Report) {
     }
 }
 
+fn host_single_writer(repo: &Repo, report: &mut Report) {
+    let host = repo.text(HOST_RS);
+    // 同期の部品は sync.rs だけが選ぶ。ほかの場所が標準のものを直接使うと、Loom から見えない。
+    let sync_rs = "crates/kome-host-std/src/sync.rs";
+    for (path, text) in repo.under("crates/kome-host-std/src/", ".rs") {
+        if path == sync_rs {
+            continue;
+        }
+        for (at, line) in text.lines().enumerate() {
+            if line.contains("std::sync") || line.contains("std::thread") || line.contains("loom::") {
+                report.add(path, at.saturating_add(1), format!("同期の部品は {sync_rs} を通して使う (Loom が差し替えられるように)"));
+            }
+        }
+    }
+    let sync = repo.text(sync_rs);
+    for needed in [
+        "#[cfg(loom)]\npub(crate) use loom::sync::{Arc, Condvar, Mutex, MutexGuard, atomic::AtomicU64, atomic::Ordering};",
+        "#[cfg(not(loom))]\npub(crate) use std::sync::{Arc, Condvar, Mutex, MutexGuard, atomic::AtomicU64, atomic::Ordering};",
+    ] {
+        if !sync.contains(needed) {
+            report.add(sync_rs, 1, "同期の部品を、Loom のものと標準のものの同じ組で差し替える");
+        }
+    }
+    let kept = [
+        ("            drop(guard);\n            let stopped = executor.run(&permit, loaded.context());\n            guard = self.lock()?;\n", "ゲストは錠を放してから実行し、戻ったら取り直す"),
+        ("                    break start_run(&mut state.kernel, permit, &mut state.contexts)?;", "文脈は start_run で取り出す"),
+        ("            let ran = finish_run(&mut state.kernel, permit, loaded, stopped, &mut state.contexts)?;", "実行権は finish_run で返す"),
+        ("            #[cfg(not(loom_broken))]\n            self.inner.changed.notify_all();\n", "ゲストが止まった後に、待っている者を起こす"),
+        ("        drop(guard);\n        self.inner.changed.notify_all();\n        settled.map(|_| result)", "外からの操作の後に、待っている者を起こす"),
+        ("                guard = self.sleep(guard)?;", "貸せるスレッドが無ければ、錠を放すのと待ち始めるのを一つの操作で行う"),
+    ];
+    for (needed, what) in kept {
+        if !host.contains(needed) {
+            report.add(HOST_RS, 1, format!("参照ホストの約束が崩れている: {what}"));
+        }
+    }
+    if host.matches("executor.run(").count() != 1 {
+        report.add_at(repo, HOST_RS, "executor.run(", "ゲストを実行する場所は一つだけにする");
+    }
+    // 実行権の貸し借りは kome の入口 (start_run / finish_run) に任せ、自分で返さない。
+    if let Some(at) = host.lines().position(|line| line.contains(".relinquish(")) {
+        report.add(HOST_RS, at.saturating_add(1), "参照ホストが実行権を自分で返している。finish_run を使う");
+    }
+    let loom = repo.text(LOOM_RS);
+    for needed in [
+        "    explore(1, 1, 1, None);",
+        "    explore(2, 1, 1, Some(5));",
+        "    explore(2, 2, 0, Some(5));",
+        "        host.wait_until(|state| state.personality.process_exited).unwrap();",
+        "            assert_eq!(worker.join().unwrap(), Ok(()));",
+        "        support::check(&host, &made, yields);\n",
+    ] {
+        if !loom.contains(needed) {
+            report.add(LOOM_RS, 1, format!("Loom の検査が足りない (`{}`)", needed.trim()));
+        }
+    }
+    let script = repo.text(LOOM_SH);
+    for (needed, why) in [
+        ("RUSTFLAGS=\"--cfg loom\" cargo test -p kome-host-std --test loom --release --locked 2>&1 | tee \"$log\"\n", "進み方を試す"),
+        ("    if ! grep -q \"^test $name ... ok$\" \"$log\"; then\n", "書いてある検査が全て走ったことを照合する"),
+        ("if RUSTFLAGS=\"--cfg loom --cfg loom_broken\" cargo test -p kome-host-std --test loom --release --locked >\"$log\" 2>&1; then\n", "通知を抜いた誤りが見つかることを確かめる"),
+        ("if ! grep -q \"deadlock\" \"$log\"; then\n", "見つかった理由が行き詰まりであることを確かめる"),
+    ] {
+        if !script.contains(needed) {
+            report.add(LOOM_SH, 1, format!("Loom のスクリプトが足りない: {why}"));
+        }
+    }
+}
+
 fn refinements_kept(repo: &Repo, report: &mut Report) {
     if !repo.has(FLUX_TSV) {
         report.add(FLUX_TSV, 1, "篩型の仕様の一覧が無い");
@@ -1774,7 +1866,7 @@ fn quiet_operations(repo: &Repo, report: &mut Report) {
 }
 
 /// CI が必ず実行するコマンドと、それを置くジョブ。ステップの `run` は、この文字列ちょうどである。
-const CI_RUNS: [(&str, &str); 12] = [
+const CI_RUNS: [(&str, &str); 13] = [
     ("lint", "cargo run -q --locked -p kome-lint"),
     ("lint", "cargo clippy --workspace --all-targets --locked -- -D warnings"),
     ("test", "scripts/ci/test.sh"),
@@ -1787,6 +1879,7 @@ const CI_RUNS: [(&str, &str); 12] = [
     ("tla", "scripts/ci/tla.sh"),
     ("flux", "scripts/ci/flux-install.sh"),
     ("flux", "scripts/ci/flux.sh"),
+    ("loom", "scripts/ci/loom.sh"),
 ];
 /// ワークフロー、ジョブ、ステップに書いてよいキー。実行の条件や殻を変えるキー (`if`、
 /// `continue-on-error`、`shell`、`defaults`、`working-directory`、ステップの `env`) は無い。

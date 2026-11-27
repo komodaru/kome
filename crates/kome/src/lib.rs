@@ -65,7 +65,7 @@ pub use backend::{
 };
 pub use effect::{Completion, CompletionKind, Effect};
 pub use error::{Error, Invariant, Refusal, Resource};
-pub use exec::{Contexts, Executor, Loaded, Ran, Stopped, run_once, run_permit};
+pub use exec::{Contexts, Executor, Loaded, Ran, Stopped, finish_run, run_once, run_permit, start_run};
 pub use id::{BackingId, ChannelId, Id, IoId, Kind, ObjectId, ProcessId, Tag, ThreadId, TimerId, kind};
 pub use input::{Input, Reply};
 pub use ipc::{ChannelCreated, ChannelSpec, End, Parcel, Received, Sent};

@@ -248,12 +248,39 @@ pub fn run_permit<E: Executor>(
     executor: &mut E,
     contexts: &mut Contexts<E::Context>,
 ) -> Result<Ran, Error> {
-    let thread = permit.thread();
-    let mut loaded = match contexts.load(&permit) {
+    let (permit, mut loaded) = start_run(kernel, permit, contexts)?;
+    let stopped = executor.run(&permit, loaded.context());
+    finish_run(kernel, permit, loaded, stopped, contexts)
+}
+
+/// 実行の前半: 実行権に合う文脈を置き場から取り出す。
+///
+/// [`run_permit`] を二つに分けたもの。ゲストを実行している間は `Kernel` を借りないので、
+/// 複数の worker が一つの `Kernel` を順番に使いながら、ゲストは並行に実行できる。
+/// 文脈が無ければ、実行権を返してから ([`Stop::Trap`]) その失敗を返す。
+pub fn start_run<C>(
+    kernel: &mut Kernel,
+    permit: RunPermit,
+    contexts: &mut Contexts<C>,
+) -> Result<(RunPermit, Loaded<C>), Error> {
+    let loaded = match contexts.load(&permit) {
         Ok(loaded) => loaded,
         Err(error) => return Err(hand_back(kernel, permit, Budget::new(0)).err().unwrap_or(error)),
     };
-    let stopped = executor.run(&permit, loaded.context());
+    Ok((permit, loaded))
+}
+
+/// 実行の後半: 文脈を置き場へ戻し、止まった理由を添えて実行権を返す。
+///
+/// 失敗を返すときも、実行権は必ず返している ([`run_permit`] と同じ)。
+pub fn finish_run<C>(
+    kernel: &mut Kernel,
+    permit: RunPermit,
+    loaded: Loaded<C>,
+    stopped: Stopped,
+    contexts: &mut Contexts<C>,
+) -> Result<Ran, Error> {
+    let thread = permit.thread();
     if let Err(error) = contexts.save(loaded) {
         return Err(hand_back(kernel, permit, stopped.consumed).err().unwrap_or(error));
     }
