@@ -1304,6 +1304,68 @@ fn the_tla_wait_table_is_the_kernel() {
     assert_eq!(on_disk, table, "tla/WaitTable.tla がカーネルと違う。KOME_UPDATE_GOLDEN=1 で書き直す");
 }
 
+#[test]
+fn peeking_shows_the_queue_without_taking_from_it() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    assert_eq!(k.peek_effect(0), None);
+    ok!(k, k.exit_process(p, CODE));
+    let count = k.pending_effects();
+    assert!(count >= 2);
+    let seen: Vec<Effect> = (0..count).map(|at| k.peek_effect(at).unwrap()).collect();
+    assert!(seen.contains(&Effect::ThreadExited { thread: t, process: p, code: CODE }));
+    assert_eq!(k.peek_effect(count), None);
+    assert_eq!(k.pending_effects(), count, "見ただけで取り出した");
+    assert_eq!(drain(&mut k), seen);
+}
+
+#[test]
+fn a_snapshot_differs_from_a_state_that_moved_on() {
+    let mut k = kernel();
+    let before = k.snapshot().unwrap();
+    assert!(k == before);
+    let _ = process(&mut k);
+    assert!(k != before, "変わった状態が写しと等しい");
+    assert!(k == k.snapshot().unwrap());
+}
+
+#[test]
+fn a_second_suspension_of_a_waiting_to_run_thread_only_counts() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    assert_eq!(ok!(k, k.suspend_thread(t)), 0);
+    assert_eq!(k.ready_count(), 0);
+    assert_eq!(ok!(k, k.suspend_thread(t)), 1);
+    assert_eq!(k.suspend_count(t), Ok(2));
+    assert_eq!(ok!(k, k.unsuspend_thread(t)), 2);
+    assert_eq!(k.ready_count(), 0);
+    assert_eq!(ok!(k, k.unsuspend_thread(t)), 1);
+    assert_eq!(k.ready_count(), 1);
+}
+
+#[test]
+fn distinct_io_links_are_pinned_once_each() {
+    // 対象と通知先が別の資源なら、それぞれ一つずつ固定する。同じ資源のときだけ二つ固定する。
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let target = event(&mut k, p);
+    let notify = event(&mut k, p);
+    k.objects.get_mut(target).unwrap().pins = u32::MAX - 1;
+    let links = IoLinks::NONE.with_target(target).with_notify(notify);
+    assert!(k.prepare_io(p, links).is_ok());
+    assert_eq!(k.objects.get(target).unwrap().pins, u32::MAX);
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let both = event(&mut k, p);
+    k.objects.get_mut(both).unwrap().pins = u32::MAX - 1;
+    let links = IoLinks::NONE.with_target(both).with_notify(both);
+    let before = k.snapshot().unwrap();
+    assert!(k.prepare_io(p, links).is_err());
+    assert!(k == before);
+}
+
 // ---- 終了処理の表 (tla/ExitTable.tla) ----
 
 const EXIT_RUNS: [&str; 4] = ["Ready", "Running", "Servicing", "Blocked"];
