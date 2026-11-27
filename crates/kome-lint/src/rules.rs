@@ -292,7 +292,8 @@ fn required_lints(repo: &Repo, report: &mut Report) {
         need(KOME_MANIFEST, kome_lints, "clippy", name, "deny");
     }
     for (path, text) in repo.under("", "Cargo.toml") {
-        let member = path != "Cargo.toml" && path != KOME_MANIFEST;
+        // fuzz はワークスペースの外にあり、libFuzzer の入口が unsafe な属性を要るので継承できない。
+        let member = path != "Cargo.toml" && path != KOME_MANIFEST && path != "fuzz/Cargo.toml";
         let inherits = text
             .parse::<toml::Table>()
             .ok()

@@ -1,0 +1,81 @@
+name: Weekly
+
+on:
+  schedule:
+    - cron: "31 3 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  mutants:
+    # kome の全ての変異について、試験のどれかが落ちることを確かめる。生き残りがあれば失敗する。
+    name: mutants
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: mutants
+          cache-on-failure: true
+      - name: cargo-mutants を入れる
+        run: |
+          if ! cargo mutants --version 2>/dev/null | grep -q '27\.1\.0'; then
+            cargo install --locked cargo-mutants --version 27.1.0
+          fi
+      - name: mutants
+        run: cargo mutants -p kome --test-workspace true --profile mutants --timeout 90 -j 3
+      - name: 生き残った変異を残す
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants
+          path: |
+            mutants.out/missed.txt
+            mutants.out/timeout.txt
+          retention-days: 14
+
+  fuzz:
+    # 決定的シミュレーションを libFuzzer で 20 分動かす。
+    name: fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-11-26
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup toolchain install nightly-2026-11-26 --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: fuzz
+          cache-on-failure: true
+          workspaces: |
+            fuzz -> target
+      - name: cargo-fuzz を入れる
+        run: |
+          if ! cargo fuzz --version 2>/dev/null | grep -q '0\.13\.2'; then
+            cargo install --locked cargo-fuzz --version 0.13.2
+          fi
+      - name: fuzz
+        working-directory: fuzz
+        run: |
+          mkdir -p corpus/drive
+          cargo fuzz run drive corpus/drive ../crates/kome-testkit/tests/regressions -- -max_total_time=1200
+      - name: 見つけた入力を残す
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          retention-days: 30

@@ -100,3 +100,19 @@ fn a_failure_reports_the_step() {
     let summary = drive(&[3, 0]).unwrap();
     assert_eq!((summary.steps, summary.accepted), (1, 0));
 }
+
+/// 保存してある入力 (fuzz や property test が見つけたもの、種) を毎回再生する。
+#[test]
+fn saved_inputs_still_pass() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/regressions");
+    let mut replayed = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let bytes = std::fs::read(&path).unwrap();
+        if let Err(failure) = drive(&bytes) {
+            panic!("{}: 操作 {}: {}", path.display(), failure.step, failure.message);
+        }
+        replayed += 1;
+    }
+    assert!(replayed > 0, "{dir} に入力が無い");
+}

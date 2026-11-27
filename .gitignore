@@ -2,3 +2,8 @@ target/
 tla/tla2tools.jar
 tla/states/
 *.tmp
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
+mutants.out*/

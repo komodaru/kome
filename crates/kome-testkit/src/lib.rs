@@ -2,8 +2,9 @@
 //!
 //! [`drive`] はバイト列を操作列として解釈し、一つの [`kome::Kernel`] に適用する。
 //! 時刻・I/O の完了・実行するスレッドは、すべてバイト列が決める。同じバイト列からは
-//! 同じ状態と同じ `Effect` 列を得る。property test と fuzz は同じ `drive` を使い、
-//! 失敗したバイト列は縮めて `tests/regressions/` へ保存する。
+//! 同じ状態と同じ `Effect` 列を得る。property test (`tests/sim.rs`) と fuzz
+//! (`fuzz/fuzz_targets/drive.rs`) は同じ `drive` を使う。fuzz が見つけた入力は
+//! `tests/regressions/` へ置くと、通常の試験が毎回再生する。
 //!
 //! 操作のたびに次を確かめる。
 //!

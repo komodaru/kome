@@ -1,0 +1,23 @@
+[package]
+name = "kome-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kome-testkit = { path = "../crates/kome-testkit" }
+
+[[bin]]
+name = "drive"
+path = "fuzz_targets/drive.rs"
+test = false
+doc = false
+bench = false
+
+# ワークスペースの外に置く (libFuzzer は nightly と専用のビルド設定を要る)。
+[workspace]
