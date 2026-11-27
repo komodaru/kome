@@ -1,0 +1,4 @@
+target/
+tla/tla2tools.jar
+tla/states/
+*.tmp

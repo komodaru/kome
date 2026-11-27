@@ -1,0 +1,5 @@
+# 全員と CI が同じコンパイラを使う。新しいリリースの警告は 1 つのコミットでまとめて受ける。
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["clippy"]

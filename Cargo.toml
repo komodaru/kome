@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/kome", "crates/kome-testkit", "crates/kome-lint"]
+exclude = ["fuzz"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.100"
+repository = "https://github.com/komodaru/kome"
+
+# kome 以外 (testkit・lint) が継承する規則。kome 本体は crates/kome/Cargo.toml に
+# これより厳しい表を自分で持つ (kome-lint の required-lints が両方を照合する)。
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+as_conversions = "deny"
+wildcard_enum_match_arm = "deny"
+match_wildcard_for_single_variants = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+
+# cargo-mutants 用 (`cargo mutants --profile mutants`)。
+[profile.mutants]
+inherits = "dev"
+opt-level = 1
+debug = false

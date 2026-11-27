@@ -1,0 +1,3 @@
+# 公開から 1 週間未満のクレート版は lock 更新時に選ばない (乗っ取られた版は数日で取り下げられる)。
+[registry]
+global-min-publish-age = "7 days"

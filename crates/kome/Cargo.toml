@@ -1,0 +1,37 @@
+[package]
+name = "kome"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "複数の OS Personality に共通するライブラリカーネル: プロセス、スレッド、アドレス空間、資源寿命、待機、タイマ、非同期 I/O の状態と状態遷移"
+
+# 依存を持たない。kome-lint の deps 規則が cargo metadata で確かめる。
+[dependencies]
+
+[dev-dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+missing_docs = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+as_conversions = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+wildcard_enum_match_arm = "deny"
+match_wildcard_for_single_variants = "deny"
+std_instead_of_core = "deny"
+std_instead_of_alloc = "deny"
+alloc_instead_of_core = "deny"
