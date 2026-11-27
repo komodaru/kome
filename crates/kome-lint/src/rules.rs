@@ -204,7 +204,7 @@ pub const RULES: &[Rule] = &[
         check: quiet_operations,
         breaks: &[
             |repo| repo.edit(SIM_RS, |text| text.replace("self.quiet(|k| k.exit_process(", "self.plain(|k| k.exit_process(")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("match self.k.create_thread(", "match self.quiet(|k| k.create_thread(")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("let made = self.k.create_thread(process, start);", "let made = self.quiet(|k| k.create_thread(process, start));")),
             |repo| repo.edit(MEMORY_MD, |text| text.replace("`signal`、`interrupt_wait`、`advance`", "`signal`、`interrupt_wait`")),
             |repo| repo.edit(MEMORY_MD, |text| text.replace("| `arm_timer` | 期限の列 |", "| `arm_timer`、`advance` | 期限の列 |")),
             |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 新しい操作。\n    pub fn fresh_operation(&mut self) {}\n}"),
@@ -273,6 +273,20 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(SIM_RS, |text| text.replace("if let Some(idle) = self.since.keys().find(|thread| self.open(**thread)) {", "if let Some(idle) = None::<&ThreadId> {")),
             |repo| repo.edit(SIM_RS, |text| text.replace("        self.note_ready();\n", "")),
             |repo| repo.edit(SIM_RS, |text| text.replace("let ready = self.k.thread_phase(*thread) == Ok(ThreadPhase::Ready) && self.k.suspend_count(*thread) == Ok(0);", "let ready = self.k.priority(*thread).is_ok();")),
+        ],
+    },
+    Rule {
+        id: "process-quota",
+        about: "プロセスごとの上限を見る箇所は、プロセスへの割り当て (Quota) も見る",
+        check: process_quota,
+        breaks: &[
+            |repo| repo.edit(OBJECT_RS, |text| text.replacen("let limit = self.holdings_limit(process);", "let limit = self.limits.holdings();", 1)),
+            |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replacen("u64::from(self.mappings_limit(process))", "u64::from(self.limits.mappings())", 1)),
+            |repo| repo.edit("crates/kome/src/thread.rs", |text| text.replace(">= u64::from(owner.quota.threads()) {", ">= u64::MAX {")),
+            |repo| repo.edit("crates/kome/src/io.rs", |text| text.replace("if ios > owner.quota.ios() {", "if false {")),
+            |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("total <= owner.quota.mapped_bytes()", "total <= u64::MAX")),
+            |repo| repo.edit("crates/kome/src/process.rs", |text| text.replace("self.limits.holdings().min(quota)", "self.limits.holdings()")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("Ok(()) if after > quota => Err(", "Ok(()) if false => Err(")),
         ],
     },
     Rule {
@@ -1324,6 +1338,40 @@ fn independent_model(repo: &Repo, report: &mut Report) {
     }
 }
 
+fn process_quota(repo: &Repo, report: &mut Report) {
+    let process_rs = "crates/kome/src/process.rs";
+    // 状態全体の上限のうち、プロセスごとに数えるものは、割り当てと合わせる関数を通してだけ読む。
+    for (path, text) in kernel_files(repo) {
+        if path == process_rs || path.ends_with("/audit.rs") || path.ends_with("/tests.rs") {
+            continue;
+        }
+        for (at, line) in text.lines().enumerate() {
+            for (direct, helper) in [("self.limits.holdings()", "holdings_limit"), ("self.limits.mappings()", "mappings_limit")] {
+                if line.contains(direct) {
+                    report.add(path, at.saturating_add(1), format!("`{direct}` を直接読んでいる。プロセスへの割り当ても見る `{helper}(process)` を使う"));
+                }
+            }
+        }
+    }
+    let process = repo.text(process_rs);
+    for needed in ["self.limits.holdings().min(quota)", "self.limits.mappings().min(quota)"] {
+        if !process.contains(needed) {
+            report.add_at(repo, process_rs, "pub(crate) fn holdings_limit", format!("上限と割り当ての小さい方を取っていない (`{needed}`)"));
+        }
+    }
+    let sites = [
+        ("crates/kome/src/thread.rs", ">= u64::from(owner.quota.threads()) {", "create_thread が、スレッドの数の割り当てを見ていない"),
+        ("crates/kome/src/io.rs", "if ios > owner.quota.ios() {", "prepare_io が、I/O 要求の数の割り当てを見ていない"),
+        ("crates/kome/src/mem.rs", "total <= owner.quota.mapped_bytes()", "map が、実体つきのバイト数の割り当てを見ていない"),
+        (SIM_RS, "Ok(()) if after > quota => Err(", "決定的シミュレーションが、割り当てを超える受理を検出しない"),
+    ];
+    for (path, needed, message) in sites {
+        if !repo.text(path).contains(needed) {
+            report.add(path, 1, message);
+        }
+    }
+}
+
 fn executor_contract(repo: &Repo, report: &mut Report) {
     let sched = repo.text(SCHED_RS);
     // 返却は、受理の前に理由を確かめ、受理した後の行き先を終了要求つきで決める。どちらも Kani が示した関数を通る。
@@ -1422,8 +1470,9 @@ fn channel_model(repo: &Repo, report: &mut Report) {
     }
 }
 
-const QUIET_OPS: [&str; 25] = [
+const QUIET_OPS: [&str; 26] = [
     "grant",
+    "set_quota",
     "grant_thread",
     "preempt_thread",
     "set_priority",

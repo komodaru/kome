@@ -241,6 +241,14 @@ impl Space {
         MapGen(self.generation)
     }
 
+    /// 実体つきで対応づけているバイト数。
+    pub(crate) fn mapped_bytes(&self) -> u64 {
+        let backed = self.maps.iter().filter(|mapping| matches!(mapping.source, MapSource::Backing { .. }));
+        backed.fold(0u64, |total, mapping| {
+            total.saturating_add(mapping.last.saturating_sub(mapping.start)).saturating_add(1)
+        })
+    }
+
     /// 範囲が粒度に揃い、幅に収まるか。
     fn check(&self, range: GuestRange) -> Result<(), Error> {
         if !self.page.divides(range.start().get()) || !self.page.divides(range.last().get().wrapping_add(1)) {
@@ -294,7 +302,7 @@ impl Kernel {
             .checked_add(len)
             .filter(|total| *total <= self.limits.backing_bytes())
             .ok_or(Error::Exhausted(Resource::BackingBytes))?;
-        let limit = self.limits.holdings();
+        let limit = self.holdings_limit(process);
         let owner = self.processes.find_mut(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
@@ -311,7 +319,7 @@ impl Kernel {
 
     /// `process` の保持を一つ増やす。
     pub fn retain_backing(&mut self, process: ProcessId, backing: BackingId) -> Result<(), Error> {
-        let limit = self.limits.holdings();
+        let limit = self.holdings_limit(process);
         let holds = self.backings.find(backing, &self.lineage)?.holds;
         let holds = holds.checked_add(1).ok_or(Error::Refused(Refusal::HoldOverflow))?;
         let owner = self.processes.find_mut(process, &self.lineage)?;
@@ -329,6 +337,11 @@ impl Kernel {
         let owner = self.processes.find_mut(process, &self.lineage)?;
         owner.backings.sub(backing)?;
         self.drop_backing_hold(backing)
+    }
+
+    /// `process` が実体つきで対応づけているバイト数 ([`crate::Quota::mapped_bytes`] が数える量)。
+    pub fn mapped_bytes(&self, process: ProcessId) -> Result<u64, Error> {
+        Ok(self.processes.find(process, &self.lineage)?.space.mapped_bytes())
     }
 
     /// 実体の長さ。
@@ -357,7 +370,7 @@ impl Kernel {
         if space.maps.get(place).is_some_and(|next| next.start <= last) {
             return Err(Error::Refused(Refusal::Overlap));
         }
-        if u64::try_from(space.maps.len()).unwrap_or(u64::MAX) >= u64::from(self.limits.mappings()) {
+        if u64::try_from(space.maps.len()).unwrap_or(u64::MAX) >= u64::from(self.mappings_limit(process)) {
             return Err(Error::Exhausted(Resource::Mappings));
         }
         let generation = space.generation.checked_add(1).ok_or(Error::Exhausted(Resource::Identifiers))?;
@@ -373,6 +386,10 @@ impl Kernel {
                     return Err(Error::Refused(Refusal::BeyondBacking));
                 }
                 let maps = entry.maps.checked_add(1).ok_or(Error::Exhausted(Resource::Pins))?;
+                let total = space.mapped_bytes().checked_add(span).and_then(|total| total.checked_add(1));
+                if !total.is_some_and(|total| total <= owner.quota.mapped_bytes()) {
+                    return Err(Error::Exhausted(Resource::MappedBytes));
+                }
                 (prot, Some((backing, maps)))
             }
         };
@@ -422,7 +439,7 @@ impl Kernel {
             return Ok(0);
         }
         let generation = space.generation.checked_add(1).ok_or(Error::Exhausted(Resource::Identifiers))?;
-        if split && u64::try_from(space.maps.len()).unwrap_or(u64::MAX) >= u64::from(self.limits.mappings()) {
+        if split && u64::try_from(space.maps.len()).unwrap_or(u64::MAX) >= u64::from(self.mappings_limit(process)) {
             return Err(Error::Exhausted(Resource::Mappings));
         }
         let owner = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
@@ -555,7 +572,7 @@ impl Kernel {
             merges = merges.saturating_add(usize::from(piece.continues_into(after)));
         }
         let count = space.maps.len().saturating_add(extra).saturating_sub(merges);
-        if u64::try_from(count).unwrap_or(u64::MAX) > u64::from(self.limits.mappings()) {
+        if u64::try_from(count).unwrap_or(u64::MAX) > u64::from(self.mappings_limit(process)) {
             return Err(Error::Exhausted(Resource::Mappings));
         }
         let generation = space.generation.checked_add(1).ok_or(Error::Exhausted(Resource::Identifiers))?;

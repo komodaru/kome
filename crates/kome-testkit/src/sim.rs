@@ -7,8 +7,8 @@ use std::num::NonZeroU32;
 use kome::{
     Access, AddrWidth, BackingId, BackingOffset, Budget, CancelReply, ChannelId, ChannelSpec, Completion, CompletionKind,
     Deadline, Duration, Effect, End, Error, ExitCode, GuestAddr, GuestRange, HostError, InstanceId, Instant, Interruptible, IoId, IoLinks,
-    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFault, MemFaultKind, NotRelinquished, ObjectId, PageSize, Parcel, Period, Priority, ProcessId, ProcessPhase, Prot,
-    Received, Refusal, RunPermit, Sent, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, ThreadFate, TimerId, WaitMode, WaitOutcome,
+    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFault, MemFaultKind, NotRelinquished, ObjectId, PageSize, Parcel, Period, Priority, ProcessId, ProcessPhase, Prot, Quota,
+    Received, Refusal, Resource, RunPermit, Sent, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, ThreadFate, TimerId, WaitMode, WaitOutcome,
     WaitStart, WorkerId,
 };
 
@@ -178,6 +178,10 @@ struct Sim {
     /// 貸せる状態 (実行待ちで、停止要求が無い) のスレッドと、その状態になった操作の番号。
     since: BTreeMap<ThreadId, usize>,
     steps: usize,
+    /// 自分で設定した、プロセスへの割り当て (スレッドの数、I/O 要求の数、実体つきのバイト数)。
+    quotas: BTreeMap<ProcessId, (u32, u32, u64)>,
+    /// I/O 要求を作ったプロセス。
+    io_owner: BTreeMap<IoId, ProcessId>,
     /// 登録中の待機と、その対象。
     blocked: BTreeMap<ThreadId, Vec<ObjectId>>,
     /// 増減を数えている「消費する資源」と、あるはずの数。タイマや I/O の通知先にしたものは外す。
@@ -245,6 +249,8 @@ impl Sim {
             ranks: BTreeMap::new(),
             since: BTreeMap::new(),
             steps: 0,
+            quotas: BTreeMap::new(),
+            io_owner: BTreeMap::new(),
             blocked: BTreeMap::new(),
             counted: BTreeMap::new(),
             settled: BTreeSet::new(),
@@ -422,6 +428,26 @@ impl Sim {
             }
         }
         Ok(())
+    }
+
+    /// 自分で設定した割り当て。設定していなければ、割り当てなし。
+    fn share(&self, process: ProcessId) -> (u32, u32, u64) {
+        self.quotas.get(&process).copied().unwrap_or((u32::MAX, u32::MAX, u64::MAX))
+    }
+
+    /// 作る操作の結果が、割り当て `quota` と今の使用量 `used` (作った後の量は `after`) に合っているか。
+    fn within(&mut self, result: Result<(), Error>, over: Resource, after: u64, quota: u64, tag: &'static str) -> Result<(), String> {
+        match result {
+            Ok(()) if after > quota => Err(format!("割り当て {quota} を超える {after} を受理した ({over:?})")),
+            Err(Error::Exhausted(resource)) if resource == over && after <= quota => {
+                Err(format!("割り当て {quota} に収まる {after} を {over:?} で拒否した"))
+            }
+            Err(Error::Exhausted(resource)) if resource == over => {
+                self.reached.insert(tag);
+                Ok(())
+            }
+            Ok(()) | Err(_) => Ok(()),
+        }
     }
 
     fn rank(&self, thread: ThreadId) -> u8 {
@@ -607,7 +633,11 @@ impl Sim {
             2 => {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
                 let start = if r.below(4) == 0 { Start::Suspended } else { Start::Ready };
-                match self.k.create_thread(process, start) {
+                let live = self.threads.iter().filter(|thread| self.k.process_of(**thread) == Ok(process)).count();
+                let after = u64::try_from(live).map_err(|e| e.to_string())?.saturating_add(1);
+                let made = self.k.create_thread(process, start);
+                self.within(made.map(|_| ()), Resource::ProcessThreads, after, u64::from(self.share(process).0), "quota:threads")?;
+                match made {
                     Ok((thread, exit)) => {
                         fresh(&self.gone_threads, thread)?;
                         fresh(&self.gone_objects, exit)?;
@@ -874,9 +904,14 @@ impl Sim {
                 if let Some(notify) = notify {
                     links = links.with_notify(notify);
                 }
-                match self.k.prepare_io(process, links) {
+                let live = self.io_owner.iter().filter(|(io, owner)| **owner == process && self.k.io_phase(**io).is_ok()).count();
+                let after = u64::try_from(live).map_err(|e| e.to_string())?.saturating_add(1);
+                let made = self.k.prepare_io(process, links);
+                self.within(made.map(|_| ()), Resource::ProcessIos, after, u64::from(self.share(process).1), "quota:ios")?;
+                match made {
                     Ok(io) => {
                         self.ios.push(io);
+                        self.io_owner.insert(io, process);
                         if let Some(notify) = notify {
                             self.counted.remove(&notify);
                         }
@@ -990,6 +1025,11 @@ impl Sim {
                 let range = pages(first, count).ok_or("範囲")?;
                 let overlap = self.spaces.get(&process).is_some_and(|space| space.any(first, count));
                 let result = self.k.map(process, range, map_source, prot);
+                if source.is_some() {
+                    let used = self.spaces.get(&process).map_or(0, Pages::backed_pages);
+                    let after = used.saturating_add(count).saturating_mul(PAGE);
+                    self.within(result.map(|_| ()), Resource::MappedBytes, after, self.share(process).2, "quota:mapped")?;
+                }
                 match result {
                     Ok(_) if overlap => return Err(format!("MEM-2: 重なる範囲へのマッピングを受理した: {range:?}")),
                     Err(Error::Refused(Refusal::Overlap)) if !overlap => {
@@ -1275,6 +1315,31 @@ impl Sim {
                         Outcome::Refused(error)
                     }
                     (Err(error), Some(expected)) => return Err(format!("モデルでは {expected:?} になる受信を拒否した: {error:?}")),
+                }
+            }
+            61 if r.below(4) == 0 => {
+                let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
+                let few = |pick: u64| match pick {
+                    0 => 1,
+                    1 => 2,
+                    _ => u32::MAX,
+                };
+                let (threads, ios) = (few(r.below(3)), few(r.below(3)));
+                let mapped = match r.below(3) {
+                    0 => 2 * PAGE,
+                    1 => 4 * PAGE,
+                    _ => u64::MAX,
+                };
+                let quota = Quota::UNLIMITED.with_threads(threads).with_ios(ios).with_mapped_bytes(mapped);
+                match self.quiet(|k| k.set_quota(process, quota)) {
+                    Ok(previous) => {
+                        if (previous.threads(), previous.ios(), previous.mapped_bytes()) != self.share(process) {
+                            return Err(format!("変える前の割り当てが {previous:?}、自分で設定した値は {:?}", self.share(process)));
+                        }
+                        self.quotas.insert(process, (threads, ios, mapped));
+                        Outcome::Accepted
+                    }
+                    Err(error) => Outcome::Refused(error),
                 }
             }
             61 => {

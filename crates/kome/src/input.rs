@@ -20,7 +20,7 @@ use crate::ipc::{ChannelCreated, ChannelSpec, End, Parcel, Received, Sent};
 use crate::kernel::Kernel;
 use crate::mem::{MapGen, MapSource};
 use crate::object::{SignalOp, SignalSpec};
-use crate::process::ExitCode;
+use crate::process::{ExitCode, Quota};
 use crate::sched::{Budget, NotRelinquished, Priority, RunPermit, Stop, ThreadFate, WorkerId};
 use crate::thread::Start;
 use crate::time::{Deadline, Instant, Period};
@@ -34,6 +34,8 @@ pub enum Input<'a> {
     CreateProcess(AddrWidth, PageSize),
     /// [`Kernel::exit_process`]
     ExitProcess(ProcessId, ExitCode),
+    /// [`Kernel::set_quota`]
+    SetQuota(ProcessId, Quota),
     /// [`Kernel::create_thread`]
     CreateThread(ProcessId, Start),
     /// [`Kernel::continue_thread`]
@@ -133,6 +135,8 @@ pub enum Reply {
     Io(IoId),
     /// 実行権を貸した。実行可能なスレッドが無ければ `None`。
     Permit(Option<RunPermit>),
+    /// 変える前の割り当て。
+    Quota(Quota),
     /// 変える前の優先度。
     Priority(Priority),
     /// 実行権を受け取った後のスレッド。
@@ -174,6 +178,7 @@ impl Kernel {
                 Reply::Process(process, exit)
             }
             Input::ExitProcess(process, code) => self.exit_process(process, code).map(|()| Reply::Done)?,
+            Input::SetQuota(process, quota) => Reply::Quota(self.set_quota(process, quota)?),
             Input::CreateThread(process, start) => {
                 let (thread, exit) = self.create_thread(process, start)?;
                 Reply::Thread(thread, exit)

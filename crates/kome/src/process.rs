@@ -167,9 +167,10 @@ impl<K: Kind> Holdings<K> {
 
 impl TryClone for Process {
     fn try_clone(&self) -> Result<Process, Error> {
-        let Process { life, exit_signal, threads, objects, backings, senders, receivers, space, ios, stale_runners } = self;
+        let Process { life, quota, exit_signal, threads, objects, backings, senders, receivers, space, ios, stale_runners } = self;
         Ok(Process {
             life: *life,
+            quota: *quota,
             exit_signal: *exit_signal,
             threads: threads.try_clone()?,
             objects: objects.try_clone()?,
@@ -186,6 +187,7 @@ impl TryClone for Process {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Process {
     pub(crate) life: Life,
+    pub(crate) quota: Quota,
     pub(crate) exit_signal: ObjectId,
     pub(crate) threads: List<ThreadId>,
     pub(crate) objects: Holdings<kind::Object>,
@@ -201,7 +203,77 @@ pub(crate) struct Process {
     pub(crate) stale_runners: u32,
 }
 
+macro_rules! quota {
+    ($($(#[$doc:meta])* $name:ident / $with:ident : $ty:ty;)*) => {
+        /// 一つのプロセスへの割り当て。[`crate::Limits`] が状態全体の上限を決め、これは
+        /// その中で一つのプロセスが使える量を決める。効くのは、二つのうち小さい方である。
+        ///
+        /// 割り当てを今の使用量より小さくしても、既にあるものは取り上げない。それ以上
+        /// 増やす操作を、状態を変えずに `Exhausted` で拒否する。
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct Quota {
+            $($name: $ty,)*
+        }
+
+        impl Quota {
+            /// 割り当てなし (状態全体の上限だけが効く)。作った直後のプロセスの値。
+            pub const UNLIMITED: Quota = Quota { $($name: <$ty>::MAX,)* };
+
+            $(
+                $(#[$doc])*
+                #[must_use]
+                pub const fn $name(&self) -> $ty {
+                    self.$name
+                }
+
+                $(#[$doc])*
+                #[must_use]
+                pub const fn $with(mut self, value: $ty) -> Quota {
+                    self.$name = value;
+                    self
+                }
+            )*
+        }
+    };
+}
+
+quota! {
+    /// スレッドの数。超えると `Exhausted(ProcessThreads)`。
+    threads / with_threads: u32;
+    /// I/O 要求の数 (回収されるまで数える)。超えると `Exhausted(ProcessIos)`。
+    ios / with_ios: u32;
+    /// 参照できる資源の種類数 (待機可能な資源、実体、通信路の端のそれぞれ)。超えると `Exhausted(Holdings)`。
+    holdings / with_holdings: u32;
+    /// アドレス空間のマッピング数。超えると `Exhausted(Mappings)`。
+    mappings / with_mappings: u32;
+    /// 実体つきで対応づけているバイト数。超えると `Exhausted(MappedBytes)`。
+    mapped_bytes / with_mapped_bytes: u64;
+}
+
 impl Kernel {
+    /// プロセスへの割り当てを変える。変える前の値を返す。
+    pub fn set_quota(&mut self, process: ProcessId, quota: Quota) -> Result<Quota, Error> {
+        let entry = self.processes.find_mut(process, &self.lineage)?;
+        Ok(core::mem::replace(&mut entry.quota, quota))
+    }
+
+    /// プロセスへの割り当て。
+    pub fn quota(&self, process: ProcessId) -> Result<Quota, Error> {
+        Ok(self.processes.find(process, &self.lineage)?.quota)
+    }
+
+    /// `process` が参照できる資源の種類数: 状態全体の上限と、プロセスへの割り当ての小さい方。
+    pub(crate) fn holdings_limit(&self, process: ProcessId) -> u32 {
+        let quota = self.processes.get(process).map_or(u32::MAX, |entry| entry.quota.holdings);
+        self.limits.holdings().min(quota)
+    }
+
+    /// `process` のアドレス空間のマッピング数: 状態全体の上限と、プロセスへの割り当ての小さい方。
+    pub(crate) fn mappings_limit(&self, process: ProcessId) -> u32 {
+        let quota = self.processes.get(process).map_or(u32::MAX, |entry| entry.quota.mappings);
+        self.limits.mappings().min(quota)
+    }
+
     /// プロセスと、その終了時に数が 1 になる資源を作る。
     ///
     /// 終了通知の資源は誰にも保持されていない。待つ側のプロセスが
@@ -214,6 +286,7 @@ impl Kernel {
         let exit_signal = self.objects.insert(Object::new(SignalSpec::new(SignalMode::Keep, 0, 1), 0, 1))?;
         let process = self.processes.insert(Process {
             life: Life::Alive,
+            quota: Quota::UNLIMITED,
             exit_signal,
             threads: List::new(),
             objects: Holdings::new(),

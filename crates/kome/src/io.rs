@@ -225,6 +225,9 @@ impl Kernel {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
         let ios = owner.ios.checked_add(1).ok_or(Error::Exhausted(crate::error::Resource::Ios))?;
+        if ios > owner.quota.ios() {
+            return Err(Error::Exhausted(crate::error::Resource::ProcessIos));
+        }
         match (target, notify) {
             (Some(target), Some(notify)) if target == notify => self.can_notify(target, 2)?,
             (target, notify) => {

@@ -48,6 +48,12 @@
 kome の表は全て `Limits` で上限を持つ。上限に達した操作は、状態を変えずに
 `Exhausted(資源の種類)` を返す。
 
+一つのプロセスが使える量は、プロセスへの割り当て (`Quota`) でさらに絞れる:
+スレッドの数、I/O 要求の数、参照できる資源の種類数、マッピング数、実体つきで対応づけている
+バイト数。効くのは `Limits` と割り当ての小さい方である。割り当てを今の使用量より小さくしても、
+既にあるものは取り上げず、増やす操作だけを拒否する。値を決めるのは kome の外である。
+プロセスごとの上限を見る箇所が割り当てを通ることは、lint `process-quota` が確かめる。
+
 ### 確保の失敗
 
 確保は、失敗を返せる経路 (`store.rs` の `List`・`Queue` の `try_reserve`) だけを通る。
@@ -86,6 +92,7 @@ kome の表は全て `Limits` で上限を持つ。上限に達した操作は�
 | 確保しない操作 | 分類 |
 | --- | --- |
 | `grant`、`grant_thread`、`relinquish`、`preempt_thread`、`set_priority` | 実行権の貸し出しと返却、優先度、譲らせる要求 (スケジューリング) |
+| `set_quota` | プロセスへの割り当ての変更 |
 | `continue_thread`、`suspend_thread`、`unsuspend_thread` | スレッドの再開と停止 |
 | `signal`、`interrupt_wait`、`advance` | 起床 (通知、割り込み、期限) |
 | `issue_io`、`cancel_io`、`complete`、`publish_io` | I/O の進行と終端 |

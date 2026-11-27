@@ -3017,6 +3017,7 @@ fn a_foreign_id_is_refused_in_every_position() {
         Input::SuspendThread(ft),
         Input::UnsuspendThread(ft),
         Input::TerminateThread(ft, code),
+        Input::SetQuota(fp, Quota::UNLIMITED),
         Input::GrantThread(W0, ft),
         Input::PreemptThread(ft),
         Input::SetPriority(ft, Priority::DEFAULT),
@@ -3077,6 +3078,8 @@ fn a_foreign_id_is_refused_in_every_position() {
     assert_eq!(k.thread_count(fp), Err(Error::Foreign));
     assert_eq!(k.thread_phase(ft), Err(Error::Foreign));
     assert_eq!(k.priority(ft), Err(Error::Foreign));
+    assert_eq!(k.quota(fp), Err(Error::Foreign));
+    assert_eq!(k.mapped_bytes(fp), Err(Error::Foreign));
     assert_eq!(k.suspend_count(ft), Err(Error::Foreign));
     assert_eq!(k.process_of(ft), Err(Error::Foreign));
     assert_eq!(k.executed(ft), Err(Error::Foreign));
@@ -3358,4 +3361,75 @@ fn a_run_that_cannot_proceed_still_returns_its_permit() {
     assert_eq!(contexts.save(loaded), Err(Error::Refused(Refusal::NoContext)));
     assert!(contexts.is_empty());
     let _ = k.relinquish(permit, Stop::Trap, Budget::new(0));
+}
+
+#[test]
+fn a_quota_bounds_one_process_and_leaves_the_others_alone() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (q, _) = process(&mut k);
+    assert_eq!(k.quota(p), Ok(Quota::UNLIMITED));
+    let quota = Quota::UNLIMITED.with_threads(2).with_ios(1).with_holdings(2).with_mappings(2).with_mapped_bytes(2 * PAGE);
+    assert_eq!(ok!(k, k.set_quota(p, quota)), Quota::UNLIMITED);
+    // スレッド。
+    let (first, _) = thread(&mut k, p);
+    let (_second, _) = thread(&mut k, p);
+    let before = k.snapshot().unwrap();
+    assert_eq!(k.create_thread(p, Start::Ready), Err(Error::Exhausted(Resource::ProcessThreads)));
+    assert_eq!(k, before);
+    // I/O 要求。回収すれば、また作れる。
+    let io = ok!(k, k.prepare_io(p, IoLinks::NONE));
+    let before_io = k.snapshot().unwrap();
+    assert_eq!(k.prepare_io(p, IoLinks::NONE), Err(Error::Exhausted(Resource::ProcessIos)));
+    assert_eq!(k, before_io);
+    assert_eq!(ok!(k, k.cancel_io(io)), CancelReply::Withdrawn);
+    ok!(k, k.release_io(io));
+    let again = ok!(k, k.prepare_io(p, IoLinks::NONE));
+    assert_eq!(ok!(k, k.cancel_io(again)), CancelReply::Withdrawn);
+    ok!(k, k.release_io(again));
+    // 参照できる資源の種類数。待機可能な資源、実体、通信路の端のそれぞれに効く。
+    let b = ok!(k, k.create_backing(p, 4 * PAGE));
+    let _c = ok!(k, k.create_backing(p, PAGE));
+    assert_eq!(k.create_backing(p, PAGE), Err(Error::Exhausted(Resource::Holdings)));
+    let spec = SignalSpec::new(SignalMode::Keep, 0, 1);
+    let _o = ok!(k, k.create_object(p, spec));
+    let _o = ok!(k, k.create_object(p, spec));
+    assert_eq!(k.create_object(p, spec), Err(Error::Exhausted(Resource::Holdings)));
+    let _pipe = ok!(k, k.create_channel(p, ChannelSpec::stream(4)));
+    let _pipe = ok!(k, k.create_channel(p, ChannelSpec::stream(4)));
+    assert_eq!(k.create_channel(p, ChannelSpec::stream(4)), Err(Error::Exhausted(Resource::Holdings)));
+    // 実体つきで対応づけているバイト数。予約だけのマッピングは数えない。
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), Prot::READ));
+    assert_eq!(k.mapped_bytes(p), Ok(PAGE));
+    let before_map = k.snapshot().unwrap();
+    assert_eq!(k.map(p, range(0x4000, 2 * PAGE), backed(b, 0), Prot::READ), Err(Error::Exhausted(Resource::MappedBytes)));
+    assert_eq!(k, before_map);
+    ok!(k, k.map(p, range(0x4000, PAGE), backed(b, PAGE), Prot::READ));
+    assert_eq!(k.mapped_bytes(p), Ok(2 * PAGE));
+    // マッピング数。数えるのは項目で、既に二つある。
+    assert_eq!(k.map(p, range(0x8000, PAGE), MapSource::Reserved, Prot::NONE), Err(Error::Exhausted(Resource::Mappings)));
+    // 範囲の途中を外すと項目が増えるので、それも拒否する。端から外すのは増えない。
+    ok!(k, k.unmap(p, range(0x4000, PAGE)));
+    ok!(k, k.map(p, range(0x4000, 4 * PAGE), MapSource::Reserved, Prot::NONE));
+    assert_eq!(k.unmap(p, range(0x5000, PAGE)), Err(Error::Exhausted(Resource::Mappings)));
+    assert_eq!(k.mapped_bytes(p), Ok(PAGE));
+    // 割り当てを使用量より小さくしても、既にあるものは取り上げない。増やす操作だけを拒否する。
+    assert_eq!(ok!(k, k.set_quota(p, quota.with_threads(1).with_mapped_bytes(0))), quota);
+    assert_eq!((k.thread_count(p), k.mapped_bytes(p)), (Ok(2), Ok(PAGE)));
+    assert_eq!(k.create_thread(p, Start::Ready), Err(Error::Exhausted(Resource::ProcessThreads)));
+    ok!(k, k.terminate_thread(first, ExitCode::new(0)));
+    assert_eq!(k.create_thread(p, Start::Ready), Err(Error::Exhausted(Resource::ProcessThreads)));
+    // 割り当ては他のプロセスに効かない。全体の上限は、割り当てを大きくしても超えられない。
+    for _ in 0..3 {
+        let _ = thread(&mut k, q);
+        let _ = ok!(k, k.create_object(q, spec));
+    }
+    let mut small = kernel_with(Limits::DEFAULT.with_holdings(1));
+    let (only, _) = process(&mut small);
+    ok!(small, small.set_quota(only, Quota::UNLIMITED.with_holdings(9)));
+    let _ = ok!(small, small.create_object(only, spec));
+    assert_eq!(small.create_object(only, spec), Err(Error::Exhausted(Resource::Holdings)));
+    // 写しから復元した状態も、同じ割り当てを持つ。
+    let copy = k.snapshot().unwrap().restore(InstanceId::new(2)).unwrap();
+    assert_eq!(copy.quota(p), Ok(quota.with_threads(1).with_mapped_bytes(0)));
 }

@@ -104,7 +104,7 @@ fn the_generator_reaches_every_effect() {
 fn the_generator_reaches_every_channel_outcome() {
     let mut reached = BTreeSet::new();
     for seed in 0..200 {
-        reached.extend(drive(&noise(seed, 3000)).unwrap().reached.into_iter().filter(|tag| !tag.starts_with("run:")));
+        reached.extend(drive(&noise(seed, 3000)).unwrap().reached.into_iter().filter(|tag| !tag.contains(':')));
     }
     let all = [
         "sent",
@@ -148,6 +148,17 @@ fn the_generator_reaches_every_scheduling_outcome() {
         "run:preempted",
     ];
     assert_eq!(reached, BTreeSet::from(all));
+}
+
+/// プロセスへの割り当てが空回りしていないこと: 三つの割り当てのそれぞれで、超える操作の拒否に到達する。
+/// 拒否と受理が割り当てどおりであることは、操作のたびに確かめている。
+#[test]
+fn the_generator_reaches_every_quota() {
+    let mut reached = BTreeSet::new();
+    for seed in 0..200 {
+        reached.extend(drive(&noise(seed, 3000)).unwrap().reached.into_iter().filter(|tag| tag.starts_with("quota:")));
+    }
+    assert_eq!(reached, BTreeSet::from(["quota:threads", "quota:ios", "quota:mapped"]));
 }
 
 #[test]

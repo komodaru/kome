@@ -94,7 +94,7 @@ impl Kernel {
         if spec.max == 0 || spec.initial > spec.max {
             return Err(Error::Refused(Refusal::BadSignalSpec));
         }
-        let limit = self.limits.holdings();
+        let limit = self.holdings_limit(process);
         let owner = self.processes.find_mut(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
@@ -110,7 +110,7 @@ impl Kernel {
 
     /// `process` の保持を一つ増やす。
     pub fn retain_object(&mut self, process: ProcessId, object: ObjectId) -> Result<(), Error> {
-        let limit = self.limits.holdings();
+        let limit = self.holdings_limit(process);
         let handles = self.objects.find(object, &self.lineage)?.handles;
         let handles = handles.checked_add(1).ok_or(Error::Refused(Refusal::HoldOverflow))?;
         let owner = self.processes.find_mut(process, &self.lineage)?;

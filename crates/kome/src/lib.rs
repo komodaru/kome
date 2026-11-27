@@ -66,7 +66,7 @@ pub use kernel::{Census, InstanceId, Kernel, Snapshot};
 pub use limits::Limits;
 pub use mem::{MapGen, MapSource, MappingInfo, MemFault, MemFaultKind, Span};
 pub use object::{SignalMode, SignalOp, SignalSpec};
-pub use process::{ExitCode, ProcessCreated, ProcessPhase};
+pub use process::{ExitCode, ProcessCreated, ProcessPhase, Quota};
 pub use sched::{NotRelinquished, Budget, Priority, RunGen, RunPermit, Stop, ThreadFate, WorkerId};
 pub use thread::{Start, ThreadCreated, ThreadPhase};
 pub use time::{Deadline, Duration, Instant, Period};

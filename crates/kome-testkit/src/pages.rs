@@ -107,6 +107,12 @@ impl Pages {
         self.pages.range(first..first.saturating_add(count)).next().is_some()
     }
 
+    /// 実体のあるページの数。
+    #[must_use]
+    pub fn backed_pages(&self) -> u64 {
+        self.pages.values().filter(|page| matches!(page, Page::Backed { .. })).fold(0u64, |count, _| count.saturating_add(1))
+    }
+
     /// 範囲のすべてが実体のあるページか。
     #[must_use]
     pub fn all_backed(&self, first: u64, count: u64) -> bool {

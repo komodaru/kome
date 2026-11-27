@@ -148,6 +148,12 @@ pub enum Resource {
     Identifiers,
     /// ホストのメモリ (確保が失敗した)。
     HostMemory,
+    /// 一つのプロセスのスレッドの数 ([`crate::Quota`])。
+    ProcessThreads,
+    /// 一つのプロセスの I/O 要求の数 ([`crate::Quota`])。
+    ProcessIos,
+    /// 一つのプロセスが実体つきで対応づけているバイト数 ([`crate::Quota`])。
+    MappedBytes,
 }
 
 /// 台帳 (`docs/invariants.toml`) に載る不変条件。

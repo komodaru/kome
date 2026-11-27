@@ -10,7 +10,7 @@
 //! TEB・TLS の配置、APC、signal、例外の規則は Personality が持つ。
 
 use crate::effect::Effect;
-use crate::error::{Error, Invariant, Refusal};
+use crate::error::{Error, Invariant, Refusal, Resource};
 use crate::id::{ObjectId, ProcessId, ThreadId};
 use crate::kernel::Kernel;
 use crate::object::{Object, SignalMode, SignalSpec};
@@ -111,6 +111,9 @@ impl Kernel {
         let owner = self.processes.find_mut(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
+        }
+        if u64::try_from(owner.threads.len()).unwrap_or(u64::MAX) >= u64::from(owner.quota.threads()) {
+            return Err(Error::Exhausted(Resource::ProcessThreads));
         }
         owner.threads.reserve(1)?;
         self.threads.reserve()?;

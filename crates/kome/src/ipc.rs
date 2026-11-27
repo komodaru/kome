@@ -255,7 +255,7 @@ impl Kernel {
             .checked_add(capacity)
             .filter(|total| *total <= self.limits.channel_bytes())
             .ok_or(Error::Exhausted(Resource::ChannelBytes))?;
-        let limit = self.limits.holdings();
+        let limit = self.holdings_limit(process);
         let owner = self.processes.find_mut(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
@@ -291,7 +291,7 @@ impl Kernel {
 
     /// `process` の、`end` の保持を一つ増やす。保持が無くなった端は増やせない。
     pub fn retain_channel(&mut self, process: ProcessId, channel: ChannelId, end: End) -> Result<(), Error> {
-        let limit = self.limits.holdings();
+        let limit = self.holdings_limit(process);
         let entry = self.channels.find(channel, &self.lineage)?;
         let held = match end {
             End::Send => entry.senders,
@@ -499,7 +499,7 @@ impl Kernel {
 
     /// 運ばれている保持を `process` へ渡す。失敗したら何も変えない。
     fn parcel_arrive(&mut self, process: ProcessId, parcel: Parcel) -> Result<(), Error> {
-        let limit = self.limits.holdings();
+        let limit = self.holdings_limit(process);
         match parcel {
             Parcel::Object(object) => {
                 let handles = self.objects.get(object).ok_or(Error::Broken(Invariant::ChannelKept))?.handles;
