@@ -9,3 +9,11 @@ WaitRaceSplitCheck.cfg	WaitRace	NoLostWake
 WaitRacePartialAll.cfg	WaitRace	AllOrNothing
 WaitRaceLateTimeout.cfg	WaitRace	OneOutcome
 WaitRaceReach.cfg	WaitRace	ReachAllWokenBySignal
+ProcessExit.cfg	ProcessExit	ok
+ProcessExitFinishWhileRunning.cfg	ProcessExit	NoExitWhileRunning
+ProcessExitKeepReady.cfg	ProcessExit	NoGrantAfterExit
+ProcessExitKeepHandles.cfg	ProcessExit	ReleasedAtExit
+ProcessExitReclaimWithIo.cfg	ProcessExit	NoReclaimInFlight
+ProcessExitTwice.cfg	ProcessExit	ExitsOnce
+ProcessExitNoInterrupt.cfg	ProcessExit	KilledAreInterrupted
+ProcessExitReach.cfg	ProcessExit	ReachDrained

@@ -25,7 +25,7 @@
 | `docs/invariants.toml` | 不変条件の台帳: 検査・試験・証明・モデルとの対応 |
 | `docs/proofs.tsv` | Kani の証明ごとの検証条件と範囲 |
 | `checks/noalloc` | 確保しないと約束した操作が確保しないことを、確保を数えて確かめる |
-| `tla/` | TLA+ のモデル (I/O の寿命、待機と通知の競合)。遷移の表は実装から生成する |
+| `tla/` | TLA+ のモデル (I/O の寿命、待機と通知の競合、プロセスの終了処理)。遷移の表は実装から生成する |
 | `fuzz/` | libFuzzer の入口 (property test と同じ `kome_testkit::drive`) |
 
 ## 確かめ方

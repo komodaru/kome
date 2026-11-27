@@ -168,6 +168,9 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("tla/IoLifecycle.tla", |text| text.replace("EXTENDS IoTable, ", "EXTENDS ")),
             |repo| repo.edit(EXPECT, |text| text.lines().filter(|line| line.ends_with("\tok") || line.starts_with("IoLifecycle")).map(|line| format!("{line}\n")).collect()),
             |repo| repo.append("tla/WaitRace.tla", "WaitDecide == <<>>"),
+            |repo| repo.edit("tla/ProcessExit.tla", |text| text.replace("EXTENDS ExitTable, ", "EXTENDS ")),
+            |repo| repo.append("tla/ProcessExit.tla", "ExitFinish == <<>>"),
+            |repo| repo.edit(EXPECT, |text| text.replace("ProcessExitKeepHandles.cfg\tProcessExit\tReleasedAtExit\n", "")),
         ],
     },
     Rule {
@@ -794,7 +797,15 @@ fn tla_listed(repo: &Repo, report: &mut Report) {
             report.add_at(repo, EXPECT, module, format!("{module}: 違反なしの設定と、反例の出る変種の両方が要る"));
         }
     }
-    for (model, table, relation) in [("IoLifecycle", "IoTable", "IoStep"), ("WaitRace", "WaitTable", "WaitDecide")] {
+    let generated = [
+        ("IoLifecycle", "IoTable", "IoStep"),
+        ("WaitRace", "WaitTable", "WaitDecide"),
+        ("ProcessExit", "IoTable", "IoStep"),
+        ("ProcessExit", "ExitTable", "ExitThread"),
+        ("ProcessExit", "ExitTable", "ExitFinish"),
+        ("ProcessExit", "ExitTable", "ExitComplete"),
+    ];
+    for (model, table, relation) in generated {
         let path = format!("tla/{model}.tla");
         let text = repo.text(&path);
         let extends = text.lines().any(|line| line.starts_with("EXTENDS") && line.contains(table));

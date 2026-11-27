@@ -1304,6 +1304,235 @@ fn the_tla_wait_table_is_the_kernel() {
     assert_eq!(on_disk, table, "tla/WaitTable.tla がカーネルと違う。KOME_UPDATE_GOLDEN=1 で書き直す");
 }
 
+// ---- 終了処理の表 (tla/ExitTable.tla) ----
+
+const EXIT_RUNS: [&str; 4] = ["Ready", "Running", "Servicing", "Blocked"];
+const EXIT_IOS: [&str; 6] = ["None", "Prepared", "Issued", "CancelRequested", "Settled", "Published"];
+
+fn phase_name(k: &Kernel, thread: ThreadId) -> &'static str {
+    match k.thread_phase(thread) {
+        Ok(ThreadPhase::Ready) => "Ready",
+        Ok(ThreadPhase::Running) => "Running",
+        Ok(ThreadPhase::Servicing) => "Servicing",
+        Ok(ThreadPhase::Blocked) => "Blocked",
+        Err(Error::Stale(_)) => "Gone",
+        Err(other) => panic!("スレッドの状態を読めない: {other:?}"),
+    }
+}
+
+fn life_name(k: &Kernel, process: ProcessId) -> &'static str {
+    match k.process_phase(process) {
+        Ok(ProcessPhase::Alive) => "Alive",
+        Ok(ProcessPhase::Exiting) => "Exiting",
+        Ok(ProcessPhase::Draining) => "Draining",
+        Err(Error::Stale(_)) => "Reclaimed",
+        Err(other) => panic!("プロセスの状態を読めない: {other:?}"),
+    }
+}
+
+fn io_name(k: &Kernel, io: Option<IoId>) -> &'static str {
+    match io.map(|io| k.io_phase(io)) {
+        None => "None",
+        Some(Ok(IoPhase::Prepared)) => "Prepared",
+        Some(Ok(IoPhase::Issued)) => "Issued",
+        Some(Ok(IoPhase::CancelRequested)) => "CancelRequested",
+        Some(Ok(IoPhase::Settled)) => "Settled",
+        Some(Ok(IoPhase::Published)) => "Published",
+        Some(Err(Error::Stale(_))) => "Gone",
+        Some(Err(other)) => panic!("I/O の状態を読めない: {other:?}"),
+    }
+}
+
+/// プロセス `p` に、指定した進行状態の I/O を一つ作る。
+fn io_in(k: &mut Kernel, p: ProcessId, state: &str) -> Option<IoId> {
+    if state == "None" {
+        return None;
+    }
+    let io = ok!(k, k.prepare_io(p, IoLinks::NONE));
+    let done = Completion::new(k.instance(), CompletionKind::Io { io, outcome: DONE });
+    if state != "Prepared" {
+        ok!(k, k.issue_io(io));
+    }
+    if state == "CancelRequested" {
+        assert_eq!(ok!(k, k.cancel_io(io)), CancelReply::Requested);
+    }
+    if state == "Settled" || state == "Published" {
+        ok!(k, k.complete(done));
+    }
+    if state == "Published" {
+        ok!(k, k.publish_io(io));
+    }
+    assert_eq!(io_name(k, Some(io)), state);
+    Some(io)
+}
+
+/// スレッド二つのプロセス。一つ目は指定した状態、二つ目は worker 1 で実行中のまま残す。
+struct Pair {
+    k: Kernel,
+    p: ProcessId,
+    first: ThreadId,
+    /// 一つ目が実行中なら、その実行権。
+    permit: Option<RunPermit>,
+    /// 二つ目の実行権。
+    anchor: RunPermit,
+}
+
+fn pair(run: &str) -> Pair {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (first, _) = thread(&mut k, p);
+    let _ = thread(&mut k, p);
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    let anchor = ok!(k, k.grant(W1)).unwrap();
+    assert_eq!(permit.thread(), first);
+    let permit = match run {
+        "Running" => Some(permit),
+        "Ready" => {
+            assert_eq!(ok!(k, k.relinquish(permit, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+            None
+        }
+        "Servicing" | "Blocked" => {
+            assert_eq!(ok!(k, k.relinquish(permit, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+            if run == "Blocked" {
+                let gate = event(&mut k, p);
+                let started = k.wait(first, &[gate], WaitMode::Any, Deadline::Never, Interruptible::No);
+                assert_eq!(ok!(k, started), WaitStart::Blocked);
+            }
+            None
+        }
+        other => panic!("知らない状態: {other}"),
+    };
+    assert_eq!(phase_name(&k, first), run);
+    drain(&mut k);
+    Pair { k, p, first, permit, anchor }
+}
+
+fn tla_exit_table() -> String {
+    let code = ExitCode::new(5);
+    let interrupts = |effects: &[Effect], thread: ThreadId| {
+        effects.iter().any(|effect| matches!(effect, Effect::Interrupt { thread: of, .. } if *of == thread))
+    };
+    // 終了の要求が、状態ごとのスレッドに何をするか。もう一つのスレッドが実行中なので、
+    // プロセスは終了の途中に留まる。
+    let mut threads = Vec::new();
+    for request in ["ExitProcess", "Terminate"] {
+        for run in EXIT_RUNS {
+            let mut w = pair(run);
+            match request {
+                "ExitProcess" => ok!(w.k, w.k.exit_process(w.p, code)),
+                _ => ok!(w.k, w.k.terminate_thread(w.first, code)),
+            }
+            let effects = drain(&mut w.k);
+            let after = phase_name(&w.k, w.first);
+            let asked = interrupts(&effects, w.first);
+            let life = life_name(&w.k, w.p);
+            assert_eq!(life, if request == "ExitProcess" { "Exiting" } else { "Alive" });
+            threads.push(format!("    (<<\"{request}\", \"{run}\">> :> <<\"{after}\", {}>>)", if asked { "TRUE" } else { "FALSE" }));
+            // 終了を求められた実行中のスレッドは、どの理由で実行権を返しても終了する。
+            if let Some(permit) = w.permit.take() {
+                for stop in [Stop::Preempted, Stop::Trapped] {
+                    let mut again = pair(run);
+                    match request {
+                        "ExitProcess" => ok!(again.k, again.k.exit_process(again.p, code)),
+                        _ => ok!(again.k, again.k.terminate_thread(again.first, code)),
+                    }
+                    let held = again.permit.take().unwrap();
+                    assert_eq!(ok!(again.k, again.k.relinquish(held, stop, Budget::new(1))), ThreadFate::Exited(code));
+                    assert_eq!(phase_name(&again.k, again.first), "Gone");
+                    let _ = again.k.relinquish(again.anchor, Stop::Trapped, Budget::new(1));
+                }
+                assert_eq!(ok!(w.k, w.k.relinquish(permit, Stop::Trapped, Budget::new(1))), ThreadFate::Exited(code));
+            }
+            let _ = w.k.relinquish(w.anchor, Stop::Trapped, Budget::new(1));
+        }
+    }
+    // 最後のスレッドが止まったときに、I/O の状態ごとにプロセスと I/O がどうなるか。
+    // 終了の要求の時点で止まっていた場合と、実行中のスレッドが後から戻った場合で同じになる。
+    let mut finishes = Vec::new();
+    let mut completes = Vec::new();
+    for state in EXIT_IOS {
+        let finish = |running: bool| {
+            let mut k = kernel();
+            let (p, _) = process(&mut k);
+            let (t, _) = thread(&mut k, p);
+            let held = event(&mut k, p);
+            let permit = ok!(k, k.grant(W0)).unwrap();
+            assert_eq!(permit.thread(), t);
+            let io = io_in(&mut k, p, state);
+            drain(&mut k);
+            let permit = if running {
+                Some(permit)
+            } else {
+                assert_eq!(ok!(k, k.relinquish(permit, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+                None
+            };
+            ok!(k, k.exit_process(p, code));
+            if let Some(permit) = permit {
+                // 実行中のスレッドが残る間は、何も手放さない。
+                assert_eq!((life_name(&k, p), io_name(&k, io)), ("Exiting", state));
+                assert!(k.signal_count(held).is_ok());
+                assert_eq!(k.exit_process(p, code), Err(Error::Refused(Refusal::ProcessExiting)));
+                assert_eq!(ok!(k, k.relinquish(permit, Stop::Preempted, Budget::new(1))), ThreadFate::Exited(code));
+            }
+            let effects = drain(&mut k);
+            let cancels = effects.iter().any(|effect| matches!(effect, Effect::IoCancel { .. }));
+            let exited = effects.iter().filter(|effect| matches!(effect, Effect::ProcessExited { .. })).count();
+            // 終了の通知は一度だけで、プロセスが持っていた参照はその時点で全て手放している。
+            assert_eq!(exited, 1);
+            assert_eq!(k.signal_count(held), Err(Error::Stale(Tag::Object)));
+            (k, p, io, cancels)
+        };
+        let (mut k, p, io, cancels) = finish(false);
+        let (later, later_p, later_io, later_cancels) = finish(true);
+        let row = (life_name(&k, p), io_name(&k, io), cancels);
+        assert_eq!(row, (life_name(&later, later_p), io_name(&later, later_io), later_cancels), "{state}");
+        let cancels = if row.2 { "TRUE" } else { "FALSE" };
+        finishes.push(format!("    (\"{state}\" :> <<\"{}\", \"{}\", {cancels}>>)", row.0, row.1));
+        // 終了の通知の後に届いた完了通知。
+        if let (Some(io), "Draining") = (io, row.0) {
+            let waiting = row.1;
+            let done = Completion::new(k.instance(), CompletionKind::Io { io, outcome: DONE });
+            assert_eq!(k.exit_process(p, code), Err(Error::Refused(Refusal::ProcessExiting)));
+            ok!(k, k.complete(done));
+            let effects = drain(&mut k);
+            assert_eq!(effects, vec![Effect::ProcessReclaimed { process: p }]);
+            completes.push(format!("    (\"{waiting}\" :> <<\"{}\", \"{}\">>)", life_name(&k, p), io_name(&k, Some(io))));
+        }
+    }
+    completes.sort();
+    completes.dedup();
+    format!(
+        "----------------------------- MODULE ExitTable -----------------------------\n\
+         (* crates/kome の Kernel を実際に動かして生成した。手で書き換えない。\n\
+         \x20  書き直す: KOME_UPDATE_GOLDEN=1 cargo test -p kome the_tla_exit_table_is_the_kernel *)\n\
+         EXTENDS TLC\n\n\
+         \\* (終了の要求, スレッドの状態) から (要求の直後の状態, 中断を要求したか) への表。\n\
+         \\* 実行中のスレッドは、実行権を返したときに終了する。\n\
+         ExitThread ==\n{}\n\n\
+         \\* 最後のスレッドが止まったとき: I/O の状態から (プロセスの段階, I/O の状態, 取消を要求したか) への表。\n\
+         \\* プロセスが持っていた参照は、このとき全て手放す。終了の通知はこのとき一度だけ出す。\n\
+         ExitFinish ==\n{}\n\n\
+         \\* 終了の通知の後に完了通知が届いたとき: I/O の状態から (プロセスの段階, I/O の状態) への表。\n\
+         ExitComplete ==\n{}\n\
+         =============================================================================\n",
+        threads.join(" @@\n"),
+        finishes.join(" @@\n"),
+        completes.join(" @@\n")
+    )
+}
+
+/// TLA+ のモデル (tla/ProcessExit.tla) が使う表は、このカーネルの動きそのものである。
+#[test]
+fn the_tla_exit_table_is_the_kernel() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tla/ExitTable.tla");
+    let table = tla_exit_table();
+    if std::env::var("KOME_UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty()) {
+        std::fs::write(path, &table).unwrap();
+    }
+    let on_disk = std::fs::read_to_string(path).unwrap_or_default();
+    assert_eq!(on_disk, table, "tla/ExitTable.tla がカーネルと違う。KOME_UPDATE_GOLDEN=1 で書き直す");
+}
+
 // ---- 検査の文言ごとの壊し方 ----
 
 fn thread_mut(k: &mut Kernel, thread: ThreadId) -> &mut crate::thread::Thread {

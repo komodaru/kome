@@ -242,12 +242,20 @@ tests = [
     "crates/kome/src/tests.rs::process_is_created_run_exited_and_reclaimed",
     "crates/kome/src/tests.rs::exit_process_waits_for_running_threads_to_stop",
     "crates/kome/src/tests.rs::process_exit_drains_in_flight_io_before_reclaim",
+    "crates/kome/src/tests.rs::the_tla_exit_table_is_the_kernel",
     "crates/kome-testkit/tests/headless.rs::process_exit_during_a_read_drains_before_reclaim",
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
 ]
 proofs = []
-models = []
-scope = "終了は、実行中のスレッドが戻り、応答待ちの I/O が終端するまで回収を待つ。親子関係とジョブは Personality が上に作る。"
+models = [
+    "ProcessExit:NoExitWhileRunning",
+    "ProcessExit:NoGrantAfterExit",
+    "ProcessExit:ReleasedAtExit",
+    "ProcessExit:ExitsOnce",
+    "ProcessExit:NoReclaimInFlight",
+    "ProcessExit:KilledAreInterrupted",
+]
+scope = "モデルはスレッド 3 つ、I/O 一つ、参照一つのプロセス一つ。終了は、実行中のスレッドが戻り、応答待ちの I/O が終端するまで回収を待つ。親子関係とジョブは Personality が上に作る。"
 
 [[invariant]]
 id = "ERR-1"
