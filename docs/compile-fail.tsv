@@ -4,3 +4,4 @@ crates/kome/src/id.rs	2
 crates/kome/src/kernel.rs	2
 crates/kome/src/sched.rs	3
 crates/kome/src/time.rs	2
+crates/kome/src/exec.rs	1

@@ -7,8 +7,8 @@ use std::num::NonZeroU32;
 use kome::{
     Access, AddrWidth, BackingId, BackingOffset, Budget, CancelReply, ChannelId, ChannelSpec, Completion, CompletionKind,
     Deadline, Duration, Effect, End, Error, ExitCode, GuestAddr, GuestRange, HostError, InstanceId, Instant, Interruptible, IoId, IoLinks,
-    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFaultKind, NotRelinquished, ObjectId, PageSize, Parcel, Period, ProcessId, ProcessPhase, Prot,
-    Received, Refusal, RunPermit, Sent, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, TimerId, WaitMode, WaitOutcome,
+    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFault, MemFaultKind, NotRelinquished, ObjectId, PageSize, Parcel, Period, Priority, ProcessId, ProcessPhase, Prot,
+    Received, Refusal, RunPermit, Sent, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, ThreadFate, TimerId, WaitMode, WaitOutcome,
     WaitStart, WorkerId,
 };
 
@@ -132,6 +132,8 @@ struct Held {
     backings: BTreeSet<BackingId>,
     /// 貸した後に、そのプロセスで権限を減らす変更があったか。
     stale: bool,
+    /// この実行へ中断が要求されたか。
+    interrupted: bool,
 }
 
 /// 操作の結果: 受理、拒否、または選ぶ相手が無くて何もしなかった。
@@ -171,6 +173,11 @@ struct Sim {
     /// 生きている通信路の独立したモデルと、その通知の資源 (読める、書ける)。
     pipes: BTreeMap<ChannelId, (Pipe<ProcessId, Parcel>, ObjectId, ObjectId)>,
     held: Vec<Held>,
+    /// 自分で設定した優先度。設定していないスレッドは既定の値。
+    ranks: BTreeMap<ThreadId, u8>,
+    /// 貸せる状態 (実行待ちで、停止要求が無い) のスレッドと、その状態になった操作の番号。
+    since: BTreeMap<ThreadId, usize>,
+    steps: usize,
     /// 登録中の待機と、その対象。
     blocked: BTreeMap<ThreadId, Vec<ObjectId>>,
     /// 増減を数えている「消費する資源」と、あるはずの数。タイマや I/O の通知先にしたものは外す。
@@ -235,6 +242,9 @@ impl Sim {
             channels: Vec::new(),
             pipes: BTreeMap::new(),
             held: Vec::new(),
+            ranks: BTreeMap::new(),
+            since: BTreeMap::new(),
+            steps: 0,
             blocked: BTreeMap::new(),
             counted: BTreeMap::new(),
             settled: BTreeSet::new(),
@@ -293,11 +303,13 @@ impl Sim {
             Effect::Interrupt { worker, thread, run } => {
                 let known = self
                     .held
-                    .iter()
-                    .any(|held| held.permit.worker() == worker && held.permit.thread() == thread && held.permit.run() == run);
-                if !known {
-                    return Err(format!("貸していない実行への中断: {effect:?}"));
+                    .iter_mut()
+                    .find(|held| held.permit.worker() == worker && held.permit.thread() == thread && held.permit.run() == run);
+                let Some(held) = known else { return Err(format!("貸していない実行への中断: {effect:?}")) };
+                if held.interrupted {
+                    return Err(format!("RUN-1: 一度の実行へ中断を二度要求した: {effect:?}"));
                 }
+                held.interrupted = true;
             }
             Effect::WaitDone { thread, outcome } => {
                 let targets =
@@ -409,6 +421,66 @@ impl Sim {
                 return Err(format!("{object:?} の数が {actual:?}、増減の合計は {expected}"));
             }
         }
+        Ok(())
+    }
+
+    fn rank(&self, thread: ThreadId) -> u8 {
+        self.ranks.get(&thread).copied().unwrap_or(Priority::DEFAULT.get())
+    }
+
+    /// 古い世代の実行が残っていないプロセスのスレッドか (残っていれば貸せない)。
+    fn open(&self, thread: ThreadId) -> bool {
+        self.k.process_of(thread).is_ok_and(|process| !self.held.iter().any(|held| held.permit.process() == process && held.stale))
+    }
+
+    /// 貸せる状態のスレッドの記録を、今の状態に合わせる。新しく貸せる状態になったものには、今の操作の番号を付ける。
+    fn note_ready(&mut self) {
+        for thread in &self.threads {
+            let ready = self.k.thread_phase(*thread) == Ok(ThreadPhase::Ready) && self.k.suspend_count(*thread) == Ok(0);
+            if ready {
+                self.since.entry(*thread).or_insert(self.steps);
+            } else {
+                self.since.remove(thread);
+            }
+        }
+    }
+
+    /// 貸された実行権を確かめて記録する。`named` は、スレッドを名指しして借りたか。
+    fn lent(&mut self, permit: RunPermit, named: bool) -> Result<(), String> {
+        let (process, picked) = (permit.process(), permit.thread());
+        for held in &self.held {
+            if held.permit.thread() == picked || held.permit.worker() == permit.worker() {
+                return Err(format!("RUN-1: 実行権が重複した: {permit:?}"));
+            }
+            if held.permit.process() == process && held.stale {
+                return Err(format!("MEM-3: 古い世代の実行が残るプロセスへ貸した: {permit:?}"));
+            }
+        }
+        if permit.instance() != self.k.instance() || Ok(permit.map()) != self.k.map_generation(process) {
+            return Err(format!("実行権の内容が状態と一致しない: {permit:?}"));
+        }
+        let Some(mine) = self.since.get(&picked).copied() else {
+            return Err(format!("RUN-2: 貸せる状態でないスレッドへ貸した: {permit:?}"));
+        };
+        if !named {
+            // 貸す順序: 優先度が最も高いものの中で、最も先に貸せる状態になったもの。
+            for (other, theirs) in &self.since {
+                if *other == picked || !self.open(*other) {
+                    continue;
+                }
+                if self.rank(*other) > self.rank(picked) {
+                    return Err(format!("RUN-2: 優先度の高い {other:?} を飛ばして {picked:?} へ貸した"));
+                }
+                if self.rank(*other) == self.rank(picked) && *theirs < mine {
+                    return Err(format!("RUN-2: 先に実行待ちになった {other:?} を飛ばして {picked:?} へ貸した"));
+                }
+                if self.rank(*other) < self.rank(picked) && *theirs < mine {
+                    self.reached.insert("run:outranked");
+                }
+            }
+        }
+        let backings = self.spaces.get(&process).map(|space| space.backings().collect()).unwrap_or_default();
+        self.held.push(Held { permit, backings, stale: false, interrupted: false });
         Ok(())
     }
 
@@ -569,23 +641,15 @@ impl Sim {
                 let worker = WorkerId::new(u32::try_from(r.below(u64::from(WORKERS))).map_err(|e| e.to_string())?);
                 match self.quiet(|k| k.grant(worker)) {
                     Ok(Some(permit)) => {
-                        let process = permit.process();
-                        for held in &self.held {
-                            if held.permit.thread() == permit.thread() || held.permit.worker() == permit.worker() {
-                                return Err(format!("RUN-1: 実行権が重複した: {permit:?}"));
-                            }
-                            if held.permit.process() == process && held.stale {
-                                return Err(format!("MEM-3: 古い世代の実行が残るプロセスへ貸した: {permit:?}"));
-                            }
-                        }
-                        if permit.instance() != self.k.instance() || Ok(permit.map()) != self.k.map_generation(process) {
-                            return Err(format!("実行権の内容が状態と一致しない: {permit:?}"));
-                        }
-                        let backings = self.spaces.get(&process).map(|space| space.backings().collect()).unwrap_or_default();
-                        self.held.push(Held { permit, backings, stale: false });
+                        self.lent(permit, false)?;
                         Outcome::Accepted
                     }
-                    Ok(None) => Outcome::Accepted,
+                    Ok(None) => {
+                        if let Some(idle) = self.since.keys().find(|thread| self.open(**thread)) {
+                            return Err(format!("RUN-2: 貸せるスレッド {idle:?} があるのに貸さなかった"));
+                        }
+                        Outcome::Accepted
+                    }
                     Err(error) => Outcome::Refused(error),
                 }
             }
@@ -596,8 +660,22 @@ impl Sim {
                 let at = usize::try_from(r.below(u64::try_from(self.held.len()).map_err(|e| e.to_string())?))
                     .map_err(|e| e.to_string())?;
                 let held = self.held.remove(at);
-                let stop = if r.flag() { Stop::Trapped } else { Stop::Preempted };
-                let consumed = Budget::new(u64::from(r.byte()));
+                let fault = MemFault::new(GuestAddr::new(u64::from(r.byte())), MemFaultKind::Unmapped);
+                let (stop, tag) = match r.below(8) {
+                    0 | 1 => (Stop::Trap, "run:trap"),
+                    2 => (Stop::Yielded, "run:yielded"),
+                    3 | 4 => (Stop::BudgetExhausted, "run:budget"),
+                    5 => (Stop::Interrupted, "run:interrupted"),
+                    6 => (Stop::Fault(fault), "run:fault"),
+                    _ => (Stop::Exited(ExitCode::new(u64::from(r.byte()))), "run:exited"),
+                };
+                let consumed = Budget::new(u64::from(r.byte() & 0x1f));
+                // 状況と合わない理由は、実行権を消費せずに拒否される。
+                let mismatch = match stop {
+                    Stop::BudgetExhausted if consumed < limits().quantum() => Some((Refusal::BudgetRemains, "run:budget-remains")),
+                    Stop::Interrupted if !held.interrupted => Some((Refusal::NotInterrupted, "run:not-interrupted")),
+                    Stop::BudgetExhausted | Stop::Yielded | Stop::Interrupted | Stop::Trap | Stop::Fault(_) | Stop::Exited(_) => None,
+                };
                 // 届け先を間違えても実行権は失われない: 別の実行インスタンスは受け取らずに返す。
                 let mut stranger = Kernel::new(InstanceId::new(u64::MAX), Limits::DEFAULT.with_effects(1))
                     .map_err(|error| format!("別の実行インスタンスを作れない: {error:?}"))?;
@@ -605,9 +683,30 @@ impl Sim {
                     Err(NotRelinquished::Rejected(permit, Error::Foreign)) => permit,
                     other => return Err(format!("RUN-1: 別の実行インスタンスが実行権を受理した、または返さなかった: {other:?}")),
                 };
-                match self.quiet(|k| k.relinquish(permit, stop, consumed)) {
-                    Ok(_) => Outcome::Accepted,
-                    Err(error) => return Err(format!("RUN-1: 正当な実行権が拒否された: {error:?}")),
+                let (permit, stop) = match (self.quiet(|k| k.relinquish(permit, stop, consumed)), mismatch) {
+                    (Err(NotRelinquished::Rejected(permit, Error::Refused(refusal))), Some((expected, tag))) if refusal == expected => {
+                        self.reached.insert(tag);
+                        (Some(permit), Stop::Trap)
+                    }
+                    (Ok(fate), None) => {
+                        let fits = match (fate, stop) {
+                            // 実行中に受けた終了要求は、どの理由よりも先に効く。
+                            (ThreadFate::Exited(_), _) => true,
+                            (ThreadFate::Ready, Stop::BudgetExhausted | Stop::Yielded | Stop::Interrupted) => true,
+                            (ThreadFate::Servicing, Stop::Trap | Stop::Fault(_)) => true,
+                            (ThreadFate::Ready | ThreadFate::Servicing, _) => false,
+                        };
+                        if !fits {
+                            return Err(format!("RUN-1: 理由 {stop:?} で返したスレッドが {fate:?} になった"));
+                        }
+                        self.reached.insert(tag);
+                        (None, stop)
+                    }
+                    (result, mismatch) => return Err(format!("RUN-1: 理由 {stop:?} の返却が {result:?}、見込みは {mismatch:?}")),
+                };
+                match permit.map(|permit| self.quiet(|k| k.relinquish(permit, stop, consumed))) {
+                    Some(Ok(ThreadFate::Servicing | ThreadFate::Exited(_))) | None => Outcome::Accepted,
+                    Some(other) => return Err(format!("RUN-1: 拒否された後の正当な返却が {other:?}")),
                 }
             }
             11 => {
@@ -1178,6 +1277,55 @@ impl Sim {
                     (Err(error), Some(expected)) => return Err(format!("モデルでは {expected:?} になる受信を拒否した: {error:?}")),
                 }
             }
+            61 => {
+                let Some(thread) = r.prefer(&self.threads, |thread| self.k.thread_phase(*thread).is_ok()) else { return Ok(Outcome::Skipped) };
+                let level = match r.below(3) {
+                    0 => 100,
+                    1 => Priority::DEFAULT.get(),
+                    _ => 200,
+                };
+                match self.quiet(|k| k.set_priority(thread, Priority::new(level))) {
+                    Ok(previous) => {
+                        if previous.get() != self.rank(thread) {
+                            return Err(format!("変える前の優先度が {previous:?}、自分で設定した値は {}", self.rank(thread)));
+                        }
+                        self.ranks.insert(thread, level);
+                        Outcome::Accepted
+                    }
+                    Err(error) => Outcome::Refused(error),
+                }
+            }
+            62 => {
+                // 順序をホストが決める貸し方。優先度と待ち順に関係なく、名指ししたスレッドへ貸す。
+                let worker = WorkerId::new(u32::try_from(r.below(u64::from(WORKERS))).map_err(|e| e.to_string())?);
+                let Some(thread) = r.prefer(&self.threads, |thread| self.since.contains_key(thread)) else { return Ok(Outcome::Skipped) };
+                let lendable = self.since.contains_key(&thread) && self.open(thread);
+                match self.quiet(|k| k.grant_thread(worker, thread)) {
+                    Ok(permit) if permit.thread() != thread => return Err(format!("名指しした {thread:?} と違うスレッドへ貸した: {permit:?}")),
+                    Ok(permit) => {
+                        self.lent(permit, true)?;
+                        self.reached.insert("run:named");
+                        Outcome::Accepted
+                    }
+                    Err(Error::Refused(Refusal::NotReady | Refusal::Barrier)) if lendable => {
+                        return Err(format!("RUN-2: 貸せるスレッド {thread:?} の名指しを拒否した"));
+                    }
+                    Err(error) => Outcome::Refused(error),
+                }
+            }
+            63 => {
+                let Some(thread) = r.prefer(&self.threads, self.in_phase(ThreadPhase::Running)) else { return Ok(Outcome::Skipped) };
+                let running = self.k.thread_phase(thread) == Ok(ThreadPhase::Running);
+                match self.quiet(|k| k.preempt_thread(thread)) {
+                    Ok(()) if !running => return Err(format!("実行中でない {thread:?} へ中断を要求できた")),
+                    Ok(()) => {
+                        self.reached.insert("run:preempted");
+                        Outcome::Accepted
+                    }
+                    Err(error) if running => return Err(format!("実行中の {thread:?} への中断の要求が拒否された: {error:?}")),
+                    Err(error) => Outcome::Refused(error),
+                }
+            }
             _ => Outcome::Skipped,
         })
     }
@@ -1202,6 +1350,8 @@ impl Sim {
         self.k.audit().map_err(|violation| format!("{}: {}", violation.invariant().code(), violation.detail()))?;
         self.observe(seen)?;
         self.check_pipes()?;
+        self.note_ready();
+        self.steps = self.steps.saturating_add(1);
         // 実行権を返したスレッドの古い世代の印は、Held ごと消えている。
         self.check_counts()?;
         if code & 0x40 != 0 {

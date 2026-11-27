@@ -3,7 +3,7 @@
 //! 証明には二種類ある。どちらであるかと前提は、証明ごとに `docs/proofs.tsv` に書く
 //! (`kome-lint` の ledger が、この表と照合する)。
 //!
-//! - 整数だけの関数 (範囲、時刻、周期、I/O の遷移、席の勘定、送信の受け付け) は、引数の全ての値について示す。
+//! - 整数だけの関数 (範囲、時刻、周期、I/O の遷移、席の勘定、送信の受け付け、止まった理由の扱い) は、引数の全ての値について示す。
 //! - 表やキューを使う証明 (ID、`Effect` の発行) は、小さな上限と、決まった長さの操作の列に
 //!   限って示す。記憶域の確保が成功した場合だけを対象にする。上限や列の長さを変えた場合は
 //!   示していない。その部分は試験と決定的シミュレーションが見る。
@@ -16,6 +16,9 @@ use crate::error::{Error, Refusal};
 use crate::id::{Arena, IoId, kind};
 use crate::ipc::ChannelSpec;
 use crate::io::{HostError, IoEmit, IoEvent, IoOutcome, IoState, io_step};
+use crate::mem::{MemFault, MemFaultKind};
+use crate::process::ExitCode;
+use crate::sched::{Budget, Next, Stop, after_stop, stop_allowed};
 use crate::time::{Duration, Instant, Period};
 
 fn any_range() -> GuestRange {
@@ -344,5 +347,42 @@ fn an_admitted_send_fits_the_channel() {
             // 受け付けないのは、空きが無いときだけ。
             None => assert!(if framed { frames == u64::from(count) } else { queued == capacity }),
         }
+    }
+}
+
+fn any_stop() -> Stop {
+    match kani::any::<u8>() % 6 {
+        0 => Stop::BudgetExhausted,
+        1 => Stop::Yielded,
+        2 => Stop::Interrupted,
+        3 => Stop::Trap,
+        4 => Stop::Fault(MemFault::new(GuestAddr::new(kani::any()), MemFaultKind::Unmapped)),
+        _ => Stop::Exited(ExitCode::new(kani::any())),
+    }
+}
+
+/// 止まった理由の扱い (台帳 RUN-1)。受理するかどうかと、受理した後のスレッドの行き先を、
+/// 理由・中断の要求の有無・貸した量・実行した量・終了要求の全ての値について示す。
+#[kani::proof]
+fn a_stop_reason_is_accepted_only_when_it_fits() {
+    let stop = any_stop();
+    let interrupted: bool = kani::any();
+    let (lent, consumed): (u64, u64) = (kani::any(), kani::any());
+    let allowed = stop_allowed(stop, interrupted, Budget::new(lent), Budget::new(consumed));
+    // 拒否するのは、実行量が残っているのに使い切ったと言う場合と、要求の無い中断に応じたと言う場合だけ。
+    let budget_remains = matches!(stop, Stop::BudgetExhausted) && consumed < lent;
+    let not_interrupted = matches!(stop, Stop::Interrupted) && !interrupted;
+    assert!(allowed.is_err() == (budget_remains || not_interrupted));
+    let kill: Option<ExitCode> = if kani::any() { Some(ExitCode::new(kani::any())) } else { None };
+    let next = after_stop(stop, kill);
+    // 実行中に受けた終了要求は、どの理由よりも先に効く。
+    if let Some(code) = kill {
+        assert!(next == Next::Exit(code));
+    } else if let Stop::Exited(code) = stop {
+        assert!(next == Next::Exit(code));
+    } else {
+        // 続きをそのまま実行できる理由だけが、実行待ちへ戻る。
+        let resumable = matches!(stop, Stop::BudgetExhausted | Stop::Yielded | Stop::Interrupted);
+        assert!(next == if resumable { Next::Requeue } else { Next::Service });
     }
 }

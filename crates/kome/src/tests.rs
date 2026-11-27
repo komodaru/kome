@@ -51,7 +51,7 @@ fn thread(kernel: &mut Kernel, process: ProcessId) -> (ThreadId, ObjectId) {
 fn trap(kernel: &mut Kernel, worker: WorkerId) -> ThreadId {
     let permit = ok!(kernel, kernel.grant(worker)).unwrap();
     let thread = permit.thread();
-    assert_eq!(ok!(kernel, kernel.relinquish(permit, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+    assert_eq!(ok!(kernel, kernel.relinquish(permit, Stop::Trap, Budget::new(1))), ThreadFate::Servicing);
     thread
 }
 
@@ -154,7 +154,7 @@ fn exit_process_waits_for_running_threads_to_stop() {
     assert!(!effects.iter().any(|e| matches!(e, Effect::ProcessExited { .. })), "実行中のスレッドが残るのに終了を通知した");
     assert_eq!(k.create_thread(p, Start::Ready), Err(Error::Refused(Refusal::ProcessExiting)));
     assert_eq!(k.exit_process(p, ExitCode::new(1)), Err(Error::Refused(Refusal::ProcessExiting)));
-    assert_eq!(ok!(k, k.relinquish(permit, Stop::Preempted, Budget::new(5))), ThreadFate::Exited(ExitCode::new(9)));
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Yielded, Budget::new(5))), ThreadFate::Exited(ExitCode::new(9)));
     let effects = drain(&mut k);
     assert!(effects.contains(&Effect::ProcessExited { process: p, code: ExitCode::new(9) }));
     assert!(is_empty(&k));
@@ -169,15 +169,15 @@ fn threads_run_in_fifo_order_and_a_preempted_thread_goes_to_the_back() {
     let first = ok!(k, k.grant(W0)).unwrap();
     assert_eq!(first.thread(), a);
     assert_eq!(first.budget(), Limits::DEFAULT.quantum());
-    assert_eq!(ok!(k, k.relinquish(first, Stop::Preempted, Budget::new(100_003))), ThreadFate::Ready);
+    assert_eq!(ok!(k, k.relinquish(first, Stop::Yielded, Budget::new(100_003))), ThreadFate::Ready);
     assert_eq!(k.executed(a), Ok(100_003), "区切りの検査で貸した量を超えた実行量を数える");
     let second = ok!(k, k.grant(W0)).unwrap();
     assert_eq!(second.thread(), b);
     let third = ok!(k, k.grant(W1)).unwrap();
     assert_eq!((third.thread(), third.run().get()), (a, 2));
     assert_eq!(k.grant(WorkerId::new(2)), Err(Error::Exhausted(Resource::Workers)));
-    let _ = k.relinquish(second, Stop::Trapped, Budget::new(0));
-    let _ = k.relinquish(third, Stop::Trapped, Budget::new(0));
+    let _ = k.relinquish(second, Stop::Trap, Budget::new(0));
+    let _ = k.relinquish(third, Stop::Trap, Budget::new(0));
     k.audit().unwrap();
 }
 
@@ -189,7 +189,7 @@ fn a_worker_holds_one_permit_and_a_thread_is_lent_once() {
     let permit = ok!(k, k.grant(W0)).unwrap();
     assert_eq!(k.grant(W0), Err(Error::Refused(Refusal::WorkerBusy)));
     assert_eq!(ok!(k, k.grant(W1)), None, "実行中のスレッドをもう一度貸した");
-    let _ = k.relinquish(permit, Stop::Trapped, Budget::new(0));
+    let _ = k.relinquish(permit, Stop::Trap, Budget::new(0));
 }
 
 #[test]
@@ -203,14 +203,14 @@ fn a_stale_or_foreign_permit_changes_nothing() {
     let (tp, _) = process(&mut twin);
     let _ = thread(&mut twin, tp);
     let first = ok!(twin, twin.grant(W0)).unwrap();
-    assert_eq!(ok!(twin, twin.relinquish(first, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!(ok!(twin, twin.relinquish(first, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
     let second = ok!(twin, twin.grant(W0)).unwrap();
     // k が貸していないときに届いた実行権。
     let before = k.snapshot().unwrap();
-    let idle = ok!(twin, twin.relinquish(second, Stop::Preempted, Budget::new(1)));
+    let idle = ok!(twin, twin.relinquish(second, Stop::Yielded, Budget::new(1)));
     assert_eq!(idle, ThreadFate::Ready);
     let third = ok!(twin, twin.grant(W0)).unwrap();
-    assert_eq!(k.relinquish(third, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
+    assert_eq!(k.relinquish(third, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
     assert_eq!(k, before);
     // k は 1 回目の実行を貸しているので、4 回目の実行の実行権は古い。
     let mine = ok!(k, k.grant(W0)).unwrap();
@@ -222,12 +222,12 @@ fn a_stale_or_foreign_permit_changes_nothing() {
         let _ = thread(&mut late, lp);
         for _ in 0..3 {
             let permit = ok!(late, late.grant(W0)).unwrap();
-            assert_eq!(ok!(late, late.relinquish(permit, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+            assert_eq!(ok!(late, late.relinquish(permit, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
         }
         ok!(late, late.grant(W0)).unwrap()
     };
     let before = k.snapshot().unwrap();
-    assert_eq!(k.relinquish(fourth, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
+    assert_eq!(k.relinquish(fourth, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
     assert_eq!(k, before);
     // 別の worker が同じ回の実行権を名乗っても受け取らない。
     let other_worker = {
@@ -236,15 +236,15 @@ fn a_stale_or_foreign_permit_changes_nothing() {
         let _ = thread(&mut late, lp);
         ok!(late, late.grant(W1)).unwrap()
     };
-    assert_eq!(k.relinquish(other_worker, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
+    assert_eq!(k.relinquish(other_worker, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
     assert_eq!(k, before);
     let mut other = Kernel::new(InstanceId::new(2), Limits::DEFAULT).unwrap();
     let (op, _) = process(&mut other);
     let _ = thread(&mut other, op);
     let foreign = other.grant(W0).unwrap().unwrap();
-    assert_eq!(k.relinquish(foreign, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
+    assert_eq!(k.relinquish(foreign, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
     assert_eq!(k, before);
-    assert_eq!(ok!(k, k.relinquish(mine, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+    assert_eq!(ok!(k, k.relinquish(mine, Stop::Trap, Budget::new(1))), ThreadFate::Servicing);
 }
 
 #[test]
@@ -262,12 +262,12 @@ fn a_snapshot_is_restored_only_as_another_instance_with_nothing_lent() {
     let mut restored = quiet.restore(InstanceId::new(7)).unwrap();
     assert_eq!(restored.instance(), InstanceId::new(7));
     let before = restored.snapshot().unwrap();
-    assert_eq!(restored.relinquish(permit, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
+    assert_eq!(restored.relinquish(permit, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
     assert_eq!(restored, before);
     // 発行済みの I/O があると復元できない。完了通知は元の実行インスタンス宛てだからである。
     let own = ok!(restored, restored.grant(W0)).unwrap();
     assert_eq!(own.thread(), t);
-    assert_eq!(ok!(restored, restored.relinquish(own, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+    assert_eq!(ok!(restored, restored.relinquish(own, Stop::Trap, Budget::new(1))), ThreadFate::Servicing);
     let io = ok!(restored, restored.prepare_io(p, IoLinks::NONE));
     let prepared = restored.snapshot().unwrap();
     assert!(prepared.restore(InstanceId::new(8)).is_ok());
@@ -297,7 +297,7 @@ fn a_restored_state_behaves_like_the_original() {
     let mut restored = snapshot.restore(InstanceId::new(9)).unwrap();
     for kernel in [&mut k, &mut restored] {
         let permit = kernel.grant(W0).unwrap().unwrap();
-        assert_eq!(kernel.relinquish(permit, Stop::Trapped, Budget::new(5)).ok(), Some(ThreadFate::Servicing));
+        assert_eq!(kernel.relinquish(permit, Stop::Trap, Budget::new(5)).ok(), Some(ThreadFate::Servicing));
         let (q, _) = process(kernel);
         let _ = thread(kernel, q);
         assert!(kernel.signal(object, SignalOp::Set(1)).is_ok());
@@ -339,7 +339,7 @@ fn suspension_combines_with_every_run_state() {
     assert_eq!(ok!(k, k.suspend_thread(a)), 0);
     assert_eq!(ok!(k, k.suspend_thread(a)), 1);
     assert_eq!(drain(&mut k), vec![Effect::Interrupt { worker: W0, thread: a, run: permit.run() }]);
-    assert_eq!(ok!(k, k.relinquish(permit, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
     assert_eq!(ok!(k, k.grant(W0)), None);
     assert_eq!(ok!(k, k.unsuspend_thread(a)), 2);
     assert_eq!(ok!(k, k.unsuspend_thread(a)), 1);
@@ -983,12 +983,12 @@ fn a_reducing_change_bars_the_process_until_old_runs_stop() {
     let (other, _) = thread(&mut k, q);
     let unrelated = ok!(k, k.grant(W1)).unwrap();
     assert_eq!(unrelated.thread(), other);
-    let _ = k.relinquish(unrelated, Stop::Trapped, Budget::new(0));
-    assert_eq!(ok!(k, k.relinquish(old, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    let _ = k.relinquish(unrelated, Stop::Trap, Budget::new(0));
+    assert_eq!(ok!(k, k.relinquish(old, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
     assert_eq!(drain(&mut k), vec![Effect::BackingReclaimed { backing: b }]);
     let fresh = ok!(k, k.grant(W0)).unwrap();
     assert_eq!((fresh.thread(), fresh.map()), (caller, k.map_generation(p).unwrap()));
-    let _ = k.relinquish(fresh, Stop::Trapped, Budget::new(0));
+    let _ = k.relinquish(fresh, Stop::Trap, Budget::new(0));
 }
 
 #[test]
@@ -1000,7 +1000,7 @@ fn unmapping_a_reservation_interrupts_nobody() {
     let permit = ok!(k, k.grant(W0)).unwrap();
     ok!(k, k.unmap(p, range(0x1000, PAGE)));
     assert!(drain(&mut k).is_empty());
-    let _ = k.relinquish(permit, Stop::Trapped, Budget::new(0));
+    let _ = k.relinquish(permit, Stop::Trap, Budget::new(0));
 }
 
 #[test]
@@ -1058,8 +1058,8 @@ fn apply_is_the_same_as_calling_the_method() {
     by_call.create_thread(q, Start::Ready).unwrap();
     let Reply::Permit(Some(permit)) = by_input.apply(Input::Grant(W0)).unwrap() else { panic!() };
     let other = by_call.grant(W0).unwrap().unwrap();
-    assert_eq!(by_input.apply(Input::Relinquish(permit, Stop::Trapped, Budget::new(2))), Ok(Reply::Fate(ThreadFate::Servicing)));
-    by_call.relinquish(other, Stop::Trapped, Budget::new(2)).unwrap();
+    assert_eq!(by_input.apply(Input::Relinquish(permit, Stop::Trap, Budget::new(2))), Ok(Reply::Fate(ThreadFate::Servicing)));
+    by_call.relinquish(other, Stop::Trap, Budget::new(2)).unwrap();
     let reply = by_input.apply(Input::Wait(t, &[], WaitMode::Any, Deadline::At(at(9)), Interruptible::No));
     assert_eq!(reply, Ok(Reply::Wait(WaitStart::Blocked)));
     by_call.wait(t, &[], WaitMode::Any, Deadline::At(at(9)), Interruptible::No).unwrap();
@@ -1075,11 +1075,11 @@ fn apply_is_the_same_as_calling_the_method() {
     // 受理されなかった実行権は、返答に入って戻る。
     ok!(by_input, by_input.continue_thread(t));
     let Reply::Permit(Some(permit)) = by_input.apply(Input::Grant(W0)).unwrap() else { panic!() };
-    let Ok(Reply::Returned(permit, reason)) = by_call.apply(Input::Relinquish(permit, Stop::Trapped, Budget::new(1))) else {
+    let Ok(Reply::Returned(permit, reason)) = by_call.apply(Input::Relinquish(permit, Stop::Trap, Budget::new(1))) else {
         panic!("貸していない状態が実行権を受理した")
     };
     assert_eq!(reason, Error::Refused(Refusal::StalePermit));
-    assert_eq!(by_input.apply(Input::Relinquish(permit, Stop::Trapped, Budget::new(1))), Ok(Reply::Fate(ThreadFate::Servicing)));
+    assert_eq!(by_input.apply(Input::Relinquish(permit, Stop::Trap, Budget::new(1))), Ok(Reply::Fate(ThreadFate::Servicing)));
 }
 
 // ---- 検査が違反を検出できること (台帳の反例試験) ----
@@ -1477,11 +1477,11 @@ fn pair(run: &str) -> Pair {
     let permit = match run {
         "Running" => Some(permit),
         "Ready" => {
-            assert_eq!(ok!(k, k.relinquish(permit, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+            assert_eq!(ok!(k, k.relinquish(permit, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
             None
         }
         "Servicing" | "Blocked" => {
-            assert_eq!(ok!(k, k.relinquish(permit, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+            assert_eq!(ok!(k, k.relinquish(permit, Stop::Trap, Budget::new(1))), ThreadFate::Servicing);
             if run == "Blocked" {
                 let gate = event(&mut k, p);
                 let started = k.wait(first, &[gate], WaitMode::Any, Deadline::Never, Interruptible::No);
@@ -1519,7 +1519,7 @@ fn tla_exit_table() -> String {
             threads.push(format!("    (<<\"{request}\", \"{run}\">> :> <<\"{after}\", {}>>)", if asked { "TRUE" } else { "FALSE" }));
             // 終了を求められた実行中のスレッドは、どの理由で実行権を返しても終了する。
             if let Some(permit) = w.permit.take() {
-                for stop in [Stop::Preempted, Stop::Trapped] {
+                for stop in [Stop::Yielded, Stop::Trap] {
                     let mut again = pair(run);
                     match request {
                         "ExitProcess" => ok!(again.k, again.k.exit_process(again.p, code)),
@@ -1528,11 +1528,11 @@ fn tla_exit_table() -> String {
                     let held = again.permit.take().unwrap();
                     assert_eq!(ok!(again.k, again.k.relinquish(held, stop, Budget::new(1))), ThreadFate::Exited(code));
                     assert_eq!(phase_name(&again.k, again.first), "Gone");
-                    let _ = again.k.relinquish(again.anchor, Stop::Trapped, Budget::new(1));
+                    let _ = again.k.relinquish(again.anchor, Stop::Trap, Budget::new(1));
                 }
-                assert_eq!(ok!(w.k, w.k.relinquish(permit, Stop::Trapped, Budget::new(1))), ThreadFate::Exited(code));
+                assert_eq!(ok!(w.k, w.k.relinquish(permit, Stop::Trap, Budget::new(1))), ThreadFate::Exited(code));
             }
-            let _ = w.k.relinquish(w.anchor, Stop::Trapped, Budget::new(1));
+            let _ = w.k.relinquish(w.anchor, Stop::Trap, Budget::new(1));
         }
     }
     // 最後のスレッドが止まったときに、I/O の状態ごとにプロセスと I/O がどうなるか。
@@ -1552,7 +1552,7 @@ fn tla_exit_table() -> String {
             let permit = if running {
                 Some(permit)
             } else {
-                assert_eq!(ok!(k, k.relinquish(permit, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+                assert_eq!(ok!(k, k.relinquish(permit, Stop::Trap, Budget::new(1))), ThreadFate::Servicing);
                 None
             };
             ok!(k, k.exit_process(p, code));
@@ -1561,7 +1561,7 @@ fn tla_exit_table() -> String {
                 assert_eq!((life_name(&k, p), io_name(&k, io)), ("Exiting", state));
                 assert!(k.signal_count(held).is_ok());
                 assert_eq!(k.exit_process(p, code), Err(Error::Refused(Refusal::ProcessExiting)));
-                assert_eq!(ok!(k, k.relinquish(permit, Stop::Preempted, Budget::new(1))), ThreadFate::Exited(code));
+                assert_eq!(ok!(k, k.relinquish(permit, Stop::Yielded, Budget::new(1))), ThreadFate::Exited(code));
             }
             let effects = drain(&mut k);
             let cancels = effects.iter().any(|effect| matches!(effect, Effect::IoCancel { .. }));
@@ -2492,7 +2492,7 @@ fn a_restored_state_lends_the_thread_that_was_ready() {
     assert_eq!(permit.thread(), t);
     assert_eq!(permit.instance(), InstanceId::new(2));
     assert_eq!((k.ready_count(), k.running_count()), (0, 1));
-    assert_eq!(ok!(k, k.relinquish(permit, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
     assert_eq!((k.ready_count(), k.running_count()), (1, 0));
     ok!(k, k.exit_process(p, CODE));
     assert!(drain(&mut k).contains(&Effect::ProcessReclaimed { process: p }));
@@ -2528,9 +2528,9 @@ fn a_restored_state_refuses_a_permit_lent_by_the_original() {
     let own = ok!(k, k.grant(W0)).unwrap();
     assert_eq!((own.thread(), own.run()), (t, lent_by_original.run()));
     let before = k.snapshot().unwrap();
-    assert_eq!(k.relinquish(lent_by_original, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
+    assert_eq!(k.relinquish(lent_by_original, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
     assert_eq!(k, before);
-    assert_eq!(ok!(k, k.relinquish(own, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+    assert_eq!(ok!(k, k.relinquish(own, Stop::Trap, Budget::new(1))), ThreadFate::Servicing);
 }
 
 #[test]
@@ -2722,7 +2722,7 @@ fn unmapping_the_same_backing_again_and_again_holds_it_once() {
     assert_eq!(drain(&mut k), vec![Effect::Interrupt { worker: W0, thread: t, run: lent.run() }]);
     assert_eq!(k.backing_len(b), Ok(PAGE));
     // 最後の古い実行権が返ると、保留が外れて解放される。
-    assert_eq!(ok!(k, k.relinquish(lent, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!(ok!(k, k.relinquish(lent, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
     assert_eq!(drain(&mut k), vec![Effect::BackingReclaimed { backing: b }]);
     assert_eq!(k.backing_len(b), Err(Error::Stale(Tag::Backing)));
     assert!(k.processes.get(p).unwrap().space.limbo.is_empty());
@@ -2744,7 +2744,7 @@ fn two_backings_unmapped_together_are_each_held_once() {
     assert_eq!((k.backings.get(a).unwrap().limbo, k.backings.get(b).unwrap().limbo), (1, 1));
     ok!(k, k.release_backing(p, a));
     ok!(k, k.release_backing(p, b));
-    assert_eq!(ok!(k, k.relinquish(lent, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!(ok!(k, k.relinquish(lent, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
     let effects = drain(&mut k);
     assert!(effects.contains(&Effect::BackingReclaimed { backing: a }));
     assert!(effects.contains(&Effect::BackingReclaimed { backing: b }));
@@ -2770,7 +2770,7 @@ fn protecting_to_the_same_protection_changes_nothing() {
     // 本当に分割が要る変更は、上限で拒否する。
     assert_eq!(k.protect(p, range(0x2000, PAGE), Prot::READ), Err(Error::Exhausted(Resource::Mappings)));
     assert_eq!(k, before);
-    assert_eq!(ok!(k, k.relinquish(lent, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!(ok!(k, k.relinquish(lent, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
 }
 
 #[test]
@@ -2840,7 +2840,7 @@ fn only_a_change_that_takes_a_permission_away_stops_running_threads() {
     // 書き込みを足し、読み出しを外す: 減る権限があるので中断を要求する。
     ok!(k, k.protect(p, range(0x1000, PAGE), Prot::new(false, true, true)));
     assert_eq!(drain(&mut k), vec![Effect::Interrupt { worker: W0, thread: t, run: lent.run() }]);
-    assert_eq!(ok!(k, k.relinquish(lent, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!(ok!(k, k.relinquish(lent, Stop::Yielded, Budget::new(1))), ThreadFate::Ready);
 }
 
 // ---- 権限とアクセスの全ての組 (レビュー 4.1) ----
@@ -2922,13 +2922,13 @@ fn a_permit_given_to_the_wrong_kernel_comes_back() {
     let permit = ok!(k, k.grant(W0)).unwrap();
     let before = other.snapshot().unwrap();
     // 再現例: 別の実行インスタンスへ返すと、拒否はされるが実行権が消え、スレッドは実行中のまま残った。
-    let refused = other.relinquish(permit, Stop::Trapped, Budget::new(1)).unwrap_err();
+    let refused = other.relinquish(permit, Stop::Trap, Budget::new(1)).unwrap_err();
     assert_eq!(refused.error(), Error::Foreign);
     assert_eq!(other, before);
     assert_eq!((k.thread_phase(t), k.running_count()), (Ok(ThreadPhase::Running), 1));
     // 取り戻した実行権を、貸した実行インスタンスへ返せる。
     let permit = refused.into_permit().unwrap();
-    assert_eq!(ok!(k, k.relinquish(permit, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Trap, Budget::new(1))), ThreadFate::Servicing);
     assert_eq!((k.thread_phase(t), k.running_count()), (Ok(ThreadPhase::Servicing), 0));
     assert_eq!(k.grant(W0), Ok(None), "返した worker がまだ実行権を持っている扱いになった");
 }
@@ -2941,7 +2941,7 @@ fn a_failure_after_acceptance_consumes_the_permit() {
     let _ = thread(&mut k, p);
     let permit = ok!(k, k.grant(W0)).unwrap();
     assert!(k.running.pop().is_some());
-    let failed = k.relinquish(permit, Stop::Trapped, Budget::new(1)).unwrap_err();
+    let failed = k.relinquish(permit, Stop::Trap, Budget::new(1)).unwrap_err();
     assert_eq!(failed, NotRelinquished::Failed(Error::Broken(Invariant::RunOnePermit)));
     assert_eq!(failed.error(), Error::Broken(Invariant::RunOnePermit));
     assert_eq!(failed.into_permit(), None);
@@ -3017,6 +3017,9 @@ fn a_foreign_id_is_refused_in_every_position() {
         Input::SuspendThread(ft),
         Input::UnsuspendThread(ft),
         Input::TerminateThread(ft, code),
+        Input::GrantThread(W0, ft),
+        Input::PreemptThread(ft),
+        Input::SetPriority(ft, Priority::DEFAULT),
         Input::CreateObject(fp, spec),
         Input::RetainObject(fp, o),
         Input::RetainObject(p, fo),
@@ -3073,6 +3076,7 @@ fn a_foreign_id_is_refused_in_every_position() {
     assert_eq!(k.process_phase(fp), Err(Error::Foreign));
     assert_eq!(k.thread_count(fp), Err(Error::Foreign));
     assert_eq!(k.thread_phase(ft), Err(Error::Foreign));
+    assert_eq!(k.priority(ft), Err(Error::Foreign));
     assert_eq!(k.suspend_count(ft), Err(Error::Foreign));
     assert_eq!(k.process_of(ft), Err(Error::Foreign));
     assert_eq!(k.executed(ft), Err(Error::Foreign));
@@ -3128,4 +3132,230 @@ fn a_restored_state_keeps_the_ids_issued_before_the_snapshot_only() {
     assert_eq!(grandchild.signal_count(late), Err(Error::Stale(Tag::Object)));
     assert_eq!(copy.audit(), Ok(()));
     assert_eq!(grandchild.audit(), Ok(()));
+}
+
+#[test]
+fn each_stop_reason_decides_where_the_thread_goes() {
+    let fault = MemFault::new(GuestAddr::new(0x10), MemFaultKind::Unmapped);
+    let quantum = Limits::DEFAULT.quantum();
+    let cases = [
+        (Stop::BudgetExhausted, ThreadFate::Ready),
+        (Stop::Yielded, ThreadFate::Ready),
+        (Stop::Trap, ThreadFate::Servicing),
+        (Stop::Fault(fault), ThreadFate::Servicing),
+        (Stop::Exited(ExitCode::new(5)), ThreadFate::Exited(ExitCode::new(5))),
+    ];
+    for (stop, fate) in cases {
+        let mut k = kernel();
+        let (p, _) = process(&mut k);
+        let (t, _) = thread(&mut k, p);
+        let (_other, _) = thread(&mut k, p);
+        let permit = ok!(k, k.grant(W0)).unwrap();
+        assert_eq!(ok!(k, k.relinquish(permit, stop, quantum)), fate, "{stop:?}");
+        match fate {
+            // 実行待ちへ戻ったスレッドは、列の末尾にいる。
+            ThreadFate::Ready => assert_eq!((k.ready_thread(1), k.thread_phase(t)), (Some(t), Ok(ThreadPhase::Ready))),
+            ThreadFate::Servicing => assert_eq!(k.thread_phase(t), Ok(ThreadPhase::Servicing)),
+            ThreadFate::Exited(code) => {
+                assert_eq!(k.thread_phase(t), Err(Error::Stale(Tag::Thread)));
+                assert!(drain(&mut k).contains(&Effect::ThreadExited { thread: t, process: p, code }));
+            }
+        }
+    }
+    // 中断の要求に応じた返却は、実行待ちへ戻る。停止要求があれば、列には入らない。
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    ok!(k, k.suspend_thread(t));
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Interrupted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!((k.ready_count(), ok!(k, k.grant(W0))), (0, None));
+    // 実行中に受けた終了要求は、どの理由よりも先に効く。
+    let (u, _) = thread(&mut k, p);
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    ok!(k, k.terminate_thread(u, ExitCode::new(9)));
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Exited(ExitCode::new(1)), Budget::new(0))), ThreadFate::Exited(ExitCode::new(9)));
+}
+
+#[test]
+fn a_stop_that_does_not_fit_the_run_is_refused_and_the_permit_comes_back() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    let quantum = Limits::DEFAULT.quantum();
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    let before = k.snapshot().unwrap();
+    // 貸した量に届いていないのに、使い切ったとは言えない。
+    let short = Budget::new(quantum.get() - 1);
+    let refused = k.relinquish(permit, Stop::BudgetExhausted, short).unwrap_err();
+    assert_eq!(refused.error(), Error::Refused(Refusal::BudgetRemains));
+    assert_eq!(k, before);
+    // 要求されていない中断に応じたとは言えない。
+    let permit = refused.into_permit().unwrap();
+    let refused = k.relinquish(permit, Stop::Interrupted, quantum).unwrap_err();
+    assert_eq!(refused.error(), Error::Refused(Refusal::NotInterrupted));
+    assert_eq!(k, before);
+    // 拒否された実行権は失われていない。要求があれば、同じ理由が通る。
+    let permit = refused.into_permit().unwrap();
+    ok!(k, k.preempt_thread(t));
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Interrupted, Budget::new(0))), ThreadFate::Ready);
+    // ちょうど貸した量と、区切りの都合でそれを超えた量は、使い切ったと言える。
+    for consumed in [quantum, Budget::new(quantum.get() + 7)] {
+        let permit = ok!(k, k.grant(W0)).unwrap();
+        assert_eq!(ok!(k, k.relinquish(permit, Stop::BudgetExhausted, consumed)), ThreadFate::Ready);
+    }
+}
+
+#[test]
+fn the_highest_priority_runs_first_and_equals_run_in_order() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (a, _) = thread(&mut k, p);
+    let (b, _) = thread(&mut k, p);
+    let (c, _) = thread(&mut k, p);
+    let (d, _) = thread(&mut k, p);
+    assert_eq!(k.priority(a), Ok(Priority::DEFAULT));
+    let high = Priority::new(Priority::DEFAULT.get() + 1);
+    let low = Priority::new(Priority::DEFAULT.get() - 1);
+    assert_eq!(ok!(k, k.set_priority(c, high)), Priority::DEFAULT);
+    assert_eq!(ok!(k, k.set_priority(a, low)), Priority::DEFAULT);
+    // 待ち順は a b c d。貸す順は、優先度の高い c、同じ優先度の中で先に待っていた b、d、最後に a。
+    let mut order = Vec::new();
+    for _ in 0..4 {
+        let permit = ok!(k, k.grant(W0)).unwrap();
+        order.push(permit.thread());
+        assert_eq!(ok!(k, k.relinquish(permit, Stop::Trap, Budget::new(0))), ThreadFate::Servicing);
+    }
+    assert_eq!(order, vec![c, b, d, a]);
+    // 優先度を変えても、列の中の待ち順は変わらない。同じ値に戻せば、先に待っていた方が先。
+    for t in [a, b] {
+        ok!(k, k.continue_thread(t));
+    }
+    ok!(k, k.set_priority(a, Priority::DEFAULT));
+    assert_eq!((k.ready_thread(0), k.ready_thread(1), k.ready_thread(2)), (Some(a), Some(b), None));
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    assert_eq!(permit.thread(), a);
+    // 優先度の高いスレッドが実行待ちでも、実行中のスレッドを kome が自分で止めることは無い。
+    ok!(k, k.continue_thread(c));
+    assert_eq!(drain(&mut k), vec![]);
+    // 譲らせるのは Personality の判断で、中断の要求は一度の実行に一度だけ出る。
+    ok!(k, k.preempt_thread(a));
+    ok!(k, k.preempt_thread(a));
+    assert_eq!(drain(&mut k), vec![Effect::Interrupt { worker: W0, thread: a, run: permit.run() }]);
+    assert_eq!(k.preempt_thread(b), Err(Error::Refused(Refusal::NotRunning)));
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Interrupted, Budget::new(3))), ThreadFate::Ready);
+    assert_eq!(ok!(k, k.grant(W0)).map(|permit| permit.thread()), Some(c));
+}
+
+#[test]
+fn a_named_grant_ignores_the_order_but_not_the_rules() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (a, _) = thread(&mut k, p);
+    let (b, _) = thread(&mut k, p);
+    let made = k.create_thread(p, Start::Suspended);
+    let (held_back, _) = ok!(k, made);
+    // 待ち順でも優先度でも a が先だが、名指しした b へ貸す。
+    ok!(k, k.set_priority(a, Priority::new(255)));
+    let named = ok!(k, k.grant_thread(W0, b));
+    assert_eq!((named.thread(), k.thread_phase(b)), (b, Ok(ThreadPhase::Running)));
+    let before = k.snapshot().unwrap();
+    // 実行中、停止要求つき、同じ worker、存在しないスレッドへは貸さない。状態も変えない。
+    assert_eq!(k.grant_thread(W1, b).map(|_| ()), Err(Error::Refused(Refusal::NotReady)));
+    assert_eq!(k.grant_thread(W1, held_back).map(|_| ()), Err(Error::Refused(Refusal::NotReady)));
+    assert_eq!(k.grant_thread(W0, a).map(|_| ()), Err(Error::Refused(Refusal::WorkerBusy)));
+    assert_eq!(k, before);
+    // 権限を減らす変更の後、古い世代の実行が残るプロセスのスレッドは、名指ししても貸さない。
+    let backing = ok!(k, k.create_backing(p, PAGE));
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(backing, 0), Prot::READ_WRITE));
+    ok!(k, k.unmap(p, range(0x1000, PAGE)));
+    assert_eq!(k.grant_thread(W1, a).map(|_| ()), Err(Error::Refused(Refusal::Barrier)));
+    assert_eq!(ok!(k, k.relinquish(named, Stop::Interrupted, Budget::new(0))), ThreadFate::Ready);
+    let second = ok!(k, k.grant_thread(W1, a));
+    assert_eq!(second.map(), k.map_generation(p).unwrap());
+    let _ = k.relinquish(second, Stop::Trap, Budget::new(0));
+}
+
+/// 文脈の数を一つ進めるだけの実行器。止まる理由は、決めた順に返す。
+struct Counter {
+    stops: Vec<Stop>,
+    runs: Vec<(WorkerId, ThreadId, u32)>,
+}
+
+impl Executor for Counter {
+    type Context = u32;
+
+    fn run(&mut self, permit: &RunPermit, context: &mut u32) -> Stopped {
+        *context = context.saturating_add(1);
+        self.runs.push((permit.worker(), permit.thread(), *context));
+        Stopped::new(self.stops.pop().unwrap_or(Stop::Yielded), permit.budget())
+    }
+}
+
+#[test]
+fn a_context_follows_its_thread_across_workers() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let mut contexts = Contexts::new();
+    let mut threads = Vec::new();
+    for start in [100, 200, 300] {
+        let (t, _) = thread(&mut k, p);
+        contexts.insert(t, start).unwrap();
+        assert_eq!(contexts.insert(t, 0), Err(Error::Refused(Refusal::ContextBusy)));
+        threads.push(t);
+    }
+    let (a, b, c) = (threads[0], threads[1], threads[2]);
+    // 二つの worker が、三つのスレッドを交代で実行する。文脈はスレッドに付いて回る。
+    let mut executor = Counter { stops: Vec::new(), runs: Vec::new() };
+    for worker in [W0, W1, W1, W0, W1, W0] {
+        let ran = ok!(k, run_once(&mut k, worker, &mut executor, &mut contexts)).unwrap();
+        assert_eq!((ran.stopped().stop(), ran.fate()), (Stop::Yielded, ThreadFate::Ready));
+    }
+    let expected = vec![(W0, a, 101), (W1, b, 201), (W1, c, 301), (W0, a, 102), (W1, b, 202), (W0, c, 302)];
+    assert_eq!(executor.runs, expected);
+    // 取り出している間は、同じスレッドの文脈をもう一度取り出せない。
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    let loaded = contexts.load(&permit).unwrap();
+    assert_eq!((loaded.thread(), contexts.load(&permit).map(|_| ())), (a, Err(Error::Refused(Refusal::ContextBusy))));
+    contexts.save(loaded).unwrap();
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Yielded, Budget::new(0))), ThreadFate::Ready);
+    // 終了まで実行したスレッドの文脈は取り除く。残りは実行を続ける。
+    executor.stops = vec![Stop::Exited(ExitCode::new(4))];
+    let ran = ok!(k, run_once(&mut k, W0, &mut executor, &mut contexts)).unwrap();
+    assert_eq!((ran.thread(), ran.fate(), contexts.len()), (b, ThreadFate::Exited(ExitCode::new(4)), 2));
+    assert_eq!(contexts.remove(b), Err(Error::Refused(Refusal::NoContext)));
+    assert_eq!(contexts.remove(c), Ok(Some(302)));
+    // 貸せるスレッドが無ければ、何もしない。
+    for t in [a, c] {
+        ok!(k, k.suspend_thread(t));
+    }
+    assert_eq!(ok!(k, run_once(&mut k, W0, &mut executor, &mut contexts)), None);
+}
+
+#[test]
+fn a_run_that_cannot_proceed_still_returns_its_permit() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    let mut contexts = Contexts::new();
+    let mut executor = Counter { stops: Vec::new(), runs: Vec::new() };
+    // 文脈の無いスレッド: 実行せず、実行権を返してサービス中にし、失敗を返す。
+    assert_eq!(run_once(&mut k, W0, &mut executor, &mut contexts), Err(Error::Refused(Refusal::NoContext)));
+    assert_eq!((k.running_count(), k.thread_phase(t), executor.runs.len()), (0, Ok(ThreadPhase::Servicing), 0));
+    k.audit().unwrap();
+    // 状況と合わない理由を返した実行器: 文脈は戻っており、実行権も返っている。
+    contexts.insert(t, 7).unwrap();
+    ok!(k, k.continue_thread(t));
+    executor.stops = vec![Stop::Interrupted];
+    assert_eq!(run_once(&mut k, W0, &mut executor, &mut contexts), Err(Error::Refused(Refusal::NotInterrupted)));
+    assert_eq!((k.running_count(), k.thread_phase(t)), (0, Ok(ThreadPhase::Servicing)));
+    k.audit().unwrap();
+    // 実行の途中でスレッドの文脈を取り除くと、後から戻した文脈は捨てられる。
+    ok!(k, k.continue_thread(t));
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    let loaded = contexts.load(&permit).unwrap();
+    assert_eq!(contexts.remove(t), Ok(None));
+    assert_eq!(contexts.save(loaded), Err(Error::Refused(Refusal::NoContext)));
+    assert!(contexts.is_empty());
+    let _ = k.relinquish(permit, Stop::Trap, Budget::new(0));
 }

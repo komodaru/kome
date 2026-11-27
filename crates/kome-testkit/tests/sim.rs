@@ -104,7 +104,7 @@ fn the_generator_reaches_every_effect() {
 fn the_generator_reaches_every_channel_outcome() {
     let mut reached = BTreeSet::new();
     for seed in 0..200 {
-        reached.extend(drive(&noise(seed, 3000)).unwrap().reached);
+        reached.extend(drive(&noise(seed, 3000)).unwrap().reached.into_iter().filter(|tag| !tag.starts_with("run:")));
     }
     let all = [
         "sent",
@@ -122,6 +122,30 @@ fn the_generator_reaches_every_channel_outcome() {
         "too-small",
         "dropped-parcel",
         "reclaimed",
+    ];
+    assert_eq!(reached, BTreeSet::from(all));
+}
+
+/// 実行権の貸し借りが空回りしていないこと: 止まる理由の全て、状況と合わない理由の拒否、
+/// 優先度が待ち順を追い越す貸し出し、名指しの貸し出し、譲らせる要求に到達する。
+#[test]
+fn the_generator_reaches_every_scheduling_outcome() {
+    let mut reached = BTreeSet::new();
+    for seed in 0..200 {
+        reached.extend(drive(&noise(seed, 3000)).unwrap().reached.into_iter().filter(|tag| tag.starts_with("run:")));
+    }
+    let all = [
+        "run:trap",
+        "run:yielded",
+        "run:budget",
+        "run:interrupted",
+        "run:fault",
+        "run:exited",
+        "run:budget-remains",
+        "run:not-interrupted",
+        "run:outranked",
+        "run:named",
+        "run:preempted",
     ];
     assert_eq!(reached, BTreeSet::from(all));
 }

@@ -15,7 +15,7 @@ use crate::id::{ObjectId, ProcessId, ThreadId};
 use crate::kernel::Kernel;
 use crate::object::{Object, SignalMode, SignalSpec};
 use crate::process::{ExitCode, Life};
-use crate::sched::WorkerId;
+use crate::sched::{Priority, WorkerId};
 use crate::store::TryClone;
 use crate::wait::Wait;
 
@@ -43,7 +43,7 @@ impl TryClone for Run {
 
 impl TryClone for Thread {
     fn try_clone(&self) -> Result<Thread, Error> {
-        let Thread { process, exit_signal, run, suspend, kill, run_gen, executed } = self;
+        let Thread { process, exit_signal, run, suspend, kill, run_gen, executed, priority } = self;
         Ok(Thread {
             process: *process,
             exit_signal: *exit_signal,
@@ -52,6 +52,7 @@ impl TryClone for Thread {
             kill: *kill,
             run_gen: *run_gen,
             executed: *executed,
+            priority: *priority,
         })
     }
 }
@@ -101,6 +102,7 @@ pub(crate) struct Thread {
     pub(crate) run_gen: u64,
     /// 実行した量の累計。
     pub(crate) executed: u64,
+    pub(crate) priority: Priority,
 }
 
 impl Kernel {
@@ -130,6 +132,7 @@ impl Kernel {
             kill: None,
             run_gen: 0,
             executed: 0,
+            priority: Priority::DEFAULT,
         })?;
         let owner = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
         owner.threads.push(thread)?;

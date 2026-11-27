@@ -22,6 +22,7 @@ const PAGES_RS: &str = "crates/kome-testkit/src/pages.rs";
 const PIPES_RS: &str = "crates/kome-testkit/src/pipes.rs";
 const IPC_RS: &str = "crates/kome/src/ipc.rs";
 const OBJECT_RS: &str = "crates/kome/src/object.rs";
+const SCHED_RS: &str = "crates/kome/src/sched.rs";
 const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
 
@@ -253,6 +254,25 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("crates/kome/src/io.rs", |text| text.replace("self.can_notify(", "self.can_pin(")),
             |repo| repo.edit(IPC_RS, |text| text.replace("let admitted = entry.spec.admit(len, entry.queued(), frames, parcel.is_some()).map_err(Error::Refused)?;", "let admitted = Some(len);")),
             |repo| repo.append(KERNEL_RS, "fn forced(kernel: &mut Kernel, object: crate::id::ObjectId) {\n    if let Some(entry) = kernel.objects.get_mut(object) {\n        entry.driven = false;\n    }\n}"),
+        ],
+    },
+    Rule {
+        id: "executor-contract",
+        about: "止まった理由は一か所で判定し、文書の表と一致する。貸し出しは一つの入口を通り、決定的シミュレーションが貸す順序を自分の記録と比べる",
+        check: executor_contract,
+        breaks: &[
+            |repo| repo.edit(SCHED_RS, |text| text.replace("            stop_allowed(stop, interrupted, permit.budget, consumed).map_err(Error::Refused)?;\n", "")),
+            |repo| repo.edit(SCHED_RS, |text| text.replace("        match after_stop(stop, kill) {", "        match after_stop(stop, None) {")),
+            |repo| repo.edit(SCHED_RS, |text| text.replace("    /// ゲストが実行を譲った。スレッドは実行待ちの末尾へ戻る。\n    Yielded,", "    /// ゲストが実行を譲った。スレッドは実行待ちの末尾へ戻る。\n    Yielded,\n    /// 寝た。\n    Slept,")),
+            |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("| `Stop::Fault` |", "| `Stop::Trap` |")),
+            |repo| repo.edit(SCHED_RS, |text| text.replace("        self.lend(worker, at).map(Some)", "        self.ready.remove(at);\n        Ok(None)")),
+            |repo| repo.edit("crates/kome/src/exec.rs", |text| text.replace("#[must_use = \"取り出した文脈は Contexts::save で戻さなければならない\"]\n#[derive(Debug)]", "#[derive(Debug, Clone)]")),
+            |repo| repo.edit("crates/kome/src/exec.rs", |text| text.replace("return Err(hand_back(kernel, permit, stopped.consumed).err().unwrap_or(error));\n        }\n        Err(NotRelinquished::Failed", "return Err(error);\n        }\n        Err(NotRelinquished::Failed")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("if self.rank(*other) > self.rank(picked) {", "if false {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("if self.rank(*other) == self.rank(picked) && *theirs < mine {", "if false {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("if let Some(idle) = self.since.keys().find(|thread| self.open(**thread)) {", "if let Some(idle) = None::<&ThreadId> {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("        self.note_ready();\n", "")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("let ready = self.k.thread_phase(*thread) == Ok(ThreadPhase::Ready) && self.k.suspend_count(*thread) == Ok(0);", "let ready = self.k.priority(*thread).is_ok();")),
         ],
     },
     Rule {
@@ -1304,6 +1324,57 @@ fn independent_model(repo: &Repo, report: &mut Report) {
     }
 }
 
+fn executor_contract(repo: &Repo, report: &mut Report) {
+    let sched = repo.text(SCHED_RS);
+    // 返却は、受理の前に理由を確かめ、受理した後の行き先を終了要求つきで決める。どちらも Kani が示した関数を通る。
+    if !sched.contains("            stop_allowed(stop, interrupted, permit.budget, consumed).map_err(Error::Refused)?;\n") {
+        report.add_at(repo, SCHED_RS, "pub fn relinquish(", "relinquish が、受理の前に理由を確かめていない (stop_allowed)");
+    }
+    if !sched.contains("        match after_stop(stop, kill) {") {
+        report.add_at(repo, SCHED_RS, "fn take_back(", "実行権を返したスレッドの行き先を、理由と終了要求から決めていない (after_stop)");
+    }
+    // 止まる理由の変種は、どれも文書の表に行がある。
+    let architecture = repo.text(ARCHITECTURE_MD);
+    let variants = sched.split("pub enum Stop {").nth(1).and_then(|rest| rest.split("\n}").next()).unwrap_or("");
+    let mut count = 0usize;
+    for line in variants.lines().map(str::trim).filter(|line| !line.starts_with("//") && !line.is_empty()) {
+        let name: String = line.chars().take_while(|c| c.is_alphanumeric()).collect();
+        count = count.saturating_add(1);
+        if architecture.matches(&format!("| `Stop::{name}` |")).count() != 1 {
+            report.add_at(repo, SCHED_RS, &format!("    {name}"), format!("止まる理由 {name} の行が、{ARCHITECTURE_MD} の表にちょうど一つ無い"));
+        }
+    }
+    if count == 0 {
+        report.add_at(repo, SCHED_RS, "pub enum Stop", "止まる理由の列挙を読めない");
+    }
+    // 貸す相手を選ぶ入口は二つで、どちらも同じ貸し出しを通る。
+    if !sched.contains("        self.lend(worker, at).map(Some)") || sched.matches("self.lend(worker, at)").count() != 2 {
+        report.add_at(repo, SCHED_RS, "pub fn grant(", "grant と grant_thread が、同じ貸し出し (lend) を通っていない");
+    }
+    // 取り出した文脈は複製できず、捨てると警告が出る。失敗しても実行権は返す。
+    let exec = repo.text("crates/kome/src/exec.rs");
+    if !exec.contains("#[must_use = \"取り出した文脈は Contexts::save で戻さなければならない\"]\n#[derive(Debug)]\npub struct Loaded<C> {") {
+        report.add_at(repo, "crates/kome/src/exec.rs", "pub struct Loaded", "取り出した文脈 (Loaded) が複製できる、または捨てても警告が出ない");
+    }
+    if exec.matches("return Err(hand_back(kernel, permit, ").count() != 3 {
+        report.add_at(repo, "crates/kome/src/exec.rs", "pub fn run_permit", "run_permit が、失敗を返す前に実行権を返していない経路がある");
+    }
+    // 決定的シミュレーションは、貸す順序を自分の記録と比べる。
+    let sim = repo.text(SIM_RS);
+    let compared = [
+        ("if self.rank(*other) > self.rank(picked) {", "優先度の高いスレッドを飛ばしていないこと"),
+        ("if self.rank(*other) == self.rank(picked) && *theirs < mine {", "同じ優先度の中で、先に実行待ちになったスレッドを飛ばしていないこと"),
+        ("if let Some(idle) = self.since.keys().find(|thread| self.open(**thread)) {", "貸せるスレッドがあるのに貸さないことが無いこと"),
+        ("        self.note_ready();\n", "操作のたびに、貸せる状態のスレッドを記録すること"),
+        ("let ready = self.k.thread_phase(*thread) == Ok(ThreadPhase::Ready) && self.k.suspend_count(*thread) == Ok(0);", "貸せる状態の判定"),
+    ];
+    for (needed, what) in compared {
+        if !sim.contains(needed) {
+            report.add(SIM_RS, 1, format!("決定的シミュレーションが貸す順序を確かめていない: {what} (`{needed}`)"));
+        }
+    }
+}
+
 fn channel_model(repo: &Repo, report: &mut Report) {
     // モデルは kome の名前を一つも使わない。端を持つ者と運ぶ資源は、型引数で受け取る。
     if let Some(found) = scanned(report, PIPES_RS, repo.text(PIPES_RS), true) {
@@ -1351,8 +1422,11 @@ fn channel_model(repo: &Repo, report: &mut Report) {
     }
 }
 
-const QUIET_OPS: [&str; 22] = [
+const QUIET_OPS: [&str; 25] = [
     "grant",
+    "grant_thread",
+    "preempt_thread",
+    "set_priority",
     "relinquish",
     "continue_thread",
     "suspend_thread",

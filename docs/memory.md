@@ -85,7 +85,7 @@ kome の表は全て `Limits` で上限を持つ。上限に達した操作は�
 
 | 確保しない操作 | 分類 |
 | --- | --- |
-| `grant`、`relinquish` | 実行権の貸し出しと返却 (スケジューリング) |
+| `grant`、`grant_thread`、`relinquish`、`preempt_thread`、`set_priority` | 実行権の貸し出しと返却、優先度、譲らせる要求 (スケジューリング) |
 | `continue_thread`、`suspend_thread`、`unsuspend_thread` | スレッドの再開と停止 |
 | `signal`、`interrupt_wait`、`advance` | 起床 (通知、割り込み、期限) |
 | `issue_io`、`cancel_io`、`complete`、`publish_io` | I/O の進行と終端 |

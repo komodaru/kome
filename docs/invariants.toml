@@ -30,10 +30,19 @@ tests = [
     "crates/kome/src/tests.rs::a_worker_holds_one_permit_and_a_thread_is_lent_once",
     "crates/kome/src/tests.rs::a_stale_or_foreign_permit_changes_nothing",
     "crates/kome/src/tests.rs::a_snapshot_is_restored_only_as_another_instance_with_nothing_lent",
+    "crates/kome/src/tests.rs::each_stop_reason_decides_where_the_thread_goes",
+    "crates/kome/src/tests.rs::a_stop_that_does_not_fit_the_run_is_refused_and_the_permit_comes_back",
+    "crates/kome/src/tests.rs::a_named_grant_ignores_the_order_but_not_the_rules",
+    "crates/kome/src/tests.rs::a_context_follows_its_thread_across_workers",
+    "crates/kome/src/tests.rs::a_run_that_cannot_proceed_still_returns_its_permit",
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+    "crates/kome-testkit/tests/sim.rs::the_generator_reaches_every_scheduling_outcome",
 ]
-proofs = []
+proofs = [
+    "a_stop_reason_is_accepted_only_when_it_fits",
+]
 models = []
+proved = "止まった理由を受理するかどうか (stop_allowed) と、受理した後のスレッドの行き先 (after_stop) について、理由・中断の要求の有無・貸した量・実行した量・終了要求の全ての値。前提は無い。実行権の照合、貸し出しの記録、実行待ちの列の更新は示していない。その部分は試験と決定的シミュレーションが見る。"
 scope = "実行権は複製できない値 (RunPermit) で、返却のときにインスタンスと実行の世代を照合する。Kernel も複製できず、写し (Snapshot) は実行権を貸していないときに別の実行インスタンスとしてだけ復元できる。worker が実行権を返さずに実行を続けないことは、実行統括 (kome の外) が守る。"
 
 [[invariant]]
@@ -44,6 +53,7 @@ owner = "crates/kome/src/thread.rs"
 audit = "audit_runs"
 caught = "crates/kome/src/tests.rs::audit_detects_a_runnable_thread_missing_from_the_queue"
 tests = [
+    "crates/kome/src/tests.rs::the_highest_priority_runs_first_and_equals_run_in_order",
     "crates/kome/src/tests.rs::threads_run_in_fifo_order_and_a_preempted_thread_goes_to_the_back",
     "crates/kome/src/tests.rs::suspension_combines_with_every_run_state",
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",

@@ -176,6 +176,12 @@ pub struct MemFault {
 }
 
 impl MemFault {
+    /// 実行器が自分で見つけた失敗を表す ([`crate::Stop::Fault`])。
+    #[must_use]
+    pub const fn new(addr: GuestAddr, kind: MemFaultKind) -> MemFault {
+        MemFault { addr, kind }
+    }
+
     /// 失敗した最初のアドレス。
     #[must_use]
     pub const fn addr(&self) -> GuestAddr {

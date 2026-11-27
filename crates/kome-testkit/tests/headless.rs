@@ -64,7 +64,7 @@ impl Runtime {
     fn run_to_call(&mut self) {
         let permit = self.k.grant(WORKER).unwrap().expect("実行可能なスレッドがある");
         assert_eq!(permit.thread(), self.thread);
-        assert_eq!(self.k.relinquish(permit, Stop::Trapped, Budget::new(3)).unwrap(), ThreadFate::Servicing);
+        assert_eq!(self.k.relinquish(permit, Stop::Trap, Budget::new(3)).unwrap(), ThreadFate::Servicing);
         self.pump();
     }
 

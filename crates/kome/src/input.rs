@@ -21,7 +21,7 @@ use crate::kernel::Kernel;
 use crate::mem::{MapGen, MapSource};
 use crate::object::{SignalOp, SignalSpec};
 use crate::process::ExitCode;
-use crate::sched::{Budget, NotRelinquished, RunPermit, Stop, ThreadFate, WorkerId};
+use crate::sched::{Budget, NotRelinquished, Priority, RunPermit, Stop, ThreadFate, WorkerId};
 use crate::thread::Start;
 use crate::time::{Deadline, Instant, Period};
 use crate::timer::Advanced;
@@ -46,6 +46,12 @@ pub enum Input<'a> {
     TerminateThread(ThreadId, ExitCode),
     /// [`Kernel::grant`]
     Grant(WorkerId),
+    /// [`Kernel::grant_thread`]
+    GrantThread(WorkerId, ThreadId),
+    /// [`Kernel::preempt_thread`]
+    PreemptThread(ThreadId),
+    /// [`Kernel::set_priority`]
+    SetPriority(ThreadId, Priority),
     /// [`Kernel::relinquish`]
     Relinquish(RunPermit, Stop, Budget),
     /// [`Kernel::create_object`]
@@ -127,6 +133,8 @@ pub enum Reply {
     Io(IoId),
     /// 実行権を貸した。実行可能なスレッドが無ければ `None`。
     Permit(Option<RunPermit>),
+    /// 変える前の優先度。
+    Priority(Priority),
     /// 実行権を受け取った後のスレッド。
     Fate(ThreadFate),
     /// 実行権を受理する前に拒否した。状態は変わっていない。実行権と理由を返す。
@@ -175,6 +183,9 @@ impl Kernel {
             Input::UnsuspendThread(thread) => Reply::Count(u64::from(self.unsuspend_thread(thread)?)),
             Input::TerminateThread(thread, code) => self.terminate_thread(thread, code).map(|()| Reply::Done)?,
             Input::Grant(worker) => Reply::Permit(self.grant(worker)?),
+            Input::GrantThread(worker, thread) => Reply::Permit(Some(self.grant_thread(worker, thread)?)),
+            Input::PreemptThread(thread) => self.preempt_thread(thread).map(|()| Reply::Done)?,
+            Input::SetPriority(thread, priority) => Reply::Priority(self.set_priority(thread, priority)?),
             Input::Relinquish(permit, stop, consumed) => match self.relinquish(permit, stop, consumed) {
                 Ok(fate) => Reply::Fate(fate),
                 Err(NotRelinquished::Rejected(permit, reason)) => Reply::Returned(permit, reason),
