@@ -16,6 +16,9 @@ owner = "crates/kome/src/sched.rs"
 audit = "audit_runs"
 caught = "crates/kome/src/tests.rs::audit_detects_two_permits_for_one_thread"
 tests = [
+    "crates/kome/src/tests.rs::a_restored_state_refuses_a_permit_lent_by_the_original",
+    "crates/kome/src/tests.rs::lending_without_room_in_the_table_changes_nothing",
+    "crates/kome/src/tests.rs::a_restored_state_lends_the_thread_that_was_ready",
     "crates/kome/src/tests.rs::a_worker_holds_one_permit_and_a_thread_is_lent_once",
     "crates/kome/src/tests.rs::a_stale_or_foreign_permit_changes_nothing",
     "crates/kome/src/tests.rs::a_snapshot_is_restored_only_as_another_instance_with_nothing_lent",
@@ -128,6 +131,8 @@ owner = "crates/kome/src/mem.rs"
 audit = "audit_memory"
 caught = "crates/kome/src/tests.rs::audit_detects_a_freed_backing_still_mapped"
 tests = [
+    "crates/kome/src/tests.rs::unmapping_the_same_backing_again_and_again_holds_it_once",
+    "crates/kome/src/tests.rs::two_backings_unmapped_together_are_each_held_once",
     "crates/kome/src/tests.rs::a_mapped_backing_outlives_its_last_hold",
     "crates/kome/src/tests.rs::process_exit_releases_holds_and_mappings",
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
@@ -144,6 +149,10 @@ owner = "crates/kome/src/mem.rs"
 audit = "audit_layout"
 caught = "crates/kome/src/tests.rs::audit_detects_overlapping_mappings"
 tests = [
+    "crates/kome/src/tests.rs::protecting_to_the_same_protection_changes_nothing",
+    "crates/kome/src/tests.rs::protect_round_trips_do_not_fragment_a_mapping",
+    "crates/kome/src/tests.rs::protect_counts_the_mappings_left_after_merging",
+    "crates/kome/src/tests.rs::every_protection_allows_exactly_its_own_accesses",
     "crates/kome/src/tests.rs::map_refuses_bad_placements_without_changing_state",
     "crates/kome/src/tests.rs::unmap_splits_and_keeps_offsets",
     "crates/kome/src/tests.rs::protect_needs_full_coverage_and_splits_at_both_ends",
@@ -167,6 +176,7 @@ owner = "crates/kome/src/mem.rs"
 audit = "audit_processes"
 caught = "crates/kome/src/tests.rs::audit_detects_limbo_without_old_runs"
 tests = [
+    "crates/kome/src/tests.rs::only_a_change_that_takes_a_permission_away_stops_running_threads",
     "crates/kome/src/tests.rs::a_reducing_change_bars_the_process_until_old_runs_stop",
     "crates/kome/src/tests.rs::unmapping_a_reservation_interrupts_nobody",
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
@@ -183,6 +193,8 @@ owner = "crates/kome/src/effect.rs"
 audit = "audit_effects"
 caught = "crates/kome/src/tests.rs::audit_detects_a_lost_effect_promise"
 tests = [
+    "crates/kome/src/tests.rs::a_restored_empty_state_creates_and_exits_a_process",
+    "crates/kome/src/tests.rs::a_restored_state_wakes_a_wait_and_reports_it",
     "crates/kome/src/tests.rs::a_full_effect_queue_refuses_before_accepting",
     "crates/kome-testkit/tests/headless.rs::shortage_is_reported_before_the_request_is_accepted",
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",

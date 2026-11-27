@@ -915,8 +915,11 @@ fn protect_needs_full_coverage_and_splits_at_both_ends() {
     assert_eq!(read(&k, p, 0x11000, 1).unwrap().offset().get(), PAGE);
     assert_eq!(read(&k, p, 0x12000, 1).unwrap().offset().get(), 2 * PAGE);
     // 二つのマッピングにまたがる範囲。
+    // 変更の後、二つの部分は同じ権限で同じ実体の続きなので、一つの項目になる。
     ok!(k, k.protect(p, range(0x13000, 2 * PAGE), Prot::NONE));
-    assert_eq!(k.mapping_count(p), Ok(6));
+    assert_eq!(k.mapping_count(p), Ok(5));
+    assert_eq!(k.mapping_at(p, GuestAddr::new(0x14000)).unwrap().map(|m| m.range()), Some(range(0x13000, 2 * PAGE)));
+    assert_eq!(read(&k, p, 0x12000, 3 * PAGE).unwrap().bytes(), PAGE);
     assert_eq!(read(&k, p, 0x13000, 1).unwrap_err().kind(), MemFaultKind::Denied);
     assert_eq!(read(&k, p, 0x14fff, 1).unwrap_err().kind(), MemFaultKind::Denied);
     assert!(read(&k, p, 0x12fff, 1).is_ok());
@@ -1870,6 +1873,16 @@ fn audit_names_every_violation_it_can_report() {
                     process_mut(&mut w.k, w.p).space.limbo.push(gone).unwrap();
                 }),
             ),
+            (
+                "保留に、同じ実体が二度入っている",
+                bent(|w| {
+                    let running = w.permit.thread();
+                    thread_mut(&mut w.k, running).run = Run::Running { worker: W0, stale: true, interrupted: false };
+                    process_mut(&mut w.k, w.p).stale_runners = 1;
+                    process_mut(&mut w.k, w.p).space.limbo.push(w.backing).unwrap();
+                    process_mut(&mut w.k, w.p).space.limbo.push(w.backing).unwrap();
+                }),
+            ),
             ("実体の参照の数が一致しない", bent(|w| w.k.backings.get_mut(w.backing).unwrap().maps = 1)),
             ("実体の参照の数が一致しない", bent(|w| w.k.backings.get_mut(w.backing).unwrap().holds = 2)),
             ("実体の参照の数が一致しない", bent(|w| w.k.backings.get_mut(w.backing).unwrap().limbo = 1)),
@@ -2192,4 +2205,183 @@ fn the_shortest_period_still_lets_time_advance() {
     assert_eq!(k.next_deadline(), Some(at(1)));
     assert_eq!(ok!(k, k.advance(at(9))), 9);
     assert_eq!((k.now(), k.signal_count(sem), k.next_deadline()), (at(9), Ok(10), Some(at(10))));
+}
+
+// ---- 保留の記録は増え続けない (レビュー 1.3 の再現例) ----
+
+#[test]
+fn unmapping_the_same_backing_again_and_again_holds_it_once() {
+    // 再現例: マッピング数 1・実体数 1・実体 1 ページの上限のもとで、実行権を返さないスレッドが
+    // いる間に同じページの対応づけと解除を 4096 回繰り返すと、保留の記録が 4096 個になった。
+    let limits = Limits::DEFAULT.with_workers(2).with_mappings(1).with_backings(1).with_backing_bytes(PAGE);
+    let mut k = kernel_with(limits);
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    let b = ok!(k, k.create_backing(p, PAGE));
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), Prot::READ_WRITE));
+    let lent = ok!(k, k.grant(W0)).unwrap();
+    for _ in 0..4096 {
+        assert_eq!(ok!(k, k.unmap(p, range(0x1000, PAGE))), PAGE);
+        ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), Prot::READ_WRITE));
+        let space = &k.processes.get(p).unwrap().space;
+        assert_eq!(space.limbo.as_slice(), &[b]);
+        assert!(space.limbo.capacity() <= 4, "保留の容量が増え続けている: {}", space.limbo.capacity());
+        assert_eq!(k.backings.get(b).unwrap().limbo, 1);
+    }
+    // マッピングも保持も無くしても、古い世代の実行が残る間は解放しない。
+    ok!(k, k.unmap(p, range(0x1000, PAGE)));
+    ok!(k, k.release_backing(p, b));
+    assert_eq!(drain(&mut k), vec![Effect::Interrupt { worker: W0, thread: t, run: lent.run() }]);
+    assert_eq!(k.backing_len(b), Ok(PAGE));
+    // 最後の古い実行権が返ると、保留が外れて解放される。
+    assert_eq!(ok!(k, k.relinquish(lent, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!(drain(&mut k), vec![Effect::BackingReclaimed { backing: b }]);
+    assert_eq!(k.backing_len(b), Err(Error::Stale(Tag::Backing)));
+    assert!(k.processes.get(p).unwrap().space.limbo.is_empty());
+}
+
+#[test]
+fn two_backings_unmapped_together_are_each_held_once() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let _ = thread(&mut k, p);
+    let a = ok!(k, k.create_backing(p, 2 * PAGE));
+    let b = ok!(k, k.create_backing(p, PAGE));
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(a, 0), Prot::READ));
+    ok!(k, k.map(p, range(0x2000, PAGE), backed(b, 0), Prot::READ));
+    ok!(k, k.map(p, range(0x3000, PAGE), backed(a, PAGE), Prot::READ));
+    let lent = ok!(k, k.grant(W0)).unwrap();
+    assert_eq!(ok!(k, k.unmap(p, range(0x1000, 3 * PAGE))), 3 * PAGE);
+    assert_eq!(k.processes.get(p).unwrap().space.limbo.as_slice(), &[a, b]);
+    assert_eq!((k.backings.get(a).unwrap().limbo, k.backings.get(b).unwrap().limbo), (1, 1));
+    ok!(k, k.release_backing(p, a));
+    ok!(k, k.release_backing(p, b));
+    assert_eq!(ok!(k, k.relinquish(lent, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    let effects = drain(&mut k);
+    assert!(effects.contains(&Effect::BackingReclaimed { backing: a }));
+    assert!(effects.contains(&Effect::BackingReclaimed { backing: b }));
+}
+
+// ---- 権限の変更は項目を増やし続けない (レビュー 3.1 の再現例) ----
+
+#[test]
+fn protecting_to_the_same_protection_changes_nothing() {
+    // 再現例: マッピング数の上限が 1 のとき、3 ページの読み書きマッピングの中央のページへ
+    // 同じ権限を設定すると、分割しようとして上限で拒否された。
+    let mut k = kernel_with(Limits::DEFAULT.with_workers(2).with_mappings(1));
+    let (p, _) = process(&mut k);
+    let _ = thread(&mut k, p);
+    let b = ok!(k, k.create_backing(p, 3 * PAGE));
+    let mapped = ok!(k, k.map(p, range(0x1000, 3 * PAGE), backed(b, 0), Prot::READ_WRITE));
+    let lent = ok!(k, k.grant(W0)).unwrap();
+    let before = k.snapshot().unwrap();
+    assert_eq!(k.protect(p, range(0x2000, PAGE), Prot::READ_WRITE), Ok(mapped));
+    // 世代も進まず、実行中のスレッドへの中断も出ない。
+    assert_eq!(k, before);
+    assert_eq!(k.pending_effects(), 0);
+    // 本当に分割が要る変更は、上限で拒否する。
+    assert_eq!(k.protect(p, range(0x2000, PAGE), Prot::READ), Err(Error::Exhausted(Resource::Mappings)));
+    assert_eq!(k, before);
+    assert_eq!(ok!(k, k.relinquish(lent, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+}
+
+#[test]
+fn protect_round_trips_do_not_fragment_a_mapping() {
+    // 再現例: 32 MiB の読み書きマッピングで、ページ単位に 読み書き → 読み出しだけ → 読み書き と
+    // 戻す操作を繰り返すと、同じ権限の項目が 4095 個に分かれ、次の変更が上限で拒否された。
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let pages = 8192u64;
+    let b = ok!(k, k.create_backing(p, pages * PAGE));
+    ok!(k, k.map(p, range(0x10_0000, pages * PAGE), backed(b, 0), Prot::READ_WRITE));
+    for page in (1..pages - 1).step_by(2) {
+        let one = range(0x10_0000 + page * PAGE, PAGE);
+        ok!(k, k.protect(p, one, Prot::READ));
+        assert_eq!(k.mapping_count(p), Ok(3));
+        ok!(k, k.protect(p, one, Prot::READ_WRITE));
+        assert_eq!(k.mapping_count(p), Ok(1));
+    }
+    assert_eq!(k.backings.get(b).unwrap().maps, 1);
+    // ばらばらの権限にしてから全体を同じ権限へ戻すと、一つの項目へ戻る。
+    for page in (1..64).step_by(2) {
+        ok!(k, k.protect(p, range(0x10_0000 + page * PAGE, PAGE), Prot::READ));
+    }
+    assert_eq!(k.mapping_count(p), Ok(65));
+    ok!(k, k.protect(p, range(0x10_0000, pages * PAGE), Prot::READ_WRITE));
+    assert_eq!(k.mapping_count(p), Ok(1));
+    assert_eq!(k.backings.get(b).unwrap().maps, 1);
+    assert_eq!(read(&k, p, 0x10_0000, pages * PAGE).unwrap().bytes(), pages * PAGE);
+}
+
+#[test]
+fn protect_counts_the_mappings_left_after_merging() {
+    // 上限ちょうどの数で、分割と結合が同時に起きる変更は、結果の数で判定する。
+    let mut k = kernel_with(Limits::DEFAULT.with_workers(2).with_mappings(2));
+    let (p, _) = process(&mut k);
+    let b = ok!(k, k.create_backing(p, 3 * PAGE));
+    ok!(k, k.map(p, range(0x1000, 2 * PAGE), backed(b, 0), Prot::READ_WRITE));
+    ok!(k, k.map(p, range(0x3000, PAGE), backed(b, 2 * PAGE), Prot::READ));
+    // 2 ページ目を読み出しだけにする: 前の項目が分かれ、後ろの項目とまとまる。数は 2 のまま。
+    ok!(k, k.protect(p, range(0x2000, PAGE), Prot::READ));
+    assert_eq!(k.mapping_count(p), Ok(2));
+    assert_eq!(k.mapping_at(p, GuestAddr::new(0x2000)).unwrap().map(|m| m.range()), Some(range(0x2000, 2 * PAGE)));
+    // 別名 (実体の中の位置が続かない) や、別の実体とはまとめない。
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let b = ok!(k, k.create_backing(p, 2 * PAGE));
+    let c = ok!(k, k.create_backing(p, PAGE));
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), Prot::READ));
+    ok!(k, k.map(p, range(0x2000, PAGE), backed(b, 0), Prot::READ_WRITE));
+    ok!(k, k.map(p, range(0x3000, PAGE), backed(c, 0), Prot::READ));
+    ok!(k, k.protect(p, range(0x2000, PAGE), Prot::READ));
+    assert_eq!(k.mapping_count(p), Ok(3));
+}
+
+#[test]
+fn only_a_change_that_takes_a_permission_away_stops_running_threads() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    let b = ok!(k, k.create_backing(p, PAGE));
+    let mapped = ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), Prot::READ));
+    let lent = ok!(k, k.grant(W0)).unwrap();
+    // 増やすだけ: 世代は進むが、中断は要求しない。
+    let widened = ok!(k, k.protect(p, range(0x1000, PAGE), Prot::READ_WRITE));
+    assert!(widened > mapped);
+    assert!(drain(&mut k).is_empty());
+    // 書き込みを足し、読み出しを外す: 減る権限があるので中断を要求する。
+    ok!(k, k.protect(p, range(0x1000, PAGE), Prot::new(false, true, true)));
+    assert_eq!(drain(&mut k), vec![Effect::Interrupt { worker: W0, thread: t, run: lent.run() }]);
+    assert_eq!(ok!(k, k.relinquish(lent, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+}
+
+// ---- 権限とアクセスの全ての組 (レビュー 4.1) ----
+
+#[test]
+fn every_protection_allows_exactly_its_own_accesses() {
+    // 権限 8 通り × アクセス 3 通りの期待を、判定の式を使わずに一つずつ書く。
+    // 列は (読み出し, 書き込み, 実行) の権限と、読み出し・書き込み・実行のアクセスが通るか。
+    const TABLE: [((bool, bool, bool), [bool; 3]); 8] = [
+        ((false, false, false), [false, false, false]),
+        ((true, false, false), [true, false, false]),
+        ((false, true, false), [false, true, false]),
+        ((true, true, false), [true, true, false]),
+        ((false, false, true), [false, false, true]),
+        ((true, false, true), [true, false, true]),
+        ((false, true, true), [false, true, true]),
+        ((true, true, true), [true, true, true]),
+    ];
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let b = ok!(k, k.create_backing(p, PAGE));
+    for ((r, w, x), expected) in TABLE {
+        let prot = Prot::new(r, w, x);
+        ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), prot));
+        for (access, allowed) in [Access::Read, Access::Write, Access::Execute].into_iter().zip(expected) {
+            assert_eq!(prot.allows(access), allowed, "{prot:?} {access:?}");
+            let reached = k.translate(p, range(0x1000, 1), access).unwrap();
+            assert_eq!(reached.map_err(|fault| fault.kind()).map(|span| span.backing()), if allowed { Ok(b) } else { Err(MemFaultKind::Denied) }, "{prot:?} {access:?}");
+        }
+        ok!(k, k.unmap(p, range(0x1000, PAGE)));
+    }
 }

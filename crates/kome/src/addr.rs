@@ -195,6 +195,12 @@ impl Prot {
         Prot { read, write, execute }
     }
 
+    /// `other` が許すアクセスを全て許すか (`other` からこの権限への変更で、権限が減らないか)。
+    #[must_use]
+    pub const fn covers(self, other: Prot) -> bool {
+        (self.read || !other.read) && (self.write || !other.write) && (self.execute || !other.execute)
+    }
+
     /// `access` を許すか。
     #[must_use]
     pub const fn allows(self, access: Access) -> bool {
@@ -233,6 +239,19 @@ mod tests {
         assert!(!a.overlaps(touching));
         assert!(a.overlaps(inside) && inside.overlaps(a));
         assert!(a.contains(GuestAddr::new(0x1FFF)) && !a.contains(GuestAddr::new(0x2000)));
+    }
+
+    #[test]
+    fn a_protection_covers_exactly_its_subsets() {
+        let all = [false, true];
+        for (r, w, x) in all.into_iter().flat_map(|r| all.into_iter().flat_map(move |w| all.map(|x| (r, w, x)))) {
+            for (r2, w2, x2) in all.into_iter().flat_map(|r| all.into_iter().flat_map(move |w| all.map(|x| (r, w, x)))) {
+                let expected = (r || !r2) && (w || !w2) && (x || !x2);
+                let subset = [(r, r2), (w, w2), (x, x2)].iter().all(|(have, want)| *have >= *want);
+                assert_eq!(expected, subset);
+                assert_eq!(Prot::new(r, w, x).covers(Prot::new(r2, w2, x2)), subset, "{r}{w}{x} / {r2}{w2}{x2}");
+            }
+        }
     }
 
     #[test]

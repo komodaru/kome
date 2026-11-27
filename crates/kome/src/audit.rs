@@ -368,6 +368,8 @@ impl Kernel {
             Invariant::MemLayout,
             "マッピングの数が上限を超えている",
         )?;
+        let once = space.limbo.iter().enumerate().all(|(at, backing)| space.limbo.iter().take(at).all(|held| held != backing));
+        ensure(once, Invariant::MemBackingAlive, "保留に、同じ実体が二度入っている")?;
         ensure(
             space.limbo.iter().all(|backing| self.backings.contains(*backing)),
             Invariant::MemBackingAlive,

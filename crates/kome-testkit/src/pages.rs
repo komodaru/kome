@@ -2,10 +2,68 @@
 //!
 //! kome のマッピング (区間の列、分割、世代) とは別の表現で同じ意味を持つ。
 //! 両者の見え方が一致することを [`crate::sim`] が操作のたびに確かめる。
+//!
+//! 権限とアクセスの種類も、kome の型 (`Prot`、`Access`) を使わずにここで定義する。
+//! モデルが kome の判定を呼ぶと、判定の誤りが両方に同じように現れて見つからない。
+//! kome から借りるのは実体の ID だけである (lint `independent-model`)。
 
 use std::collections::BTreeMap;
 
-use kome::{Access, BackingId, Prot};
+use kome::BackingId;
+
+/// モデルの権限。入力の三つの真偽値をそのまま持つ。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Perm {
+    /// 読み出せる。
+    pub read: bool,
+    /// 書き込める。
+    pub write: bool,
+    /// 実行できる。
+    pub execute: bool,
+}
+
+impl Perm {
+    /// どのアクセスもできない。
+    pub const NONE: Perm = Perm { read: false, write: false, execute: false };
+
+    /// 3 ビットの数から作る (読み出し 1、書き込み 2、実行 4)。全部で 8 通り。
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Perm {
+        Perm { read: bits & 1 != 0, write: bits & 2 != 0, execute: bits & 4 != 0 }
+    }
+
+    /// このアクセスができるか。
+    #[must_use]
+    pub const fn permits(self, touch: Touch) -> bool {
+        match touch {
+            Touch::Read => self.read,
+            Touch::Write => self.write,
+            Touch::Execute => self.execute,
+        }
+    }
+
+    /// `to` へ変えると、できなくなるアクセスがあるか。
+    #[must_use]
+    pub fn loses(self, to: Perm) -> bool {
+        Touch::ALL.into_iter().any(|touch| self.permits(touch) && !to.permits(touch))
+    }
+}
+
+/// モデルのアクセスの種類。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Touch {
+    /// 読み出し。
+    Read,
+    /// 書き込み。
+    Write,
+    /// 実行。
+    Execute,
+}
+
+impl Touch {
+    /// すべての種類。
+    pub const ALL: [Touch; 3] = [Touch::Read, Touch::Write, Touch::Execute];
+}
 
 /// 一ページの中身。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,7 +77,7 @@ pub enum Page {
         /// 実体の中の位置。
         offset: u64,
         /// 権限。
-        prot: Prot,
+        prot: Perm,
     },
 }
 
@@ -56,7 +114,7 @@ impl Pages {
     }
 
     /// 範囲へ、`source` の先頭から順にページを置く。
-    pub fn map(&mut self, first: u64, count: u64, source: Option<(BackingId, u64)>, prot: Prot, page_size: u64) {
+    pub fn map(&mut self, first: u64, count: u64, source: Option<(BackingId, u64)>, prot: Perm, page_size: u64) {
         for index in 0..count {
             let page = match source {
                 None => Page::Reserved,
@@ -85,23 +143,43 @@ impl Pages {
         (removed, backed)
     }
 
-    /// 範囲の実体のあるページの権限を変える。
-    pub fn protect(&mut self, first: u64, count: u64, to: Prot) {
+    /// 範囲の実体のあるページの権限を変える。変わったページがあるかと、できなくなった
+    /// アクセスがあるかを返す。
+    pub fn protect(&mut self, first: u64, count: u64, to: Perm) -> (bool, bool) {
+        let mut changed = false;
+        let mut lost = false;
         for page in first..first.saturating_add(count) {
             if let Some(Page::Backed { prot, .. }) = self.pages.get_mut(&page) {
+                changed = changed || *prot != to;
+                lost = lost || prot.loses(to);
                 *prot = to;
             }
+        }
+        (changed, lost)
+    }
+
+    /// ページ `page` が、一つ前のページと同じ権限で、同じ実体の続きを見せているか
+    /// (二つを一つの区間として表せるか)。
+    #[must_use]
+    pub fn continues(&self, page: u64, page_size: u64) -> bool {
+        let Some(before) = page.checked_sub(1) else { return false };
+        match (self.pages.get(&before), self.pages.get(&page)) {
+            (
+                Some(Page::Backed { backing, offset, prot }),
+                Some(Page::Backed { backing: next, offset: follows, prot: same }),
+            ) => backing == next && prot == same && offset.checked_add(page_size) == Some(*follows),
+            (Some(Page::Backed { .. } | Page::Reserved) | None, Some(Page::Backed { .. } | Page::Reserved) | None) => false,
         }
     }
 
     /// ページの先頭から `within` バイト目へのアクセスの結果。
     #[must_use]
-    pub fn expect(&self, page: u64, within: u64, access: Access) -> Expect {
+    pub fn expect(&self, page: u64, within: u64, touch: Touch) -> Expect {
         match self.pages.get(&page) {
             None => Expect::Unmapped,
             Some(Page::Reserved) => Expect::Reserved,
             Some(Page::Backed { backing, offset, prot }) => {
-                if prot.allows(access) {
+                if prot.permits(touch) {
                     Expect::Reaches(*backing, offset.saturating_add(within))
                 } else {
                     Expect::Denied

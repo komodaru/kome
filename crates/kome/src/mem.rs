@@ -82,6 +82,28 @@ impl Mapping {
         (from <= self.last).then_some(Mapping { start: from, last: self.last, prot: self.prot, source })
     }
 
+    /// `next` がすぐ後ろに並び、同じ権限で、同じ実体の続きを見せているか (一つの項目で表せるか)。
+    fn continues_into(self, next: Mapping) -> bool {
+        let adjacent = self.last.checked_add(1) == Some(next.start);
+        let same_source = match (self.source, next.source) {
+            (MapSource::Backing { backing, offset }, MapSource::Backing { backing: other, offset: follows }) => {
+                let skipped = next.start.checked_sub(self.start);
+                backing == other && skipped.and_then(|skipped| offset.get().checked_add(skipped)) == Some(follows.get())
+            }
+            (MapSource::Reserved, MapSource::Reserved | MapSource::Backing { .. })
+            | (MapSource::Backing { .. }, MapSource::Reserved) => false,
+        };
+        adjacent && self.prot == next.prot && same_source
+    }
+
+    /// `range` の中に入る部分に、権限 `prot` を付けたもの。
+    fn piece_within(self, start: u64, last: u64, prot: Prot) -> Option<Mapping> {
+        let mut piece = self.tail_from(self.start.max(start))?;
+        piece.last = piece.last.min(last);
+        piece.prot = prot;
+        Some(piece)
+    }
+
     const fn backing(self) -> Option<BackingId> {
         match self.source {
             MapSource::Reserved => None,
@@ -200,7 +222,7 @@ pub(crate) struct Space {
     /// 先頭アドレスの昇順で、重ならない。
     pub(crate) maps: List<Mapping>,
     pub(crate) generation: u64,
-    /// 外したが、古い世代の実行が残るので参照を持ち続けている実体。
+    /// 外したが、古い世代の実行が残るので参照を持ち続けている実体。一つの実体は一度だけ入る。
     pub(crate) limbo: List<BackingId>,
 }
 
@@ -241,7 +263,7 @@ pub(crate) struct Backing {
     pub(crate) holds: u32,
     /// この実体を見せているマッピングの数。
     pub(crate) maps: u32,
-    /// 保留の数。
+    /// 保留しているアドレス空間の数 (一つの空間は一つの実体を一度だけ保留する)。
     pub(crate) limbo: u32,
 }
 
@@ -432,11 +454,14 @@ impl Kernel {
                 }
             }
             let Some(backing) = mapping.backing() else { continue };
-            if hold_old {
+            // 保留は、一つの空間につき一つの実体を一度だけ持つ。古い世代の実行が残る間に同じ実体を
+            // 何度外しても、記録は増えない。
+            let hold = hold_old && !owner.space.limbo.iter().any(|held| *held == backing);
+            if hold {
                 owner.space.limbo.push_within(backing).map_err(|_| Error::Broken(Invariant::MemBackingAlive))?;
             }
             let entry = self.backings.get_mut(backing).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
-            if hold_old {
+            if hold {
                 entry.limbo = entry.limbo.checked_add(1).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
             }
             if more_maps {
@@ -452,7 +477,12 @@ impl Kernel {
     }
 
     /// 範囲の権限を変える。範囲のすべてが実体のあるマッピングでなければ、何も変えずに
-    /// 拒否する。範囲の端をまたぐマッピングは分割する。
+    /// 拒否する。範囲の端をまたぐマッピングは分割し、変更の後、隣り合う項目が同じ権限で
+    /// 同じ実体の続きを見せていれば一つにまとめる。
+    ///
+    /// 範囲の全体が既に `prot` なら、何も変えずに今の世代を返す (分割も中断の要求もしない)。
+    /// 権限が減る部分が無い変更 (増やすだけ) は、世代を進めるが、実行中のスレッドを止めない。
+    /// 古い世代で検証したマッピングは、変更の前より狭い権限しか持たないからである。
     pub fn protect(&mut self, process: ProcessId, range: GuestRange, prot: Prot) -> Result<MapGen, Error> {
         let owner = self.processes.get(process).ok_or(Error::Stale(Tag::Process))?;
         if owner.life != Life::Alive {
@@ -464,6 +494,8 @@ impl Kernel {
         let first = space.first_ending_at_or_after(start);
         let mut end = first;
         let mut expected = start;
+        let mut changes = false;
+        let mut reduces = false;
         loop {
             let mapping = space.maps.get(end).ok_or(Error::Refused(Refusal::NotMapped))?;
             if mapping.start > expected {
@@ -472,11 +504,16 @@ impl Kernel {
             if mapping.backing().is_none() {
                 return Err(Error::Refused(Refusal::NotBacked));
             }
+            changes = changes || mapping.prot != prot;
+            reduces = reduces || !prot.covers(mapping.prot);
             if mapping.last >= last {
                 break;
             }
             expected = mapping.last.checked_add(1).ok_or(Error::Broken(Invariant::MemLayout))?;
             end = end.saturating_add(1);
+        }
+        if !changes {
+            return Ok(space.generation());
         }
         let head = *space.maps.get(first).ok_or(Error::Broken(Invariant::MemLayout))?;
         let tail = *space.maps.get(end).ok_or(Error::Broken(Invariant::MemLayout))?;
@@ -493,8 +530,26 @@ impl Kernel {
                 return Err(Error::Exhausted(Resource::Pins));
             }
         }
-        let count = u64::try_from(space.maps.len().saturating_add(extra)).unwrap_or(u64::MAX);
-        if count > u64::from(self.limits.mappings()) {
+        // 変更の後にまとまる項目の数。範囲の中の部分と、その両隣 (分割で残る部分、無ければ隣の項目) を
+        // 順に並べ、続いているものを数える。
+        let before = match start.checked_sub(1) {
+            Some(kept) if head.start < start => Some(Mapping { last: kept, ..head }),
+            Some(_) | None => first.checked_sub(1).and_then(|at| space.maps.get(at).copied()),
+        };
+        let after = right.or_else(|| space.maps.get(end.saturating_add(1)).copied());
+        let covered = end.saturating_sub(first).saturating_add(1);
+        let mut merges = 0usize;
+        let mut previous = before;
+        for mapping in space.maps.iter().skip(first).take(covered) {
+            let piece = mapping.piece_within(start, last, prot).ok_or(Error::Broken(Invariant::MemLayout))?;
+            merges = merges.saturating_add(usize::from(previous.is_some_and(|earlier| earlier.continues_into(piece))));
+            previous = Some(piece);
+        }
+        if let (Some(piece), Some(after)) = (previous, after) {
+            merges = merges.saturating_add(usize::from(piece.continues_into(after)));
+        }
+        let count = space.maps.len().saturating_add(extra).saturating_sub(merges);
+        if u64::try_from(count).unwrap_or(u64::MAX) > u64::from(self.limits.mappings()) {
             return Err(Error::Exhausted(Resource::Mappings));
         }
         let generation = space.generation.checked_add(1).ok_or(Error::Exhausted(Resource::Identifiers))?;
@@ -523,7 +578,29 @@ impl Kernel {
             let entry = self.backings.get_mut(backing).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
             entry.maps = entry.maps.checked_add(1).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
         }
-        self.reduce(process)?;
+        // 続いている項目をまとめる。範囲の一つ手前から始め、範囲を過ぎたら終える。
+        let mut at = from.saturating_sub(1);
+        loop {
+            let owner = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
+            let maps = &mut owner.space.maps;
+            let following = at.saturating_add(1);
+            let (Some(current), Some(next)) = (maps.get(at).copied(), maps.get(following).copied()) else { break };
+            if current.start > last {
+                break;
+            }
+            if !current.continues_into(next) {
+                at = following;
+                continue;
+            }
+            maps.get_mut(at).ok_or(Error::Broken(Invariant::MemLayout))?.last = next.last;
+            maps.remove(following).ok_or(Error::Broken(Invariant::MemLayout))?;
+            let backing = next.backing().ok_or(Error::Broken(Invariant::MemLayout))?;
+            let entry = self.backings.get_mut(backing).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
+            entry.maps = entry.maps.checked_sub(1).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
+        }
+        if reduces {
+            self.reduce(process)?;
+        }
         Ok(MapGen(generation))
     }
 

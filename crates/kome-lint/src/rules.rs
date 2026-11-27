@@ -16,6 +16,7 @@ const LEDGER: &str = "docs/invariants.toml";
 const CI: &str = ".github/workflows/ci.yml";
 const EXPECT: &str = "tla/expect.tsv";
 const COMPILE_FAIL: &str = "docs/compile-fail.tsv";
+const PAGES_RS: &str = "crates/kome-testkit/src/pages.rs";
 const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
 
@@ -207,6 +208,18 @@ pub const RULES: &[Rule] = &[
             |repo| repo.append(KERNEL_RS, "fn late(kernel: &mut Kernel, entry: DueEntry) -> bool { kernel.due.push_within(entry).is_ok() }"),
             |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("owner.space.limbo.reserve(", "owner.space.maps.reserve(")),
             |repo| repo.append(CAPACITY, "waiters\twait\tsignal\t同じ操作"),
+        ],
+    },
+    Rule {
+        id: "independent-model",
+        about: "独立したモデルは kome の判定を呼ばず (借りるのは実体の ID だけ)、決定的シミュレーションが見え方と項目のまとまりをモデルと比べる",
+        check: independent_model,
+        breaks: &[
+            |repo| repo.edit(PAGES_RS, |text| text.replace("use kome::BackingId;", "use kome::{BackingId, Prot};")),
+            |repo| repo.append(PAGES_RS, "fn judged(prot: kome::Prot) -> bool { prot.allows(kome::Access::Write) }"),
+            |repo| repo.edit(SIM_RS, |text| text.replace("let expected = model.expect(page, within, touch);", "let expected = actual;")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("self.check_merged(process, first, count)?;", "")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("&& model.continues(page, PAGE)", "&& false")),
         ],
     },
     Rule {
@@ -933,6 +946,28 @@ fn capacity_audited(repo: &Repo, report: &mut Report) {
         }
         if *check != "同じ操作" && !repo.text(audit_rs).contains(&format!("\"{check}\"")) {
             report.add_at(repo, CAPACITY, name, format!("audit.rs が「{check}」を報告しない (容量を検査していない)"));
+        }
+    }
+}
+
+fn independent_model(repo: &Repo, report: &mut Report) {
+    let Some(found) = scanned(report, PAGES_RS, repo.text(PAGES_RS), true) else { return };
+    let mut after_kome = false;
+    for (name, line) in &found.idents {
+        // `kome::` の次に来てよい名前は BackingId だけ。kome の型と判定の名前は、どこにも書かない。
+        let borrowed = after_kome && name != "BackingId";
+        let judged = matches!(name.as_str(), "Prot" | "Access" | "allows" | "covers" | "Kernel" | "translate");
+        if borrowed || judged {
+            report.add(PAGES_RS, *line, format!("モデルが kome の `{name}` を使っている。モデルは自分の表現で判定する"));
+        }
+        after_kome = name == "kome";
+    }
+    if !repo.text(SIM_RS).contains("let expected = model.expect(page, within, touch);") {
+        report.add(SIM_RS, 1, "決定的シミュレーションが、メモリの見え方をモデルの判定 (Pages::expect) と比べていない");
+    }
+    for needed in ["self.check_merged(process, first, count)?;", "&& model.continues(page, PAGE)"] {
+        if !repo.text(SIM_RS).contains(needed) {
+            report.add(SIM_RS, 1, format!("決定的シミュレーションが、権限の変更の後に項目がまとまったことをモデルと比べていない (`{needed}`)"));
         }
     }
 }

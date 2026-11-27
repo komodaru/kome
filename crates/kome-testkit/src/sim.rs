@@ -11,7 +11,7 @@ use kome::{
     WaitStart, WorkerId,
 };
 
-use crate::pages::{Expect, Pages};
+use crate::pages::{Expect, Pages, Perm, Touch};
 
 /// シミュレーションのページの大きさ。
 pub const PAGE: u64 = 0x1000;
@@ -383,7 +383,7 @@ impl Sim {
             return Ok(());
         }
         for page in 0..PAGES.saturating_add(4) {
-            for access in [Access::Read, Access::Write, Access::Execute] {
+            for (access, touch) in [(Access::Read, Touch::Read), (Access::Write, Touch::Write), (Access::Execute, Touch::Execute)] {
                 let within = 0x10;
                 let addr = page.saturating_mul(PAGE).saturating_add(within);
                 let range = GuestRange::new(GuestAddr::new(addr), 1).ok_or("範囲")?;
@@ -399,11 +399,32 @@ impl Sim {
                         MemFaultKind::Denied => Expect::Denied,
                     },
                 };
-                let expected = model.expect(page, within, access);
+                let expected = model.expect(page, within, touch);
                 if actual != expected {
                     return Err(format!("ページ {page} の {access:?}: カーネル {actual:?}、モデル {expected:?}"));
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// 権限を変えた範囲とその両隣に、一つにまとめられる項目が分かれたまま残っていないか。
+    /// 変更を繰り返しても、項目の数は見え方の違いの数を超えない。
+    fn check_merged(&self, process: ProcessId, first: u64, count: u64) -> Result<(), String> {
+        let model = self.spaces.get(&process).ok_or("モデル")?;
+        let mut from = GuestAddr::new(0);
+        let mut previous: Option<GuestRange> = None;
+        while let Some(mapping) = self.k.next_mapping(process, from).map_err(|error| format!("{error:?}"))? {
+            let range = mapping.range();
+            let page = range.start().get() / PAGE;
+            let touches = previous.is_some_and(|before| before.last().get().checked_add(1) == Some(range.start().get()));
+            let near = page >= first && page <= first.saturating_add(count);
+            if touches && near && model.continues(page, PAGE) {
+                return Err(format!("MEM-2: まとめられる項目が分かれたまま残った: ページ {page} の前後"));
+            }
+            previous = Some(range);
+            let Some(next) = range.last().get().checked_add(1) else { break };
+            from = GuestAddr::new(next);
         }
         Ok(())
     }
@@ -763,12 +784,8 @@ impl Sim {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
                 let (first, count) = (r.below(PAGES), r.below(4).saturating_add(1));
                 let source = if r.below(3) == 0 { None } else { r.prefer(&self.backings, |backing| self.k.backing_len(*backing).is_ok()).map(|b| (b, r.below(3).saturating_mul(PAGE))) };
-                let prot = match r.below(4) {
-                    0 => Prot::NONE,
-                    1 => Prot::READ,
-                    2 => Prot::READ_WRITE,
-                    _ => Prot::READ_EXECUTE,
-                };
+                let perm = Perm::from_bits(r.byte() & 7);
+                let prot = Prot::new(perm.read, perm.write, perm.execute);
                 let map_source = match source {
                     None => MapSource::Reserved,
                     Some((backing, offset)) => MapSource::Backing { backing, offset: BackingOffset::new(offset) },
@@ -783,7 +800,7 @@ impl Sim {
                     }
                     Ok(_) => {
                         let space = self.spaces.get_mut(&process).ok_or("モデルに無いプロセスへのマッピングを受理した")?;
-                        space.map(first, count, source, if source.is_some() { prot } else { Prot::NONE }, PAGE);
+                        space.map(first, count, source, if source.is_some() { perm } else { Perm::NONE }, PAGE);
                         self.check_space(process)?;
                         Outcome::Accepted
                     }
@@ -815,9 +832,12 @@ impl Sim {
             48..=50 => {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
                 let (first, count) = (r.below(PAGES), r.below(4).saturating_add(1));
-                let prot = if r.flag() { Prot::READ } else { Prot::READ_WRITE };
+                let perm = Perm::from_bits(r.byte() & 7);
+                let prot = Prot::new(perm.read, perm.write, perm.execute);
                 let range = pages(first, count).ok_or("範囲")?;
                 let coverable = self.spaces.get(&process).is_some_and(|space| space.all_backed(first, count));
+                let before = self.k.map_generation(process);
+                let pending = self.k.pending_effects();
                 match self.k.protect(process, range, prot) {
                     Ok(_) if !coverable => {
                         return Err(format!("実体の無い部分を含む範囲の権限変更を受理した: {range:?}"));
@@ -825,10 +845,24 @@ impl Sim {
                     Err(Error::Refused(Refusal::NotMapped | Refusal::NotBacked)) if coverable => {
                         return Err(format!("モデルではすべて実体のある範囲を拒否した: {range:?}"));
                     }
-                    Ok(_) => {
-                        self.spaces.get_mut(&process).ok_or("モデル")?.protect(first, count, prot);
-                        for held in self.held.iter_mut().filter(|held| held.permit.process() == process) {
-                            held.stale = true;
+                    Ok(generation) => {
+                        let space = self.spaces.get_mut(&process).ok_or("モデル")?;
+                        let (changed, lost) = space.protect(first, count, perm);
+                        // 何も変わらない変更は世代を進めない。変わる変更は進める。
+                        if (Ok(generation) != before) != changed {
+                            return Err(format!("権限の変更 (変化 {changed}) の前後の世代: {before:?} → {generation:?}"));
+                        }
+                        // 権限が減らない変更は、実行中のスレッドへ中断を要求しない。
+                        if !lost && self.k.pending_effects() != pending {
+                            return Err(format!("権限が減らない変更で Effect が出た: {range:?}"));
+                        }
+                        if changed {
+                            self.check_merged(process, first, count)?;
+                        }
+                        if lost {
+                            for held in self.held.iter_mut().filter(|held| held.permit.process() == process) {
+                                held.stale = true;
+                            }
                         }
                         self.check_space(process)?;
                         Outcome::Accepted
