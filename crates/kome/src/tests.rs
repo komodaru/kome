@@ -17,6 +17,12 @@ fn kernel() -> Kernel {
     kernel_with(Limits::DEFAULT.with_workers(2))
 }
 
+/// 繰り返しの回数。Miri は一歩ごとの検査が千倍ほど遅いので、同じ経路を少ない回数で通す。
+/// 回数そのものが意味を持つ再現 (数千回で増え続けること) は、通常の試験が全回数で確かめる。
+fn rounds(full: usize) -> usize {
+    if cfg!(miri) { full.min(48) } else { full }
+}
+
 /// 操作を行い、検査を通してから結果を返す。
 macro_rules! ok {
     ($kernel:expr, $result:expr) => {{
@@ -2309,7 +2315,7 @@ fn splitting_an_advance_changes_no_outcome() {
     assert!(effects.len() >= 4, "待機が四つとも確定していない: {effects:?}");
     // on_c は時刻 0 から 100 まで 101 回。資源を待つスレッドがいないので、数はそのまま残る。
     assert_eq!(counts[2], 101);
-    for batch in [1, 2, 3, 7, 20, 21, 22, 64] {
+    for batch in [1, 21, 2, 3, 7, 20, 22, 64].into_iter().take(rounds(8).min(if cfg!(miri) { 2 } else { 8 })) {
         let (split_effects, split_counts, split_next, split_total, split_calls) = crowded_run(batch);
         assert_eq!((&split_effects, split_counts, split_next, split_total), (&effects, counts, next, total), "目安 {batch}");
         assert!(split_calls > 1, "目安 {batch} で一度も区切らなかった");
@@ -2369,7 +2375,7 @@ fn unmapping_the_same_backing_again_and_again_holds_it_once() {
     let b = ok!(k, k.create_backing(p, PAGE));
     ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), Prot::READ_WRITE));
     let lent = ok!(k, k.grant(W0)).unwrap();
-    for _ in 0..4096 {
+    for _ in 0..rounds(4096) {
         assert_eq!(ok!(k, k.unmap(p, range(0x1000, PAGE))), PAGE);
         ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), Prot::READ_WRITE));
         let space = &k.processes.get(p).unwrap().space;
@@ -2443,7 +2449,7 @@ fn protect_round_trips_do_not_fragment_a_mapping() {
     let pages = 8192u64;
     let b = ok!(k, k.create_backing(p, pages * PAGE));
     ok!(k, k.map(p, range(0x10_0000, pages * PAGE), backed(b, 0), Prot::READ_WRITE));
-    for page in (1..pages - 1).step_by(2) {
+    for page in (1..pages - 1).step_by(2).take(rounds(4095)) {
         let one = range(0x10_0000 + page * PAGE, PAGE);
         ok!(k, k.protect(p, one, Prot::READ));
         assert_eq!(k.mapping_count(p), Ok(3));
