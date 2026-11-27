@@ -3369,6 +3369,28 @@ fn a_context_is_found_by_its_slot_and_never_by_an_earlier_thread() {
 }
 
 #[test]
+fn a_context_taken_for_an_earlier_run_is_not_put_back_over_a_later_one() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    let mut contexts = Contexts::new();
+    contexts.insert(t, 1).unwrap();
+    let first = ok!(k, k.grant_thread(W0, t));
+    let stale = contexts.load(&first).unwrap();
+    // 取り出している間に文脈を取り除き、置き直して、次の実行のために取り出す。
+    assert_eq!(contexts.remove(t), Ok(None));
+    assert_eq!(ok!(k, k.relinquish(first, Stop::Yielded, Budget::new(0))), ThreadFate::Ready);
+    contexts.insert(t, 2).unwrap();
+    let second = ok!(k, k.grant_thread(W0, t));
+    let current = contexts.load(&second).unwrap();
+    // 前の実行のために取り出した文脈は、同じスレッドでも戻せない。今の記録も壊さない。
+    assert_eq!(contexts.save(stale), Err(Error::Refused(Refusal::NoContext)));
+    contexts.save(current).unwrap();
+    assert_eq!(ok!(k, k.relinquish(second, Stop::Yielded, Budget::new(0))), ThreadFate::Ready);
+    assert_eq!(contexts.remove(t), Ok(Some(2)));
+}
+
+#[test]
 fn a_run_that_cannot_proceed_still_returns_its_permit() {
     let mut k = kernel();
     let (p, _) = process(&mut k);

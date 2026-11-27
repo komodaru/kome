@@ -376,6 +376,7 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(KOME_MANIFEST, |text| text.replace("[package.metadata.flux]\nenabled = true", "[package.metadata.flux]\nenabled = false")),
             |repo| repo.edit(EFFECT_RS, |text| text.replace("    fn flux_broken_room(", "    fn room_twice(")),
             |repo| repo.edit(FLUX_SH, |text| text.replace("--cfg flux_broken", "")),
+            |repo| repo.edit(FLUX_SH, |text| text.replace("export PATH=\"$sysroot/bin:$PATH\"\n", "")),
             |repo| repo.edit(FLUX_SH, |text| text.replace("    exit 1\n", "")),
             |repo| repo.remove(FLUX_TSV),
             |repo| repo.edit("crates/kome/src/lib.rs", |text| text.replace("#[cfg(flux)]\nextern crate flux_core;", "")),
@@ -1698,6 +1699,7 @@ fn refinements_kept(repo: &Repo, report: &mut Report) {
     }
     let script = repo.text(FLUX_SH);
     for (needed, why) in [
+        ("export PATH=\"$sysroot/bin:$PATH\"\n", "cargo-flux を sysroot から探す (CI がキャッシュから戻すのは sysroot だけ)"),
         ("RUSTFLAGS=\"-L $sysroot/lib\" cargo flux -p kome\n", "仕様を確かめる"),
         ("if RUSTFLAGS=\"-L $sysroot/lib --cfg flux_broken\" cargo flux -p kome >\"$log\" 2>&1; then\n", "わざと誤った定義が拒まれることを確かめる"),
         ("if [ \"$(echo \"$refused\" | sed 's/.*:://' | sort -u)\" != \"$expected\" ]; then\n", "拒まれた定義が、わざと誤った定義とちょうど同じであることを確かめる"),

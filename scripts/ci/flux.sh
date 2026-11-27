@@ -8,6 +8,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 sysroot="${FLUX_SYSROOT:-$HOME/.flux/sysroot}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/flux"
+# cargo-flux は sysroot の中にある。CI がキャッシュから戻すのは sysroot だけなので、そこから探す。
+export PATH="$sysroot/bin:$PATH"
 
 RUSTFLAGS="-L $sysroot/lib" cargo flux -p kome
 
