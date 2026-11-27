@@ -11,7 +11,7 @@
 
 use crate::effect::Effect;
 use crate::error::{Error, Invariant, Refusal};
-use crate::id::{ObjectId, ProcessId, Tag, ThreadId};
+use crate::id::{ObjectId, ProcessId, ThreadId};
 use crate::kernel::Kernel;
 use crate::object::{Object, SignalMode, SignalSpec};
 use crate::process::{ExitCode, Life};
@@ -106,7 +106,7 @@ pub(crate) struct Thread {
 impl Kernel {
     /// スレッドと、その終了時に数が 1 になる資源を作る。
     pub fn create_thread(&mut self, process: ProcessId, start: Start) -> Result<ThreadCreated, Error> {
-        let owner = self.processes.get_mut(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find_mut(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -141,7 +141,7 @@ impl Kernel {
 
     /// サービス中のスレッドを実行待ちへ戻す。
     pub fn continue_thread(&mut self, thread: ThreadId) -> Result<(), Error> {
-        let entry = self.threads.get_mut(thread).ok_or(Error::Stale(Tag::Thread))?;
+        let entry = self.threads.find_mut(thread, &self.lineage)?;
         if entry.run != Run::Servicing {
             return Err(Error::Refused(Refusal::NotServicing));
         }
@@ -153,7 +153,7 @@ impl Kernel {
     ///
     /// 実行中のスレッドには中断を要求する。止まるのは実行権が返った時点である。
     pub fn suspend_thread(&mut self, thread: ThreadId) -> Result<u32, Error> {
-        let entry = self.threads.get_mut(thread).ok_or(Error::Stale(Tag::Thread))?;
+        let entry = self.threads.find_mut(thread, &self.lineage)?;
         let previous = entry.suspend;
         entry.suspend = previous.checked_add(1).ok_or(Error::Refused(Refusal::SuspendOverflow))?;
         match entry.run {
@@ -166,7 +166,7 @@ impl Kernel {
 
     /// 停止要求を一つ減らす。減らす前の数を返す。
     pub fn unsuspend_thread(&mut self, thread: ThreadId) -> Result<u32, Error> {
-        let entry = self.threads.get_mut(thread).ok_or(Error::Stale(Tag::Thread))?;
+        let entry = self.threads.find_mut(thread, &self.lineage)?;
         let previous = entry.suspend;
         entry.suspend = previous.checked_sub(1).ok_or(Error::Refused(Refusal::NotSuspended))?;
         if entry.suspend == 0 && entry.run == Run::Ready {
@@ -179,7 +179,7 @@ impl Kernel {
     ///
     /// プロセスの最後のスレッドが終了すると、プロセスも同じ終了コードで終了する。
     pub fn terminate_thread(&mut self, thread: ThreadId, code: ExitCode) -> Result<(), Error> {
-        let entry = self.threads.get_mut(thread).ok_or(Error::Stale(Tag::Thread))?;
+        let entry = self.threads.find_mut(thread, &self.lineage)?;
         match entry.run {
             Run::Running { .. } => {
                 entry.kill = entry.kill.or(Some(code));
@@ -191,7 +191,7 @@ impl Kernel {
 
     /// スレッドの実行の状態。
     pub fn thread_phase(&self, thread: ThreadId) -> Result<ThreadPhase, Error> {
-        let entry = self.threads.get(thread).ok_or(Error::Stale(Tag::Thread))?;
+        let entry = self.threads.find(thread, &self.lineage)?;
         Ok(match entry.run {
             Run::Ready => ThreadPhase::Ready,
             Run::Running { .. } => ThreadPhase::Running,
@@ -202,17 +202,17 @@ impl Kernel {
 
     /// 停止要求の数。
     pub fn suspend_count(&self, thread: ThreadId) -> Result<u32, Error> {
-        Ok(self.threads.get(thread).ok_or(Error::Stale(Tag::Thread))?.suspend)
+        Ok(self.threads.find(thread, &self.lineage)?.suspend)
     }
 
     /// スレッドが所属するプロセス。
     pub fn process_of(&self, thread: ThreadId) -> Result<ProcessId, Error> {
-        Ok(self.threads.get(thread).ok_or(Error::Stale(Tag::Thread))?.process)
+        Ok(self.threads.find(thread, &self.lineage)?.process)
     }
 
     /// スレッドが実行した量の累計。
     pub fn executed(&self, thread: ThreadId) -> Result<u64, Error> {
-        Ok(self.threads.get(thread).ok_or(Error::Stale(Tag::Thread))?.executed)
+        Ok(self.threads.find(thread, &self.lineage)?.executed)
     }
 
     /// 実行待ちの列の末尾へ入れる。容量は [`Kernel::create_thread`] が確保してある。

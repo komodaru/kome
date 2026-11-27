@@ -16,6 +16,7 @@ const LEDGER: &str = "docs/invariants.toml";
 const CI: &str = ".github/workflows/ci.yml";
 const EXPECT: &str = "tla/expect.tsv";
 const COMPILE_FAIL: &str = "docs/compile-fail.tsv";
+const TESTS_RS: &str = "crates/kome/src/tests.rs";
 const PAGES_RS: &str = "crates/kome-testkit/src/pages.rs";
 const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
@@ -230,6 +231,29 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("crates/kome/src/sched.rs", |text| text.replace(") -> Result<ThreadFate, NotRelinquished> {", ") -> Result<ThreadFate, Error> {")),
             |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 捨てる。\n    pub fn discard(&mut self, permit: crate::sched::RunPermit) -> Result<(), Error> {\n        drop(permit);\n        Ok(())\n    }\n}"),
             |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("Err(NotRelinquished::Rejected(permit, reason)) => Reply::Returned(permit, reason),", "Err(NotRelinquished::Rejected(_, reason)) => return Err(reason),")),
+        ],
+    },
+    Rule {
+        id: "stale-at-lookup",
+        about: "古い ID と別インスタンスの ID の区別は、表を引く一か所 (id.rs) だけが行う",
+        check: stale_at_lookup,
+        breaks: &[
+            |repo| repo.append(KERNEL_RS, "fn looked(kernel: &Kernel, thread: ThreadId) -> Result<(), Error> {\n    kernel.threads.get(thread).map(|_| ()).ok_or(Error::Stale(crate::id::Tag::Thread))\n}"),
+            |repo| repo.edit("crates/kome/src/id.rs", |text| text.replace("if self.includes(id.issuer) { Error::Stale(K::TAG) } else { Error::Foreign }", "Error::Stale(K::TAG)")),
+            |repo| repo.edit("crates/kome/src/id.rs", |text| text.replace("slot.generation == id.generation && slot.issuer == id.issuer", "slot.generation == id.generation")),
+        ],
+    },
+    Rule {
+        id: "foreign-ids-tested",
+        about: "ID を受け取る全ての操作と問い合わせの全ての引数に、別インスタンスの ID を渡す試験がある",
+        check: foreign_ids_tested,
+        breaks: &[
+            |repo| repo.edit(TESTS_RS, |text| text.replace("        Input::RetainObject(p, fo),\n", "")),
+            |repo| repo.edit(TESTS_RS, |text| text.replace("        Input::PrepareIo(p, IoLinks::NONE.with_notify(fo)),\n", "")),
+            |repo| repo.edit(TESTS_RS, |text| text.replace("    assert_eq!(k.io_outcome(fio), Err(Error::Foreign));\n", "")),
+            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("    PollEffect,\n}", "    PollEffect,\n    /// 新しい操作。\n    Fresh(ObjectId),\n}")),
+            |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 新しい問い合わせ。\n    pub fn weight(&self, object: crate::id::ObjectId) -> Result<u64, Error> {\n        self.signal_count(object)\n    }\n}"),
+            |repo| repo.edit(TESTS_RS, |text| text.replace("assert_eq!(own.k.apply(input), Err(Error::Foreign), \"{at}: {shown}\");", "let _ = own.k.apply(input);")),
         ],
     },
     Rule {
@@ -956,6 +980,97 @@ fn capacity_audited(repo: &Repo, report: &mut Report) {
         }
         if *check != "同じ操作" && !repo.text(audit_rs).contains(&format!("\"{check}\"")) {
             report.add_at(repo, CAPACITY, name, format!("audit.rs が「{check}」を報告しない (容量を検査していない)"));
+        }
+    }
+}
+
+fn stale_at_lookup(repo: &Repo, report: &mut Report) {
+    let id_rs = "crates/kome/src/id.rs";
+    // error.rs は変種を定義するだけで、作らない。
+    for (path, text) in kernel_files(repo).filter(|(path, _)| *path != id_rs && !path.ends_with("/error.rs")) {
+        let Some(found) = scanned(report, path, text, true) else { continue };
+        for (name, line) in &found.idents {
+            if name == "Stale" {
+                report.add(path, *line, "`Error::Stale` を直接作っている。公開の操作が受け取った ID は Arena::find / find_mut / take で引く (別インスタンスの ID を Foreign にする)");
+            }
+        }
+    }
+    for needed in [
+        "if self.includes(id.issuer) { Error::Stale(K::TAG) } else { Error::Foreign }",
+        "(slot.generation == id.generation && slot.issuer == id.issuer).then_some(slot)",
+        "if slot.generation != id.generation || slot.issuer != id.issuer {",
+        "if slot.generation != id.generation || slot.issuer != id.issuer || !matches!(slot.cell, Entry::Live(_)) {",
+    ] {
+        if !repo.text(id_rs).contains(needed) {
+            report.add(id_rs, 1, format!("表を引く処理が ID の発行元を照合していない (`{needed}`)"));
+        }
+    }
+}
+
+/// 型の中の ID の数。`IoLinks` は通知先を二つ、`MapSource` は実体を一つ、`Completion` は I/O を一つ持つ。
+fn ids_in(ty: &syn::Type) -> usize {
+    let mut names = Vec::new();
+    crate::scan::idents_of(ty, &mut names);
+    names
+        .iter()
+        .map(|name| match name.as_str() {
+            "IoLinks" => 2,
+            "MapSource" | "Completion" => 1,
+            // 実行インスタンスと worker の識別は、kome が発行する資源の ID ではない。
+            "InstanceId" | "WorkerId" => 0,
+            other => usize::from(other.ends_with("Id")),
+        })
+        .sum()
+}
+
+fn foreign_ids_tested(repo: &Repo, report: &mut Report) {
+    let input = "crates/kome/src/input.rs";
+    let test = "fn a_foreign_id_is_refused_in_every_position()";
+    let body = repo.text(TESTS_RS).split_once(test).and_then(|(_, rest)| rest.split_once("\n}\n")).map_or("", |(body, _)| body);
+    if body.is_empty() {
+        report.add(TESTS_RS, 1, format!("試験 `{test}` が無い"));
+    }
+    for needed in ["assert_eq!(own.k.apply(input), Err(Error::Foreign), \"{at}: {shown}\");", "assert_eq!(own.k, before, \"{at}: {shown} が状態を変えた\");"] {
+        if !body.contains(needed) {
+            report.add_at(repo, TESTS_RS, test, format!("試験が、拒否の理由と状態が変わらないことを確かめていない (`{needed}`)"));
+        }
+    }
+    match syn::parse_file(repo.text(input)) {
+        Ok(file) => {
+            for item in &file.items {
+                let syn::Item::Enum(found) = item else { continue };
+                if found.ident != "Input" {
+                    continue;
+                }
+                for variant in &found.variants {
+                    let ids: usize = variant.fields.iter().map(|field| ids_in(&field.ty)).sum();
+                    let tried = body.matches(&format!("Input::{}(", variant.ident)).count();
+                    if tried < ids {
+                        report.add_at(repo, input, &format!("{}(", variant.ident), format!("Input::{} は ID を {ids} 個受け取るが、別インスタンスの ID を渡す試験は {tried} 個 ({TESTS_RS} の `{test}`)", variant.ident));
+                    }
+                }
+            }
+        }
+        Err(error) => report.add(input, 1, format!("構文を読めない: {error}")),
+    }
+    for (path, text) in kernel_files(repo) {
+        let Ok(file) = syn::parse_file(text) else { continue };
+        for item in &file.items {
+            let syn::Item::Impl(block) = item else { continue };
+            let is_kernel = matches!(&*block.self_ty, syn::Type::Path(path) if path.path.is_ident("Kernel"));
+            for member in &block.items {
+                let syn::ImplItem::Fn(method) = member else { continue };
+                let reads = method.sig.receiver().is_some_and(|receiver| receiver.mutability.is_none());
+                let ids: usize = method.sig.inputs.iter().map(|input| match input {
+                    syn::FnArg::Typed(typed) => ids_in(&typed.ty),
+                    syn::FnArg::Receiver(_) => 0,
+                }).sum();
+                let public = matches!(method.vis, syn::Visibility::Public(_));
+                if is_kernel && public && reads && ids > 0 && !body.contains(&format!("k.{}(", method.sig.ident)) {
+                    let line = method.sig.ident.span().start().line;
+                    report.add(path, line, format!("問い合わせ `{}` に、別インスタンスの ID を渡す試験が無い ({TESTS_RS} の `{test}`)", method.sig.ident));
+                }
+            }
         }
     }
 }

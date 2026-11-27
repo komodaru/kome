@@ -29,7 +29,7 @@ macro_rules! plain_try_clone {
 }
 pub(crate) use plain_try_clone;
 
-plain_try_clone!(u32);
+plain_try_clone!(u32, crate::kernel::InstanceId);
 
 /// 順序を持つ列。
 #[derive(Debug, PartialEq, Eq)]

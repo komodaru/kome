@@ -28,7 +28,7 @@
 use crate::addr::{Access, AddrWidth, BackingOffset, GuestAddr, GuestRange, PageSize, Prot};
 use crate::effect::Effect;
 use crate::error::{Error, Invariant, Refusal, Resource};
-use crate::id::{BackingId, ProcessId, Tag};
+use crate::id::{BackingId, ProcessId};
 use crate::kernel::Kernel;
 use crate::process::Life;
 use crate::store::{List, TryClone, plain_try_clone};
@@ -287,7 +287,7 @@ impl Kernel {
             .filter(|total| *total <= self.limits.backing_bytes())
             .ok_or(Error::Exhausted(Resource::BackingBytes))?;
         let limit = self.limits.holdings();
-        let owner = self.processes.get_mut(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find_mut(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -304,9 +304,9 @@ impl Kernel {
     /// `process` の保持を一つ増やす。
     pub fn retain_backing(&mut self, process: ProcessId, backing: BackingId) -> Result<(), Error> {
         let limit = self.limits.holdings();
-        let holds = self.backings.get(backing).ok_or(Error::Stale(Tag::Backing))?.holds;
+        let holds = self.backings.find(backing, &self.lineage)?.holds;
         let holds = holds.checked_add(1).ok_or(Error::Refused(Refusal::HoldOverflow))?;
-        let owner = self.processes.get_mut(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find_mut(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -317,17 +317,15 @@ impl Kernel {
 
     /// `process` の保持を一つ減らす。マッピングや保留が残る間、実体は解放されない。
     pub fn release_backing(&mut self, process: ProcessId, backing: BackingId) -> Result<(), Error> {
-        if !self.backings.contains(backing) {
-            return Err(Error::Stale(Tag::Backing));
-        }
-        let owner = self.processes.get_mut(process).ok_or(Error::Stale(Tag::Process))?;
+        self.backings.find(backing, &self.lineage)?;
+        let owner = self.processes.find_mut(process, &self.lineage)?;
         owner.backings.sub(backing)?;
         self.drop_backing_hold(backing)
     }
 
     /// 実体の長さ。
     pub fn backing_len(&self, backing: BackingId) -> Result<u64, Error> {
-        Ok(self.backings.get(backing).ok_or(Error::Stale(Tag::Backing))?.len)
+        Ok(self.backings.find(backing, &self.lineage)?.len)
     }
 
     /// 空いている範囲へマッピングを置く。既存のマッピングと重なれば拒否する。
@@ -340,7 +338,7 @@ impl Kernel {
         source: MapSource,
         prot: Prot,
     ) -> Result<MapGen, Error> {
-        let owner = self.processes.get(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -358,7 +356,7 @@ impl Kernel {
         let (prot, mapped) = match source {
             MapSource::Reserved => (Prot::NONE, None),
             MapSource::Backing { backing, offset } => {
-                let entry = self.backings.get(backing).ok_or(Error::Stale(Tag::Backing))?;
+                let entry = self.backings.find(backing, &self.lineage)?;
                 if !space.page.divides(offset.get()) {
                     return Err(Error::Refused(Refusal::Misaligned));
                 }
@@ -383,7 +381,7 @@ impl Kernel {
     /// 外したバイト数を返す (`u64` に収まらなければ `u64::MAX`)。何も無ければ 0 で、
     /// 状態は変わらない。
     pub fn unmap(&mut self, process: ProcessId, range: GuestRange) -> Result<u64, Error> {
-        let owner = self.processes.get(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -484,7 +482,7 @@ impl Kernel {
     /// 権限が減る部分が無い変更 (増やすだけ) は、世代を進めるが、実行中のスレッドを止めない。
     /// 古い世代で検証したマッピングは、変更の前より狭い権限しか持たないからである。
     pub fn protect(&mut self, process: ProcessId, range: GuestRange, prot: Prot) -> Result<MapGen, Error> {
-        let owner = self.processes.get(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -614,7 +612,7 @@ impl Kernel {
         range: GuestRange,
         access: Access,
     ) -> Result<Result<Span, MemFault>, Error> {
-        let space = &self.processes.get(process).ok_or(Error::Stale(Tag::Process))?.space;
+        let space = &self.processes.find(process, &self.lineage)?.space;
         let addr = range.start();
         let fault = |kind| Ok(Err(MemFault { addr, kind }));
         let Some(mapping) = space.at(addr.get()) else { return fault(MemFaultKind::Unmapped) };
@@ -637,7 +635,7 @@ impl Kernel {
 
     /// `from` 以降で最初のマッピング (`from` を含むものを含む)。アドレス空間を順に列挙するのに使う。
     pub fn next_mapping(&self, process: ProcessId, from: GuestAddr) -> Result<Option<MappingInfo>, Error> {
-        let space = &self.processes.get(process).ok_or(Error::Stale(Tag::Process))?.space;
+        let space = &self.processes.find(process, &self.lineage)?.space;
         let Some(mapping) = space.maps.get(space.first_ending_at_or_after(from.get())) else { return Ok(None) };
         let range = GuestRange::spanning(GuestAddr::new(mapping.start), GuestAddr::new(mapping.last))
             .ok_or(Error::Broken(Invariant::MemLayout))?;
@@ -654,7 +652,7 @@ impl Kernel {
         align: PageSize,
         within: GuestRange,
     ) -> Result<Option<GuestAddr>, Error> {
-        let space = &self.processes.get(process).ok_or(Error::Stale(Tag::Process))?.space;
+        let space = &self.processes.find(process, &self.lineage)?.space;
         let Some(tail) = len.checked_sub(1) else { return Ok(None) };
         let align = align.bytes().max(space.page.bytes());
         let ceiling = within.last().get().min(space.width.last().get());
@@ -676,12 +674,12 @@ impl Kernel {
 
     /// アドレス空間の世代。
     pub fn map_generation(&self, process: ProcessId) -> Result<MapGen, Error> {
-        Ok(self.processes.get(process).ok_or(Error::Stale(Tag::Process))?.space.generation())
+        Ok(self.processes.find(process, &self.lineage)?.space.generation())
     }
 
     /// マッピングの数。
     pub fn mapping_count(&self, process: ProcessId) -> Result<usize, Error> {
-        Ok(self.processes.get(process).ok_or(Error::Stale(Tag::Process))?.space.maps.len())
+        Ok(self.processes.find(process, &self.lineage)?.space.maps.len())
     }
 
 

@@ -5,6 +5,11 @@
 //! 古い ID が新しい資源を指さないようにする (台帳 ID-1)。世代が表現の上限に達した
 //! スロットは退役させ、二度と再利用しない。
 //!
+//! ID は発行元の実行インスタンスも持つ。別の `Kernel` が発行した ID は、スロットと世代が
+//! たまたま一致しても資源を指さず、[`Error::Foreign`] になる。写しから復元した状態は、
+//! 復元元が写しの時点までに発行した ID を引き継ぐ (資源を発行元ごと写すため)。復元の後に
+//! 復元元が発行した ID は、復元先の資源を指さない。
+//!
 //! ゲストの HANDLE や fd の数値は Personality の表が内部 ID へ対応づける。ゲスト OS が
 //! 許す数値の再利用と、ここでの世代管理は別の契約である。
 //!
@@ -28,6 +33,7 @@ use core::marker::PhantomData;
 use core::num::NonZeroU32;
 
 use crate::error::{Error, Resource};
+use crate::kernel::InstanceId;
 use crate::store::{List, TryClone};
 
 mod sealed {
@@ -109,6 +115,7 @@ pub type IoId = Id<kind::Io>;
 pub struct Id<K: Kind> {
     slot: u32,
     generation: NonZeroU32,
+    issuer: InstanceId,
     kind: PhantomData<fn() -> K>,
 }
 
@@ -124,6 +131,12 @@ impl<K: Kind> Id<K> {
     pub const fn generation(self) -> u32 {
         self.generation.get()
     }
+
+    /// この ID を発行した実行インスタンス。
+    #[must_use]
+    pub const fn issuer(self) -> InstanceId {
+        self.issuer
+    }
 }
 
 impl<K: Kind> Clone for Id<K> {
@@ -134,7 +147,7 @@ impl<K: Kind> Clone for Id<K> {
 impl<K: Kind> Copy for Id<K> {}
 impl<K: Kind> PartialEq for Id<K> {
     fn eq(&self, other: &Self) -> bool {
-        self.slot == other.slot && self.generation == other.generation
+        self.slot == other.slot && self.generation == other.generation && self.issuer == other.issuer
     }
 }
 impl<K: Kind> Eq for Id<K> {}
@@ -145,12 +158,12 @@ impl<K: Kind> PartialOrd for Id<K> {
 }
 impl<K: Kind> Ord for Id<K> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        (self.slot, self.generation).cmp(&(other.slot, other.generation))
+        (self.slot, self.generation, self.issuer.get()).cmp(&(other.slot, other.generation, other.issuer.get()))
     }
 }
 impl<K: Kind> fmt::Debug for Id<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}#{}.{}", K::TAG, self.slot, self.generation)
+        write!(f, "{:?}#{}.{}@{}", K::TAG, self.slot, self.generation, self.issuer.get())
     }
 }
 
@@ -165,6 +178,8 @@ enum Entry<T> {
 #[derive(Debug, PartialEq, Eq)]
 struct Slot<T> {
     generation: NonZeroU32,
+    /// いまの世代の資源を発行した実行インスタンス。
+    issuer: InstanceId,
     cell: Entry<T>,
 }
 
@@ -175,7 +190,7 @@ impl<T: TryClone> TryClone for Slot<T> {
             Entry::Free => Entry::Free,
             Entry::Retired => Entry::Retired,
         };
-        Ok(Slot { generation: self.generation, cell })
+        Ok(Slot { generation: self.generation, issuer: self.issuer, cell })
     }
 }
 
@@ -187,15 +202,61 @@ impl<K: Kind> TryClone for Id<K> {
 
 impl<K: Kind, T: TryClone> TryClone for Arena<K, T> {
     fn try_clone(&self) -> Result<Arena<K, T>, Error> {
-        let Arena { slots, free, live, limit, first_generation, kind } = self;
+        let Arena { slots, free, live, limit, first_generation, issuer, kind } = self;
         Ok(Arena {
             slots: slots.try_clone()?,
             free: free.try_clone()?,
+            issuer: *issuer,
             live: *live,
             limit: *limit,
             first_generation: *first_generation,
             kind: *kind,
         })
+    }
+}
+
+/// 実行インスタンスと、復元元をさかのぼった祖先の列。ID の発行元がこの系列にあるかを判定する。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Lineage {
+    instance: InstanceId,
+    /// 復元元の実行インスタンス。古い順。
+    ancestors: List<InstanceId>,
+}
+
+impl Lineage {
+    pub(crate) const fn new(instance: InstanceId) -> Lineage {
+        Lineage { instance, ancestors: List::new() }
+    }
+
+    pub(crate) const fn instance(&self) -> InstanceId {
+        self.instance
+    }
+
+    /// この系列を引き継ぐ、実行インスタンス `instance` の系列。
+    pub(crate) fn succeeded_by(&self, instance: InstanceId) -> Result<Lineage, Error> {
+        let mut ancestors = List::new();
+        ancestors.reserve_total(self.ancestors.len().saturating_add(1))?;
+        for ancestor in self.ancestors.iter() {
+            ancestors.push(*ancestor)?;
+        }
+        ancestors.push(self.instance)?;
+        Ok(Lineage { instance, ancestors })
+    }
+
+    /// 同じ系列の写し。
+    pub(crate) fn same(&self) -> Result<Lineage, Error> {
+        Ok(Lineage { instance: self.instance, ancestors: self.ancestors.try_clone()? })
+    }
+
+    /// `issuer` が、この実行インスタンスか、その祖先か。
+    pub(crate) fn includes(&self, issuer: InstanceId) -> bool {
+        issuer == self.instance || self.ancestors.iter().any(|ancestor| *ancestor == issuer)
+    }
+
+    /// 表に無かった ID の失敗。発行元がこの系列なら、解放済みの古い ID である。
+    /// そうでなければ、別の実行インスタンスの ID である。
+    pub(crate) fn missing<K: Kind>(&self, id: Id<K>) -> Error {
+        if self.includes(id.issuer) { Error::Stale(K::TAG) } else { Error::Foreign }
     }
 }
 
@@ -208,24 +269,36 @@ pub(crate) struct Arena<K: Kind, T> {
     live: u32,
     limit: u32,
     first_generation: NonZeroU32,
+    /// これから作る資源の発行元。
+    issuer: InstanceId,
     kind: PhantomData<fn() -> K>,
 }
 
 impl<K: Kind, T: PartialEq> PartialEq for Arena<K, T> {
     fn eq(&self, other: &Self) -> bool {
-        self.slots == other.slots && self.free == other.free && self.live == other.live && self.limit == other.limit
+        self.slots == other.slots
+            && self.free == other.free
+            && self.live == other.live
+            && self.limit == other.limit
+            && self.issuer == other.issuer
     }
 }
 impl<K: Kind, T: Eq> Eq for Arena<K, T> {}
 
 impl<K: Kind, T> Arena<K, T> {
-    pub(crate) const fn new(limit: u32) -> Arena<K, T> {
-        Arena::starting_at(limit, NonZeroU32::MIN)
+    pub(crate) const fn new(issuer: InstanceId, limit: u32) -> Arena<K, T> {
+        Arena::starting_at(issuer, limit, NonZeroU32::MIN)
     }
 
     /// 新しいスロットの最初の世代を指定して作る。世代の使い切りを試験・証明するための入口。
-    pub(crate) const fn starting_at(limit: u32, first_generation: NonZeroU32) -> Arena<K, T> {
-        Arena { slots: List::new(), free: List::new(), live: 0, limit, first_generation, kind: PhantomData }
+    pub(crate) const fn starting_at(issuer: InstanceId, limit: u32, first_generation: NonZeroU32) -> Arena<K, T> {
+        Arena { slots: List::new(), free: List::new(), live: 0, limit, first_generation, issuer, kind: PhantomData }
+    }
+
+    /// これから作る資源の発行元を変える。写しを別の実行インスタンスとして復元するときに使う。
+    /// 既にある資源の発行元は変えない (それらの ID は復元の前に配られている)。
+    pub(crate) const fn reissue(&mut self, issuer: InstanceId) {
+        self.issuer = issuer;
     }
 
     pub(crate) fn len(&self) -> u32 {
@@ -256,13 +329,14 @@ impl<K: Kind, T> Arena<K, T> {
                     return Err(Error::Broken(crate::error::Invariant::IdFresh));
                 };
                 entry.cell = Entry::Live(value);
-                Id { slot, generation: entry.generation, kind: PhantomData }
+                entry.issuer = self.issuer;
+                Id { slot, generation: entry.generation, issuer: self.issuer, kind: PhantomData }
             }
             None => {
                 let slot =
                     u32::try_from(self.slots.len()).map_err(|_| Error::Exhausted(Resource::Identifiers))?;
-                self.slots.push(Slot { generation: self.first_generation, cell: Entry::Live(value) })?;
-                Id { slot, generation: self.first_generation, kind: PhantomData }
+                self.slots.push(Slot { generation: self.first_generation, issuer: self.issuer, cell: Entry::Live(value) })?;
+                Id { slot, generation: self.first_generation, issuer: self.issuer, kind: PhantomData }
             }
         };
         self.live = self.live.saturating_add(1);
@@ -271,7 +345,23 @@ impl<K: Kind, T> Arena<K, T> {
 
     fn slot(&self, id: Id<K>) -> Option<&Slot<T>> {
         let slot = self.slots.get(usize::try_from(id.slot).ok()?)?;
-        (slot.generation == id.generation).then_some(slot)
+        (slot.generation == id.generation && slot.issuer == id.issuer).then_some(slot)
+    }
+
+    /// 公開の操作が受け取った ID を引く。無ければ、発行元がこの系列かどうかで
+    /// [`Error::Stale`] と [`Error::Foreign`] に分ける。
+    pub(crate) fn find<'a>(&'a self, id: Id<K>, lineage: &Lineage) -> Result<&'a T, Error> {
+        self.get(id).ok_or_else(|| lineage.missing(id))
+    }
+
+    /// [`Arena::find`] の、書き換えられる版。
+    pub(crate) fn find_mut<'a>(&'a mut self, id: Id<K>, lineage: &Lineage) -> Result<&'a mut T, Error> {
+        self.get_mut(id).ok_or_else(|| lineage.missing(id))
+    }
+
+    /// 公開の操作が受け取った ID の資源を取り除く。
+    pub(crate) fn take(&mut self, id: Id<K>, lineage: &Lineage) -> Result<T, Error> {
+        self.remove(id).ok_or_else(|| lineage.missing(id))
     }
 
     pub(crate) fn get(&self, id: Id<K>) -> Option<&T> {
@@ -283,7 +373,7 @@ impl<K: Kind, T> Arena<K, T> {
 
     pub(crate) fn get_mut(&mut self, id: Id<K>) -> Option<&mut T> {
         let slot = self.slots.get_mut(usize::try_from(id.slot).ok()?)?;
-        if slot.generation != id.generation {
+        if slot.generation != id.generation || slot.issuer != id.issuer {
             return None;
         }
         match &mut slot.cell {
@@ -300,7 +390,7 @@ impl<K: Kind, T> Arena<K, T> {
     #[must_use = "取り除けなかったこと (None) を呼び出し側が扱う"]
     pub(crate) fn remove(&mut self, id: Id<K>) -> Option<T> {
         let slot = self.slots.get_mut(usize::try_from(id.slot).ok()?)?;
-        if slot.generation != id.generation || !matches!(slot.cell, Entry::Live(_)) {
+        if slot.generation != id.generation || slot.issuer != id.issuer || !matches!(slot.cell, Entry::Live(_)) {
             return None;
         }
         let taken = core::mem::replace(&mut slot.cell, Entry::Retired);
@@ -327,7 +417,9 @@ impl<K: Kind, T> Arena<K, T> {
     pub(crate) fn iter_from(&self, first: u32) -> impl Iterator<Item = (Id<K>, &T)> {
         let skipped = usize::try_from(first).unwrap_or(usize::MAX);
         (first..=u32::MAX).zip(self.slots.iter().skip(skipped)).filter_map(|(slot, entry)| match &entry.cell {
-            Entry::Live(value) => Some((Id { slot, generation: entry.generation, kind: PhantomData }, value)),
+            Entry::Live(value) => {
+                Some((Id { slot, generation: entry.generation, issuer: entry.issuer, kind: PhantomData }, value))
+            }
             Entry::Free | Entry::Retired => None,
         })
     }
@@ -381,7 +473,7 @@ mod tests {
 
     #[test]
     fn iteration_can_start_at_a_slot() {
-        let mut arena = Things::new(4);
+        let mut arena = Things::new(InstanceId::new(1), 4);
         let ids = [10, 20, 30].map(|value| arena.insert(value).unwrap());
         assert!(arena.remove(ids[1]).is_some());
         let from = |first: u32| arena.iter_from(first).map(|(id, value)| (id.slot(), *value)).collect::<Vec<_>>();
@@ -395,7 +487,7 @@ mod tests {
     #[test]
     fn arenas_are_equal_only_when_everything_matches() {
         let build = |limit: u32, value: u32| {
-            let mut arena = Things::new(limit);
+            let mut arena = Things::new(InstanceId::new(1), limit);
             arena.insert(value).unwrap();
             arena
         };
@@ -413,7 +505,7 @@ mod tests {
 
     #[test]
     fn stale_id_resolves_nothing_after_reuse() {
-        let mut arena = Things::new(4);
+        let mut arena = Things::new(InstanceId::new(1), 4);
         let old = arena.insert(10).unwrap();
         assert_eq!(arena.remove(old), Some(10));
         let new = arena.insert(20).unwrap();
@@ -427,7 +519,7 @@ mod tests {
 
     #[test]
     fn limit_is_a_refusal_not_a_panic() {
-        let mut arena = Things::new(1);
+        let mut arena = Things::new(InstanceId::new(1), 1);
         let id = arena.insert(1).unwrap();
         assert_eq!(arena.insert(2), Err(Error::Exhausted(Resource::Objects)));
         assert!(arena.remove(id).is_some());
@@ -436,7 +528,7 @@ mod tests {
 
     #[test]
     fn exhausted_generation_retires_the_slot() {
-        let mut arena = Things::starting_at(4, NonZeroU32::MAX);
+        let mut arena = Things::starting_at(InstanceId::new(1), 4, NonZeroU32::MAX);
         let last = arena.insert(1).unwrap();
         assert_eq!(last.generation(), u32::MAX);
         assert_eq!(arena.remove(last), Some(1));
@@ -448,7 +540,7 @@ mod tests {
 
     #[test]
     fn iter_is_in_slot_order() {
-        let mut arena = Things::new(8);
+        let mut arena = Things::new(InstanceId::new(1), 8);
         let a = arena.insert(1).unwrap();
         let b = arena.insert(2).unwrap();
         let c = arena.insert(3).unwrap();
@@ -459,8 +551,8 @@ mod tests {
 
     #[test]
     fn debug_names_the_kind() {
-        let mut arena = Things::new(1);
+        let mut arena = Things::new(InstanceId::new(1), 1);
         let id = arena.insert(1).unwrap();
-        assert_eq!(format!("{id:?}"), "Object#0.1");
+        assert_eq!(format!("{id:?}"), "Object#0.1@1");
     }
 }

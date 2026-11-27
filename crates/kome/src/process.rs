@@ -10,7 +10,7 @@
 use crate::addr::{AddrWidth, PageSize};
 use crate::effect::Effect;
 use crate::error::{Error, Invariant, Refusal, Resource};
-use crate::id::{Id, Kind, ObjectId, ProcessId, Tag, ThreadId, kind};
+use crate::id::{Id, Kind, ObjectId, ProcessId, ThreadId, kind};
 use crate::kernel::Kernel;
 use crate::mem::Space;
 use crate::object::{Object, SignalMode, SignalSpec};
@@ -221,7 +221,7 @@ impl Kernel {
     /// プロセスを終了させる。実行中でないスレッドはここで終了し、実行中のスレッドは
     /// 実行権を返した時点で終了する。
     pub fn exit_process(&mut self, process: ProcessId, code: ExitCode) -> Result<(), Error> {
-        let entry = self.processes.get_mut(process).ok_or(Error::Stale(Tag::Process))?;
+        let entry = self.processes.find_mut(process, &self.lineage)?;
         if entry.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -259,7 +259,7 @@ impl Kernel {
 
     /// プロセスの寿命の段階。
     pub fn process_phase(&self, process: ProcessId) -> Result<ProcessPhase, Error> {
-        let entry = self.processes.get(process).ok_or(Error::Stale(Tag::Process))?;
+        let entry = self.processes.find(process, &self.lineage)?;
         Ok(match entry.life {
             Life::Alive => ProcessPhase::Alive,
             Life::Exiting(_) => ProcessPhase::Exiting,
@@ -269,7 +269,7 @@ impl Kernel {
 
     /// プロセスに所属するスレッドの数。
     pub fn thread_count(&self, process: ProcessId) -> Result<usize, Error> {
-        Ok(self.processes.get(process).ok_or(Error::Stale(Tag::Process))?.threads.len())
+        Ok(self.processes.find(process, &self.lineage)?.threads.len())
     }
 
     /// スレッドがすべて止まったプロセスの資源を手放し、終了を通知する。
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn holdings_notice_a_zero_count_and_a_wrong_order() {
-        let mut arena = Arena::<kind::Object, ()>::new(8);
+        let mut arena = Arena::<kind::Object, ()>::new(crate::InstanceId::new(1), 8);
         let a = arena.insert(()).unwrap();
         let b = arena.insert(()).unwrap();
         let mut held = Holdings::new();
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn holdings_count_and_stay_sorted() {
-        let mut arena = Arena::<kind::Object, ()>::new(8);
+        let mut arena = Arena::<kind::Object, ()>::new(crate::InstanceId::new(1), 8);
         let a = arena.insert(()).unwrap();
         let b = arena.insert(()).unwrap();
         let mut held = Holdings::new();
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn holdings_limit_counts_kinds_not_references() {
-        let mut arena = Arena::<kind::Object, ()>::new(8);
+        let mut arena = Arena::<kind::Object, ()>::new(crate::InstanceId::new(1), 8);
         let a = arena.insert(()).unwrap();
         let b = arena.insert(()).unwrap();
         let mut held = Holdings::new();

@@ -11,7 +11,7 @@
 
 use crate::effect::Effect;
 use crate::error::{Error, Invariant, Refusal, Resource};
-use crate::id::{ObjectId, Tag, ThreadId};
+use crate::id::{ObjectId, ThreadId};
 use crate::kernel::{Due, Kernel};
 use crate::object::SignalMode;
 use crate::store::{List, TryClone};
@@ -90,7 +90,7 @@ impl Kernel {
         deadline: Deadline,
         interruptible: Interruptible,
     ) -> Result<WaitStart, Error> {
-        let entry = self.threads.get(thread).ok_or(Error::Stale(Tag::Thread))?;
+        let entry = self.threads.find(thread, &self.lineage)?;
         if entry.run != Run::Servicing {
             return Err(Error::Refused(Refusal::NotServicing));
         }
@@ -145,7 +145,7 @@ impl Kernel {
     ///
     /// 結果 ([`WaitOutcome::Interrupted`]) はこの呼び出しの成功で確定し、`Effect` は出さない。
     pub fn interrupt_wait(&mut self, thread: ThreadId) -> Result<(), Error> {
-        let entry = self.threads.get_mut(thread).ok_or(Error::Stale(Tag::Thread))?;
+        let entry = self.threads.find_mut(thread, &self.lineage)?;
         match &entry.run {
             Run::Blocked(wait) if wait.interruptible == Interruptible::Yes => {}
             Run::Blocked(_) => return Err(Error::Refused(Refusal::NotInterruptible)),

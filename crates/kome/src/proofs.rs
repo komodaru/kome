@@ -168,7 +168,7 @@ fn io_promises_cover_every_emission() {
 }
 
 fn some_io() -> IoId {
-    let mut arena: Arena<kind::Io, ()> = Arena::new(1);
+    let mut arena: Arena<kind::Io, ()> = Arena::new(crate::InstanceId::new(1), 1);
     let id = arena.insert(());
     kani::assume(id.is_ok());
     id.unwrap()
@@ -235,7 +235,7 @@ fn effects_emit_exactly_what_was_promised() {
 fn a_removed_id_never_resolves_again() {
     let first: u32 = kani::any();
     kani::assume(first != 0 && first != u32::MAX);
-    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(1, NonZeroU32::new(first).unwrap());
+    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(crate::InstanceId::new(1), 1, NonZeroU32::new(first).unwrap());
     let made = arena.insert(1);
     kani::assume(made.is_ok());
     let old = made.unwrap();
@@ -254,7 +254,7 @@ fn a_removed_id_never_resolves_again() {
 #[kani::proof]
 #[kani::unwind(3)]
 fn an_exhausted_slot_is_retired() {
-    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(1, NonZeroU32::MAX);
+    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(crate::InstanceId::new(1), 1, NonZeroU32::MAX);
     let made = arena.insert(1);
     kani::assume(made.is_ok());
     let old = made.unwrap();
@@ -266,4 +266,23 @@ fn an_exhausted_slot_is_retired() {
     assert!(new.slot() != old.slot());
     assert!(arena.get(old).is_none());
     assert!(arena.get(new) == Some(&2));
+}
+
+/// 別の実行インスタンスが発行した ID は、スロットと世代が同じでも資源を指さない (台帳 ID-1)。
+#[kani::proof]
+#[kani::unwind(3)]
+fn an_id_from_another_issuer_never_resolves() {
+    let (here, there): (u64, u64) = (kani::any(), kani::any());
+    kani::assume(here != there);
+    let mut mine: Arena<kind::Io, u8> = Arena::new(crate::InstanceId::new(here), 1);
+    let mut theirs: Arena<kind::Io, u8> = Arena::new(crate::InstanceId::new(there), 1);
+    let (made, other) = (mine.insert(1), theirs.insert(2));
+    kani::assume(made.is_ok() && other.is_ok());
+    let (own, foreign) = (made.unwrap(), other.unwrap());
+    assert!(own.slot() == foreign.slot() && own.generation() == foreign.generation());
+    assert!(own != foreign);
+    assert!(mine.get(foreign).is_none());
+    assert!(mine.get_mut(foreign).is_none());
+    assert!(mine.remove(foreign).is_none());
+    assert!(mine.get(own) == Some(&1));
 }

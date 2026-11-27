@@ -245,7 +245,7 @@ impl Kernel {
         entry.run_gen = run_gen;
         entry.run = Run::Running { worker, stale: false, interrupted: false };
         Ok(Some(RunPermit {
-            instance: self.instance,
+            instance: self.lineage.instance(),
             thread,
             process,
             worker,
@@ -277,7 +277,7 @@ impl Kernel {
     /// 実行権が、この状態が貸していて、まだ返っていないものかを確かめる。状態は変えない。
     /// 貸した実行の (古い世代か, 中断を要求済みか) を返す。
     fn admit(&self, permit: &RunPermit) -> Result<(bool, bool), Error> {
-        if permit.instance != self.instance {
+        if permit.instance != self.lineage.instance() {
             return Err(Error::Foreign);
         }
         let stale_permit = Error::Refused(Refusal::StalePermit);

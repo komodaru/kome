@@ -10,7 +10,7 @@
 
 use crate::effect::Effect;
 use crate::error::{Error, Invariant, Refusal, Resource};
-use crate::id::{ObjectId, ProcessId, Tag, ThreadId};
+use crate::id::{ObjectId, ProcessId, ThreadId};
 use crate::kernel::Kernel;
 use crate::process::Life;
 use crate::store::{List, TryClone};
@@ -87,7 +87,7 @@ impl Kernel {
             return Err(Error::Refused(Refusal::BadSignalSpec));
         }
         let limit = self.limits.holdings();
-        let owner = self.processes.get_mut(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find_mut(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -103,9 +103,9 @@ impl Kernel {
     /// `process` の保持を一つ増やす。
     pub fn retain_object(&mut self, process: ProcessId, object: ObjectId) -> Result<(), Error> {
         let limit = self.limits.holdings();
-        let handles = self.objects.get(object).ok_or(Error::Stale(Tag::Object))?.handles;
+        let handles = self.objects.find(object, &self.lineage)?.handles;
         let handles = handles.checked_add(1).ok_or(Error::Refused(Refusal::HoldOverflow))?;
-        let owner = self.processes.get_mut(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find_mut(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -116,17 +116,15 @@ impl Kernel {
 
     /// `process` の保持を一つ減らす。保持も固定も無くなれば破棄する。
     pub fn release_object(&mut self, process: ProcessId, object: ObjectId) -> Result<(), Error> {
-        if !self.objects.contains(object) {
-            return Err(Error::Stale(Tag::Object));
-        }
-        let owner = self.processes.get_mut(process).ok_or(Error::Stale(Tag::Process))?;
+        self.objects.find(object, &self.lineage)?;
+        let owner = self.processes.find_mut(process, &self.lineage)?;
         owner.objects.sub(object)?;
         self.drop_handle(object)
     }
 
     /// 数を変更し、成立した待機を登録順に確定する。変更前の数を返す。
     pub fn signal(&mut self, object: ObjectId, op: SignalOp) -> Result<u64, Error> {
-        let entry = self.objects.get_mut(object).ok_or(Error::Stale(Tag::Object))?;
+        let entry = self.objects.find_mut(object, &self.lineage)?;
         let previous = entry.count;
         let next = match op {
             SignalOp::Add(amount) => previous.checked_add(amount).filter(|next| *next <= entry.max),
@@ -139,7 +137,7 @@ impl Kernel {
 
     /// 現在の数。
     pub fn signal_count(&self, object: ObjectId) -> Result<u64, Error> {
-        Ok(self.objects.get(object).ok_or(Error::Stale(Tag::Object))?.count)
+        Ok(self.objects.find(object, &self.lineage)?.count)
     }
 
     /// 数を 1 増やす (上限で止まる)。kome 自身の通知 (タイマ、I/O、終了) に使う。
@@ -151,7 +149,7 @@ impl Kernel {
 
     /// `extra` 個の固定を追加できるか。受理前の検査。
     pub(crate) fn can_pin(&self, object: ObjectId, extra: u32) -> Result<(), Error> {
-        let entry = self.objects.get(object).ok_or(Error::Stale(Tag::Object))?;
+        let entry = self.objects.find(object, &self.lineage)?;
         entry.pins.checked_add(extra).map(|_| ()).ok_or(Error::Exhausted(Resource::Pins))
     }
 

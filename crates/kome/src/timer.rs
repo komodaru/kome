@@ -9,7 +9,7 @@
 //! 上限を呼び出し側が決められるようにする。
 
 use crate::error::{Error, Invariant, Refusal};
-use crate::id::{ObjectId, ProcessId, Tag, TimerId};
+use crate::id::{ObjectId, ProcessId, TimerId};
 use crate::kernel::{Due, DueEntry, Kernel};
 use crate::process::Life;
 use crate::store::plain_try_clone;
@@ -35,7 +35,7 @@ pub(crate) struct Timer {
 impl Kernel {
     /// `object` へ通知するタイマを、止まった状態で作る。
     pub fn create_timer(&mut self, process: ProcessId, object: ObjectId) -> Result<TimerId, Error> {
-        let owner = self.processes.get(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -50,7 +50,7 @@ impl Kernel {
     /// 周期は 0 にできず ([`Period`])、[`crate::Limits::min_period`] より短ければ拒否する。
     /// 設定済みなら置き換える。`at` が現在以前なら、次の [`Kernel::advance`] で通知する。
     pub fn arm_timer(&mut self, timer: TimerId, at: Instant, period: Option<Period>) -> Result<(), Error> {
-        let entry = self.timers.get(timer).ok_or(Error::Stale(Tag::Timer))?;
+        let entry = self.timers.find(timer, &self.lineage)?;
         if period.is_some_and(|period| period < self.limits.min_period()) {
             return Err(Error::Refused(Refusal::PeriodTooShort));
         }
@@ -67,7 +67,7 @@ impl Kernel {
 
     /// タイマを止める。設定されていたかを返す。既に増やした数は戻さない。
     pub fn disarm_timer(&mut self, timer: TimerId) -> Result<bool, Error> {
-        let entry = self.timers.get_mut(timer).ok_or(Error::Stale(Tag::Timer))?;
+        let entry = self.timers.find_mut(timer, &self.lineage)?;
         let Some(armed) = entry.armed.take() else { return Ok(false) };
         self.due_remove(armed.at, armed.seq, Due::Timer(timer))?;
         Ok(true)
@@ -75,7 +75,7 @@ impl Kernel {
 
     /// タイマを破棄する。
     pub fn drop_timer(&mut self, timer: TimerId) -> Result<(), Error> {
-        let entry = self.timers.remove(timer).ok_or(Error::Stale(Tag::Timer))?;
+        let entry = self.timers.take(timer, &self.lineage)?;
         if let Some(armed) = entry.armed {
             self.due_remove(armed.at, armed.seq, Due::Timer(timer))?;
         }

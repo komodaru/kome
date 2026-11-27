@@ -2,7 +2,7 @@
 
 use crate::effect::{Effect, Effects};
 use crate::error::{Error, Refusal};
-use crate::id::{Arena, ThreadId, TimerId, kind};
+use crate::id::{Arena, Lineage, ThreadId, TimerId, kind};
 use crate::io::Io;
 use crate::limits::Limits;
 use crate::mem::Backing;
@@ -16,7 +16,7 @@ use crate::timer::Timer;
 
 /// 実行インスタンスの識別。復元した状態は、復元前とは別の値を持つ ([`Snapshot::restore`])。
 ///
-/// 実行権と完了通知はこの値を持ち、別のインスタンスへ渡すと [`Error::Foreign`] になる。
+/// 実行権、完了通知、資源の ID はこの値を持ち、別のインスタンスへ渡すと [`Error::Foreign`] になる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstanceId(u64);
 
@@ -121,7 +121,8 @@ plain_try_clone!(Lent, DueEntry);
 /// ```
 #[derive(Debug, PartialEq, Eq)]
 pub struct Kernel {
-    pub(crate) instance: InstanceId,
+    /// この実行インスタンスと、復元元をさかのぼった祖先。
+    pub(crate) lineage: Lineage,
     pub(crate) limits: Limits,
     pub(crate) now: Instant,
     /// 登録順の番号。期限の列で同時刻の順序を決める。
@@ -149,16 +150,16 @@ impl Kernel {
         let mut running = List::new();
         running.reserve_total(usize::try_from(limits.workers()).unwrap_or(usize::MAX))?;
         Ok(Kernel {
-            instance,
+            lineage: Lineage::new(instance),
             limits,
             now: Instant::ZERO,
             seq: 0,
-            processes: Arena::new(limits.processes()),
-            threads: Arena::new(limits.threads()),
-            objects: Arena::new(limits.objects()),
-            backings: Arena::new(limits.backings()),
-            timers: Arena::new(limits.timers()),
-            ios: Arena::new(limits.ios()),
+            processes: Arena::new(instance, limits.processes()),
+            threads: Arena::new(instance, limits.threads()),
+            objects: Arena::new(instance, limits.objects()),
+            backings: Arena::new(instance, limits.backings()),
+            timers: Arena::new(instance, limits.timers()),
+            ios: Arena::new(instance, limits.ios()),
             ready: Queue::new(),
             running,
             due: List::new(),
@@ -170,7 +171,7 @@ impl Kernel {
     /// この状態の実行インスタンス。
     #[must_use]
     pub const fn instance(&self) -> InstanceId {
-        self.instance
+        self.lineage.instance()
     }
 
     /// 上限。
@@ -200,12 +201,14 @@ impl Kernel {
 
     /// 状態の写しを取る。確保に失敗したら `Exhausted(HostMemory)` を返す。
     pub fn snapshot(&self) -> Result<Snapshot, Error> {
-        Ok(Snapshot { state: self.duplicate(self.instance)? })
+        Ok(Snapshot { state: self.duplicate(self.lineage.same()?)? })
     }
 
-    fn duplicate(&self, instance: InstanceId) -> Result<Kernel, Error> {
+    /// 状態を写す。`lineage` が別の実行インスタンスなら、これから作る資源の発行元もそれにする。
+    fn duplicate(&self, lineage: Lineage) -> Result<Kernel, Error> {
+        let instance = lineage.instance();
         let Kernel {
-            instance: _,
+            lineage: _,
             limits,
             now,
             seq,
@@ -221,8 +224,8 @@ impl Kernel {
             effects,
             backing_bytes,
         } = self;
-        Ok(Kernel {
-            instance,
+        let mut copy = Kernel {
+            lineage,
             limits: *limits,
             now: *now,
             seq: *seq,
@@ -237,7 +240,14 @@ impl Kernel {
             due: due.try_clone()?,
             effects: effects.try_clone()?,
             backing_bytes: *backing_bytes,
-        })
+        };
+        copy.processes.reissue(instance);
+        copy.threads.reissue(instance);
+        copy.objects.reissue(instance);
+        copy.backings.reissue(instance);
+        copy.timers.reissue(instance);
+        copy.ios.reissue(instance);
+        Ok(copy)
     }
 
     /// 取り出されていない `Effect` の `at` 番目 (0 が次に取り出すもの) を、取り出さずに見る。
@@ -285,7 +295,7 @@ impl Snapshot {
     /// 写しを取った実行インスタンス。
     #[must_use]
     pub const fn instance(&self) -> InstanceId {
-        self.state.instance
+        self.state.lineage.instance()
     }
 
     /// 写しを、実行インスタンス `instance` の状態として復元する。
@@ -293,13 +303,19 @@ impl Snapshot {
     /// 復元した状態は、写しを取った実行インスタンスの実行権と完了通知を
     /// [`Error::Foreign`] で拒否する。そのため、外に貸しや依頼が残っている写しは復元できない:
     ///
-    /// - `instance` が写しと同じなら `Refused(SameInstance)`。
+    /// - `instance` が写しと同じか、写しの祖先 (復元元をさかのぼった実行インスタンス) と同じなら
+    ///   `Refused(SameInstance)`。
     /// - 実行権を貸したままなら `Refused(PermitsLent)`。
     /// - 発行済みでホストの応答を待つ I/O があれば `Refused(IoInFlight)`。
     ///
     /// 取り出されていない [`Effect`] は復元した状態に残り、復元先のホストが取り出す。
+    ///
+    /// 資源の ID は、写しの時点までに発行されたものがそのまま使える。復元した状態が新しく
+    /// 作る資源の ID は `instance` を発行元に持つ。写しの後に復元元が発行した ID は、
+    /// 復元した状態では資源を指さない ([`Error::Stale`]。発行元は祖先なので別インスタンスとは扱わない)。
     pub fn restore(&self, instance: InstanceId) -> Result<Kernel, Error> {
-        if instance == self.state.instance {
+        // 祖先の識別も使えない。祖先が発行した ID と、これから発行する ID の見分けが付かなくなる。
+        if self.state.lineage.includes(instance) {
             return Err(Error::Refused(Refusal::SameInstance));
         }
         if !self.state.running.is_empty() {
@@ -308,7 +324,7 @@ impl Snapshot {
         if self.state.ios.iter().any(|(_, io)| io.state.awaits_host()) {
             return Err(Error::Refused(Refusal::IoInFlight));
         }
-        self.state.duplicate(instance)
+        self.state.duplicate(self.state.lineage.succeeded_by(instance)?)
     }
 }
 

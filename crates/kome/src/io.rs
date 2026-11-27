@@ -18,7 +18,7 @@
 
 use crate::effect::{Completion, CompletionKind, Effect};
 use crate::error::{Error, Invariant, Refusal};
-use crate::id::{IoId, ObjectId, ProcessId, Tag};
+use crate::id::{IoId, ObjectId, ProcessId};
 use crate::kernel::Kernel;
 use crate::process::Life;
 use crate::store::plain_try_clone;
@@ -220,7 +220,7 @@ impl Kernel {
     /// I/O 要求を準備する。`links` の資源は要求が回収されるまで破棄されない。
     pub fn prepare_io(&mut self, process: ProcessId, links: IoLinks) -> Result<IoId, Error> {
         let IoLinks { target, notify } = links;
-        let owner = self.processes.get(process).ok_or(Error::Stale(Tag::Process))?;
+        let owner = self.processes.find(process, &self.lineage)?;
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
@@ -251,7 +251,7 @@ impl Kernel {
 
     /// 取消を要求する。発行前なら取消として終端を確定する。
     pub fn cancel_io(&mut self, io: IoId) -> Result<CancelReply, Error> {
-        let reply = match self.ios.get(io).ok_or(Error::Stale(Tag::Io))?.state {
+        let reply = match self.ios.find(io, &self.lineage)?.state {
             IoState::Prepared => CancelReply::Withdrawn,
             IoState::Issued => CancelReply::Requested,
             IoState::CancelRequested => CancelReply::AlreadyRequested,
@@ -267,12 +267,12 @@ impl Kernel {
     /// `Refused(IoSettled)`、別インスタンスへの通知は [`Error::Foreign`] になり、
     /// いずれも状態を変えない。
     pub fn complete(&mut self, completion: Completion) -> Result<IoSettled, Error> {
-        if completion.instance() != self.instance {
+        if completion.instance() != self.lineage.instance() {
             return Err(Error::Foreign);
         }
         match completion.kind() {
             CompletionKind::Io { io, outcome } => {
-                let process = self.ios.get(io).ok_or(Error::Stale(Tag::Io))?.process;
+                let process = self.ios.find(io, &self.lineage)?.process;
                 self.io_event(io, IoEvent::Complete(outcome))?;
                 let owner = self.processes.get(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
                 match owner.life {
@@ -303,7 +303,7 @@ impl Kernel {
 
     /// 要求を回収する。ホストの応答を待っている間は拒否する。
     pub fn release_io(&mut self, io: IoId) -> Result<(), Error> {
-        let entry = self.ios.get(io).ok_or(Error::Stale(Tag::Io))?;
+        let entry = self.ios.find(io, &self.lineage)?;
         match entry.state {
             IoState::Issued | IoState::CancelRequested => Err(Error::Refused(Refusal::IoInFlight)),
             IoState::Prepared | IoState::Settled(_) | IoState::Published(_) => self.remove_io(io),
@@ -312,19 +312,19 @@ impl Kernel {
 
     /// I/O の進行状態。
     pub fn io_phase(&self, io: IoId) -> Result<IoPhase, Error> {
-        Ok(self.ios.get(io).ok_or(Error::Stale(Tag::Io))?.state.phase())
+        Ok(self.ios.find(io, &self.lineage)?.state.phase())
     }
 
     /// 確定済みの終端結果。未確定なら `None`。
     pub fn io_outcome(&self, io: IoId) -> Result<Option<IoOutcome>, Error> {
-        Ok(match self.ios.get(io).ok_or(Error::Stale(Tag::Io))?.state {
+        Ok(match self.ios.find(io, &self.lineage)?.state {
             IoState::Settled(outcome) | IoState::Published(outcome) => Some(outcome),
             IoState::Prepared | IoState::Issued | IoState::CancelRequested => None,
         })
     }
 
     fn io_event(&mut self, io: IoId, event: IoEvent) -> Result<IoState, Error> {
-        let entry = self.ios.get_mut(io).ok_or(Error::Stale(Tag::Io))?;
+        let entry = self.ios.find_mut(io, &self.lineage)?;
         let before = entry.state;
         let (after, emit) = io_step(before, event).map_err(Error::Refused)?;
         entry.state = after;

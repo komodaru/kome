@@ -308,9 +308,12 @@ fn a_restored_state_behaves_like_the_original() {
     while let Some(effect) = k.poll_effect() {
         assert_eq!(restored.poll_effect(), Some(effect));
     }
-    // 実行インスタンスの識別だけが違う。
+    // 実行インスタンスと、復元の後に作った資源の発行元が違う。
     assert_ne!(k, restored);
-    assert_eq!(restored.snapshot().unwrap().restore(k.instance()).unwrap(), k);
+    // 祖先の識別へは戻せない (祖先が発行した ID と見分けが付かなくなる)。
+    let again = restored.snapshot().unwrap();
+    assert_eq!(again.restore(k.instance()).err(), Some(Error::Refused(Refusal::SameInstance)));
+    assert_eq!(again.restore(InstanceId::new(10)).map(|third| third.census()), Ok(restored.census()));
 }
 
 #[test]
@@ -2470,4 +2473,169 @@ fn a_failure_after_acceptance_consumes_the_permit() {
     assert_eq!(failed, NotRelinquished::Failed(Error::Broken(Invariant::RunOnePermit)));
     assert_eq!(failed.error(), Error::Broken(Invariant::RunOnePermit));
     assert_eq!(failed.into_permit(), None);
+}
+
+// ---- 資源の ID は発行元を持つ (レビュー 2.1 の再現例) ----
+
+/// 同じ手順で作った二つの状態。ID のスロットと世代は同じで、発行元だけが違う。
+struct Issued {
+    k: Kernel,
+    p: ProcessId,
+    t: ThreadId,
+    o: ObjectId,
+    b: BackingId,
+    timer: TimerId,
+    io: IoId,
+}
+
+fn pair_member(instance: u64) -> Issued {
+    let mut k = Kernel::new(InstanceId::new(instance), Limits::DEFAULT.with_workers(2)).unwrap();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    assert_eq!(trap(&mut k, W0), t);
+    let o = event(&mut k, p);
+    let b = ok!(k, k.create_backing(p, 2 * PAGE));
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), Prot::READ));
+    let timer = ok!(k, k.create_timer(p, o));
+    let io = ok!(k, k.prepare_io(p, IoLinks::NONE));
+    Issued { k, p, t, o, b, timer, io }
+}
+
+#[test]
+fn a_resource_id_from_another_kernel_is_foreign() {
+    // 再現例: 二つの実行インスタンスで、片方が発行した実体の ID をもう片方の解放へ渡すと成功し、
+    // 関係のない実体が解放された。別のインスタンスのプロセスの ID での対応づけも成功した。
+    let mut first = pair_member(1);
+    let mut second = pair_member(2);
+    assert_eq!((first.b.slot(), first.b.generation()), (second.b.slot(), second.b.generation()));
+    assert_ne!(first.b, second.b);
+    assert_eq!((first.b.issuer(), second.b.issuer()), (InstanceId::new(1), InstanceId::new(2)));
+    let before = second.k.snapshot().unwrap();
+    assert_eq!(second.k.release_backing(second.p, first.b), Err(Error::Foreign));
+    assert_eq!(second.k.map(first.p, range(0x8000, PAGE), MapSource::Reserved, Prot::NONE), Err(Error::Foreign));
+    assert_eq!(second.k, before);
+    assert_eq!(second.k.backing_len(second.b), Ok(2 * PAGE));
+    // 自分の ID は使える。
+    ok!(first.k, first.k.release_backing(first.p, first.b));
+}
+
+#[test]
+fn a_foreign_id_is_refused_in_every_position() {
+    // どの操作のどの引数でも、別の実行インスタンスの ID は、状態を変えずに Foreign で拒否する。
+    // lint foreign-ids-tested が、Input の ID の引数が全てここにあることを確かめる。
+    let mut own = pair_member(1);
+    let other = pair_member(2);
+    let (p, t, o, b, timer, io) = (own.p, own.t, own.o, own.b, own.timer, own.io);
+    let (fp, ft, fo, fb, ftimer, fio) = (other.p, other.t, other.o, other.b, other.timer, other.io);
+    let spec = SignalSpec::new(SignalMode::Keep, 0, 1);
+    let code = ExitCode::new(1);
+    let page = range(0x8000, PAGE);
+    let done = Completion::new(InstanceId::new(1), CompletionKind::Io { io: fio, outcome: IoOutcome::Done { transferred: 0 } });
+    let foreign_target = [fo];
+    let own_target = [o];
+    let inputs: Vec<Input<'_>> = vec![
+        Input::ExitProcess(fp, code),
+        Input::CreateThread(fp, Start::Ready),
+        Input::ContinueThread(ft),
+        Input::SuspendThread(ft),
+        Input::UnsuspendThread(ft),
+        Input::TerminateThread(ft, code),
+        Input::CreateObject(fp, spec),
+        Input::RetainObject(fp, o),
+        Input::RetainObject(p, fo),
+        Input::ReleaseObject(fp, o),
+        Input::ReleaseObject(p, fo),
+        Input::Signal(fo, SignalOp::Set(1)),
+        Input::Wait(ft, &own_target, WaitMode::Any, Deadline::Never, Interruptible::No),
+        Input::Wait(t, &foreign_target, WaitMode::Any, Deadline::Never, Interruptible::No),
+        Input::InterruptWait(ft),
+        Input::CreateTimer(fp, o),
+        Input::CreateTimer(p, fo),
+        Input::ArmTimer(ftimer, at(5), None),
+        Input::DisarmTimer(ftimer),
+        Input::DropTimer(ftimer),
+        Input::PrepareIo(fp, IoLinks::NONE),
+        Input::PrepareIo(p, IoLinks::NONE.with_target(fo)),
+        Input::PrepareIo(p, IoLinks::NONE.with_notify(fo)),
+        Input::IssueIo(fio),
+        Input::CancelIo(fio),
+        Input::Complete(done),
+        Input::PublishIo(fio),
+        Input::ReleaseIo(fio),
+        Input::CreateBacking(fp, PAGE),
+        Input::RetainBacking(fp, b),
+        Input::RetainBacking(p, fb),
+        Input::ReleaseBacking(fp, b),
+        Input::ReleaseBacking(p, fb),
+        Input::Map(fp, page, MapSource::Reserved, Prot::NONE),
+        Input::Map(p, page, backed(fb, 0), Prot::READ),
+        Input::Unmap(fp, range(0x1000, PAGE)),
+        Input::Protect(fp, range(0x1000, PAGE), Prot::READ_WRITE),
+    ];
+    let before = own.k.snapshot().unwrap();
+    for (at, input) in inputs.into_iter().enumerate() {
+        let shown = format!("{input:?}");
+        assert_eq!(own.k.apply(input), Err(Error::Foreign), "{at}: {shown}");
+        assert_eq!(own.k, before, "{at}: {shown} が状態を変えた");
+    }
+    // 状態を変えない問い合わせも同じ。
+    let k = &own.k;
+    let addr = GuestAddr::new(0x1000);
+    let unit = PageSize::new(PAGE).unwrap();
+    assert_eq!(k.process_phase(fp), Err(Error::Foreign));
+    assert_eq!(k.thread_count(fp), Err(Error::Foreign));
+    assert_eq!(k.thread_phase(ft), Err(Error::Foreign));
+    assert_eq!(k.suspend_count(ft), Err(Error::Foreign));
+    assert_eq!(k.process_of(ft), Err(Error::Foreign));
+    assert_eq!(k.executed(ft), Err(Error::Foreign));
+    assert_eq!(k.signal_count(fo), Err(Error::Foreign));
+    assert_eq!(k.backing_len(fb), Err(Error::Foreign));
+    assert_eq!(k.io_phase(fio), Err(Error::Foreign));
+    assert_eq!(k.io_outcome(fio), Err(Error::Foreign));
+    assert_eq!(k.translate(fp, range(0x1000, 1), Access::Read), Err(Error::Foreign));
+    assert_eq!(k.mapping_at(fp, addr), Err(Error::Foreign));
+    assert_eq!(k.next_mapping(fp, addr), Err(Error::Foreign));
+    assert_eq!(k.find_free(fp, PAGE, unit, range(0, 0x10_0000)), Err(Error::Foreign));
+    assert_eq!(k.map_generation(fp), Err(Error::Foreign));
+    assert_eq!(k.mapping_count(fp), Err(Error::Foreign));
+    // 自分の ID は、同じ引数の位置で受理される (拒否の理由が ID であることの対照)。
+    ok!(own.k, own.k.retain_backing(p, b));
+    ok!(own.k, own.k.arm_timer(timer, at(5), None));
+    ok!(own.k, own.k.issue_io(io));
+    assert_eq!(wait_any(&mut own.k, t, &own_target), WaitStart::Blocked);
+}
+
+#[test]
+fn a_restored_state_keeps_the_ids_issued_before_the_snapshot_only() {
+    let mut original = pair_member(1);
+    let snapshot = original.k.snapshot().unwrap();
+    let mut copy = snapshot.restore(InstanceId::new(2)).unwrap();
+    // 写しの時点までの ID は、復元した状態でもそのまま使える。
+    assert_eq!(copy.backing_len(original.b), Ok(2 * PAGE));
+    assert_eq!(copy.thread_phase(original.t), Ok(ThreadPhase::Servicing));
+    // 写しの後に、両方が同じスロット・同じ世代の資源を作る。発行元が違うので、取り違えない。
+    let late = event(&mut original.k, original.p);
+    let fresh = event(&mut copy, original.p);
+    assert_eq!((late.slot(), late.generation()), (fresh.slot(), fresh.generation()));
+    assert_eq!((late.issuer(), fresh.issuer()), (InstanceId::new(1), InstanceId::new(2)));
+    // 復元元が後から発行した ID は、復元した状態には無い資源である (発行元は祖先なので Stale)。
+    assert_eq!(copy.signal_count(late), Err(Error::Stale(Tag::Object)));
+    assert_eq!(copy.signal_count(fresh), Ok(0));
+    // 復元した状態が発行した ID は、復元元にとっては別の実行インスタンスのもの。
+    assert_eq!(original.k.signal_count(fresh), Err(Error::Foreign));
+    // 解放して同じスロットを使い回しても、古い ID は古いままである。
+    ok!(copy, copy.release_object(original.p, original.o));
+    assert_eq!(copy.signal_count(original.o), Ok(0), "タイマが固定している資源を破棄した");
+    ok!(copy, copy.drop_timer(original.timer));
+    assert_eq!(copy.signal_count(original.o), Err(Error::Stale(Tag::Object)));
+    let reused = event(&mut copy, original.p);
+    assert_eq!(reused.slot(), original.o.slot());
+    assert_eq!(copy.signal_count(original.o), Err(Error::Stale(Tag::Object)));
+    // 孫の世代でも、祖先が発行した ID を引き継ぐ。
+    let grandchild = copy.snapshot().unwrap().restore(InstanceId::new(3)).unwrap();
+    assert_eq!(grandchild.backing_len(original.b), Ok(2 * PAGE));
+    assert_eq!(grandchild.signal_count(fresh), Ok(0));
+    assert_eq!(grandchild.signal_count(late), Err(Error::Stale(Tag::Object)));
+    assert_eq!(copy.audit(), Ok(()));
+    assert_eq!(grandchild.audit(), Ok(()));
 }

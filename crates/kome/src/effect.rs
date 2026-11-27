@@ -226,7 +226,7 @@ mod tests {
     use crate::id::{Arena, kind};
 
     fn io() -> IoId {
-        Arena::<kind::Io, ()>::new(1).insert(()).unwrap()
+        Arena::<kind::Io, ()>::new(crate::InstanceId::new(1), 1).insert(()).unwrap()
     }
 
     #[test]

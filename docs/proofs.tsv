@@ -12,3 +12,4 @@ effects_never_promise_beyond_the_limit	-	上限は 2 以下で、キューの確
 effects_emit_exactly_what_was_promised	4	上限は 2 で、キューの確保が成功した場合。予約は 2 以下の全ての数。予約した数ちょうどの発行と、その次の 1 回
 a_removed_id_never_resolves_again	3	表の上限は 1 で、確保が成功した場合。最初の世代は最大値を除く全ての値。作成・削除・再作成が 1 回ずつ
 an_exhausted_slot_is_retired	3	表の上限は 1 で、確保が成功した場合。最初の世代は最大値。作成・削除・再作成が 1 回ずつ
+an_id_from_another_issuer_never_resolves	3	表の上限は 1 で、確保が成功した場合。二つの実行インスタンスの識別は、互いに異なる u64 の全ての値。作成が 1 回ずつ
