@@ -17,11 +17,8 @@ if ! echo "$JAR_SHA256  $JAR" | sha256sum --check --status 2>/dev/null; then
 fi
 
 unset JAVA_TOOL_OPTIONS
-listed="$(grep -v '^#' expect.tsv | cut -f1 | sort)"
-present="$(ls -- *.cfg | sort)"
-if [ "$listed" != "$present" ]; then
-    echo "tla/expect.tsv と tla/*.cfg が一致しない:" >&2
-    diff <(echo "$listed") <(echo "$present") >&2 || true
+if ! diff <(grep -v '^#' expect.tsv | cut -f1 | sort) <(ls -- *.cfg | sort) >&2; then
+    echo "tla/expect.tsv と tla/*.cfg が一致しない (上が差分)" >&2
     exit 1
 fi
 

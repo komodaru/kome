@@ -1,0 +1,263 @@
+# 不変条件の台帳。
+#
+# 一つの不変条件につき: 識別子、文、持ち主のモジュール、状態から数え直す検査 (audit)、
+# 壊した状態を検査が検出することの試験 (caught)、守られていることの試験 (tests)、
+# Kani の証明 (proofs)、TLA+ の性質 (models、「モジュール:性質」)、範囲 (scope)。
+#
+# kome-lint の ledger 規則が、ここ・crates/kome/src/error.rs の Invariant・試験・証明・
+# モデルが食い違わないことを確かめる。models に書けるのは、正しい設定で検査され、
+# 誤りの変種 (tla/expect.tsv) で破れる性質だけである。
+
+[[invariant]]
+id = "RUN-1"
+variant = "RunOnePermit"
+statement = "一つのスレッドに有効な実行権は一つ。一つの worker が持つ実行権も一つ。"
+owner = "crates/kome/src/sched.rs"
+audit = "audit_runs"
+caught = "crates/kome/src/tests.rs::audit_detects_two_permits_for_one_thread"
+tests = [
+    "crates/kome/src/tests.rs::a_worker_holds_one_permit_and_a_thread_is_lent_once",
+    "crates/kome/src/tests.rs::a_stale_or_foreign_permit_changes_nothing",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = []
+models = []
+scope = "実行権は複製できない値 (RunPermit) で、返却のときにインスタンスと実行の世代を照合する。worker が実行権を返さずに実行を続けないことは、実行統括 (kome の外) が守る。"
+
+[[invariant]]
+id = "RUN-2"
+variant = "RunQueue"
+statement = "実行待ち行列は、実行可能なスレッドをちょうど一度ずつ含む。"
+owner = "crates/kome/src/thread.rs"
+audit = "audit_runs"
+caught = "crates/kome/src/tests.rs::audit_detects_a_runnable_thread_missing_from_the_queue"
+tests = [
+    "crates/kome/src/tests.rs::threads_run_in_fifo_order_and_a_preempted_thread_goes_to_the_back",
+    "crates/kome/src/tests.rs::suspension_combines_with_every_run_state",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = []
+models = []
+scope = "実行可能とは、実行待ちで、停止の数が 0 で、プロセスがメモリの変更で止められていないこと。順序は先入れ先出し。優先度は Personality が上に作る。"
+
+[[invariant]]
+id = "ID-1"
+variant = "IdFresh"
+statement = "解放済みの内部 ID は、新しい資源を指さない。"
+owner = "crates/kome/src/id.rs"
+audit = "audit_ids"
+caught = "crates/kome/src/tests.rs::audit_detects_a_corrupt_free_list"
+tests = [
+    "crates/kome/src/id.rs::stale_id_resolves_nothing_after_reuse",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = [
+    "a_removed_id_never_resolves_again",
+]
+models = []
+scope = "スロットごとの世代で見分ける。世代を使い切ったスロットは二度と使わない。ゲストに見せるハンドルの番号は Personality が持ち、ここには含まない。"
+
+[[invariant]]
+id = "IO-1"
+variant = "IoOnce"
+statement = "終端済みの I/O は再度終端しない。"
+owner = "crates/kome/src/io.rs"
+audit = "audit_ios"
+caught = "crates/kome/src/tests.rs::audit_detects_an_io_pointing_at_nothing"
+tests = [
+    "crates/kome/src/tests.rs::a_second_or_late_or_foreign_completion_changes_nothing",
+    "crates/kome/src/tests.rs::cancel_is_a_request_and_the_host_decides_the_outcome",
+    "crates/kome-testkit/tests/headless.rs::duplicate_and_late_completions_are_refused",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = [
+    "io_outcome_is_settled_once",
+]
+models = [
+    "IoLifecycle:SettlesOnce",
+    "IoLifecycle:NoWakeBeforeOutput",
+    "IoLifecycle:NoReleaseInFlight",
+]
+scope = "一つの要求の進行。ホストが完了を重複して送ること、取消の後に正常完了が届くことを含む。転送の内容とバッファは Personality と Host が持つ。"
+
+[[invariant]]
+id = "WAIT-1"
+variant = "WaitOnce"
+statement = "待機結果は一つだけ確定する (待機の登録は対象・期限と一対一に対応する)。"
+owner = "crates/kome/src/wait.rs"
+audit = "audit_waits"
+caught = "crates/kome/src/tests.rs::audit_detects_a_wait_resolved_twice"
+tests = [
+    "crates/kome/src/tests.rs::a_wait_times_out_exactly_once_at_its_deadline",
+    "crates/kome/src/tests.rs::terminating_a_blocked_thread_removes_its_wait",
+    "crates/kome/src/tests.rs::wait_all_takes_everything_at_once_or_nothing",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = []
+models = [
+    "WaitRace:OneOutcome",
+    "WaitRace:AllOrNothing",
+]
+scope = "成立・期限・中断・スレッドの終了のどれか一つで終わる。「すべて」は全対象が同時に成立したときにだけ、まとめて消費する。"
+
+[[invariant]]
+id = "WAIT-2"
+variant = "WaitNoLostWake"
+statement = "成立している待機が登録されたまま残らない (起床を失わない)。"
+owner = "crates/kome/src/wait.rs"
+audit = "audit_waits"
+caught = "crates/kome/src/tests.rs::audit_detects_a_lost_wakeup"
+tests = [
+    "crates/kome/src/tests.rs::a_satisfied_wait_does_not_register",
+    "crates/kome/src/tests.rs::waiters_are_woken_in_registration_order",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = []
+models = [
+    "WaitRace:NoLostWake",
+]
+scope = "確認と登録は一つの状態更新で行う。同じ資源を待つ待機は登録順に評価する。"
+
+[[invariant]]
+id = "MEM-1"
+variant = "MemBackingAlive"
+statement = "使用中の実体を解放しない (参照の数が実際の参照と一致する)。"
+owner = "crates/kome/src/mem.rs"
+audit = "audit_memory"
+caught = "crates/kome/src/tests.rs::audit_detects_a_freed_backing_still_mapped"
+tests = [
+    "crates/kome/src/tests.rs::a_mapped_backing_outlives_its_last_hold",
+    "crates/kome/src/tests.rs::process_exit_releases_holds_and_mappings",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = []
+models = []
+scope = "保持・マッピング・古い実行が見ている間の猶予の三つを数える。実体のバイトそのものは Host が持つ。"
+
+[[invariant]]
+id = "MEM-2"
+variant = "MemLayout"
+statement = "マッピングは整列し、重ならず、アドレス空間の幅に収まる。"
+owner = "crates/kome/src/mem.rs"
+audit = "audit_layout"
+caught = "crates/kome/src/tests.rs::audit_detects_overlapping_mappings"
+tests = [
+    "crates/kome/src/tests.rs::map_refuses_bad_placements_without_changing_state",
+    "crates/kome/src/tests.rs::unmap_splits_and_keeps_offsets",
+    "crates/kome/src/tests.rs::protect_needs_full_coverage_and_splits_at_both_ends",
+    "crates/kome/src/tests.rs::find_free_returns_the_lowest_aligned_gap",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = [
+    "range_new_never_wraps",
+    "range_len_is_none_only_for_everything",
+    "range_overlap_is_a_shared_byte",
+    "page_size_divides_is_remainder_zero",
+]
+models = []
+scope = "決定的シミュレーションは、ページごとの独立したモデルと全ページの見え方を比べる。粒度は Personality が選ぶ。"
+
+[[invariant]]
+id = "MEM-3"
+variant = "MemBarrier"
+statement = "権限を減らす変更の後、古い世代の実行が残る間はそのプロセスへ実行権を貸さない。"
+owner = "crates/kome/src/mem.rs"
+audit = "audit_processes"
+caught = "crates/kome/src/tests.rs::audit_detects_limbo_without_old_runs"
+tests = [
+    "crates/kome/src/tests.rs::a_reducing_change_bars_the_process_until_old_runs_stop",
+    "crates/kome/src/tests.rs::unmapping_a_reservation_interrupts_nobody",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = []
+models = []
+scope = "減らす変更とは、解除と、権限を狭める変更。実行中のスレッドには中断を出し、全て戻るまで実体を生かす。実行中のコードが変換済みの内容を捨てることは実行系 (kome の外) が行う。"
+
+[[invariant]]
+id = "FX-1"
+variant = "EffectsKept"
+statement = "キューが満杯でも、受理済み操作の Effect を失わない (予約数が一致する)。"
+owner = "crates/kome/src/effect.rs"
+audit = "audit_effects"
+caught = "crates/kome/src/tests.rs::audit_detects_a_lost_effect_promise"
+tests = [
+    "crates/kome/src/tests.rs::a_full_effect_queue_refuses_before_accepting",
+    "crates/kome-testkit/tests/headless.rs::shortage_is_reported_before_the_request_is_accepted",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = [
+    "io_promises_cover_every_emission",
+    "effects_never_promise_beyond_the_limit",
+    "effects_emit_exactly_what_was_promised",
+]
+models = []
+scope = "操作は、将来出しうる Effect の席を受理の時点で予約する。席が無ければ受理の前に不足を返す。"
+
+[[invariant]]
+id = "OBJ-1"
+variant = "ObjectRefs"
+statement = "資源の参照数と固定数は、実際の保持者の数と一致する。"
+owner = "crates/kome/src/object.rs"
+audit = "audit_objects"
+caught = "crates/kome/src/tests.rs::audit_detects_a_wrong_reference_count"
+tests = [
+    "crates/kome/src/tests.rs::a_closed_object_lives_until_its_waiters_leave",
+    "crates/kome/src/tests.rs::io_keeps_its_target_and_notify_alive",
+    "crates/kome/src/tests.rs::exit_signal_outlives_the_thread_while_someone_holds_it",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = []
+models = []
+scope = "保持はプロセスごとに数え、固定は待機・タイマ・I/O・終了通知が持つ。名前空間と継承は Personality が上に作る。"
+
+[[invariant]]
+id = "TIME-1"
+variant = "TimeOrder"
+statement = "期限の列は (時刻, 登録順) の順で、待機・タイマと一対一に対応する。"
+owner = "crates/kome/src/timer.rs"
+audit = "audit_time"
+caught = "crates/kome/src/tests.rs::audit_detects_an_unordered_deadline_list"
+tests = [
+    "crates/kome/src/tests.rs::same_instant_deadlines_fire_in_registration_order",
+    "crates/kome/src/tests.rs::periodic_timer_refires_and_stops_when_disarmed",
+    "crates/kome/src/tests.rs::a_period_that_leaves_the_time_range_stops_the_timer",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = [
+    "instant_add_never_wraps",
+]
+models = []
+scope = "時刻は外から与える仮想時刻で、戻らない。実時間との対応は Host が持つ。"
+
+[[invariant]]
+id = "PROC-1"
+variant = "ProcessTree"
+statement = "プロセスとスレッドの所属関係は相互に一致し、終了済みのプロセスは資源を持たない。"
+owner = "crates/kome/src/process.rs"
+audit = "audit_processes"
+caught = "crates/kome/src/tests.rs::audit_detects_a_thread_outside_its_process"
+tests = [
+    "crates/kome/src/tests.rs::process_is_created_run_exited_and_reclaimed",
+    "crates/kome/src/tests.rs::exit_process_waits_for_running_threads_to_stop",
+    "crates/kome/src/tests.rs::process_exit_drains_in_flight_io_before_reclaim",
+    "crates/kome-testkit/tests/headless.rs::process_exit_during_a_read_drains_before_reclaim",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = []
+models = []
+scope = "終了は、実行中のスレッドが戻り、応答待ちの I/O が終端するまで回収を待つ。親子関係とジョブは Personality が上に作る。"
+
+[[invariant]]
+id = "ERR-1"
+variant = "ErrorClasses"
+statement = "ゲストへ返す拒否と、ランタイム内部の障害を混同しない。"
+owner = "crates/kome/src/error.rs"
+caught = "crates/kome/src/tests.rs::an_internal_fault_is_never_a_guest_refusal"
+tests = [
+    "crates/kome/src/tests.rs::limits_are_refusals",
+    "crates/kome-testkit/tests/headless.rs::a_host_failure_is_an_outcome_not_a_kernel_error",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+]
+proofs = []
+models = []
+scope = "失敗は型で五つに分かれる (古い ID、拒否、不足、別インスタンス、内部の障害)。拒否・不足は状態を変えない。ゲスト OS の状態コードへの対応は Personality が持つ。"

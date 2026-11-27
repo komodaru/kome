@@ -260,7 +260,7 @@ impl Kernel {
     fn audit_time(&self) -> Result<(), Violation> {
         let sorted = self.due.as_slice().windows(2).all(|pair| match pair {
             [a, b] => (a.at, a.seq) <= (b.at, b.seq),
-            _ => false,
+            [] | [_] | [_, _, _, ..] => false,
         });
         ensure(sorted, Invariant::TimeOrder, "期限の列が (時刻, 登録順) の順でない")?;
         for entry in self.due.iter() {

@@ -155,7 +155,7 @@ impl<K: Kind> fmt::Debug for Id<K> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Cell<T> {
+enum Entry<T> {
     Live(T),
     Free,
     /// 世代を使い切った。二度と使わない。
@@ -165,7 +165,7 @@ enum Cell<T> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Slot<T> {
     generation: NonZeroU32,
-    cell: Cell<T>,
+    cell: Entry<T>,
 }
 
 /// 世代を持つ表。
@@ -224,13 +224,13 @@ impl<K: Kind, T> Arena<K, T> {
                 let Some(entry) = entry else {
                     return Err(Error::Broken(crate::error::Invariant::IdFresh));
                 };
-                entry.cell = Cell::Live(value);
+                entry.cell = Entry::Live(value);
                 Id { slot, generation: entry.generation, kind: PhantomData }
             }
             None => {
                 let slot =
                     u32::try_from(self.slots.len()).map_err(|_| Error::Exhausted(Resource::Identifiers))?;
-                self.slots.push(Slot { generation: self.first_generation, cell: Cell::Live(value) })?;
+                self.slots.push(Slot { generation: self.first_generation, cell: Entry::Live(value) })?;
                 Id { slot, generation: self.first_generation, kind: PhantomData }
             }
         };
@@ -245,8 +245,8 @@ impl<K: Kind, T> Arena<K, T> {
 
     pub(crate) fn get(&self, id: Id<K>) -> Option<&T> {
         match &self.slot(id)?.cell {
-            Cell::Live(value) => Some(value),
-            Cell::Free | Cell::Retired => None,
+            Entry::Live(value) => Some(value),
+            Entry::Free | Entry::Retired => None,
         }
     }
 
@@ -256,8 +256,8 @@ impl<K: Kind, T> Arena<K, T> {
             return None;
         }
         match &mut slot.cell {
-            Cell::Live(value) => Some(value),
-            Cell::Free | Cell::Retired => None,
+            Entry::Live(value) => Some(value),
+            Entry::Free | Entry::Retired => None,
         }
     }
 
@@ -268,29 +268,29 @@ impl<K: Kind, T> Arena<K, T> {
     /// 資源を取り除く。スロットの世代を進め、進められなければ退役させる。確保しない。
     pub(crate) fn remove(&mut self, id: Id<K>) -> Option<T> {
         let slot = self.slots.get_mut(usize::try_from(id.slot).ok()?)?;
-        if slot.generation != id.generation || !matches!(slot.cell, Cell::Live(_)) {
+        if slot.generation != id.generation || !matches!(slot.cell, Entry::Live(_)) {
             return None;
         }
-        let taken = core::mem::replace(&mut slot.cell, Cell::Retired);
+        let taken = core::mem::replace(&mut slot.cell, Entry::Retired);
         if let Some(next) = slot.generation.checked_add(1) {
             // 容量は insert が確保してある。万一無ければ退役のままにする (再利用しないだけで安全)。
             if self.free.push_within(id.slot).is_ok() {
                 slot.generation = next;
-                slot.cell = Cell::Free;
+                slot.cell = Entry::Free;
             }
         }
         self.live = self.live.saturating_sub(1);
         match taken {
-            Cell::Live(value) => Some(value),
-            Cell::Free | Cell::Retired => None,
+            Entry::Live(value) => Some(value),
+            Entry::Free | Entry::Retired => None,
         }
     }
 
     /// 生きている資源をスロット順に返す。
     pub(crate) fn iter(&self) -> impl Iterator<Item = (Id<K>, &T)> {
         (0u32..).zip(self.slots.iter()).filter_map(|(slot, entry)| match &entry.cell {
-            Cell::Live(value) => Some((Id { slot, generation: entry.generation, kind: PhantomData }, value)),
-            Cell::Free | Cell::Retired => None,
+            Entry::Live(value) => Some((Id { slot, generation: entry.generation, kind: PhantomData }, value)),
+            Entry::Free | Entry::Retired => None,
         })
     }
 
@@ -306,16 +306,16 @@ impl<K: Kind, T> Arena<K, T> {
         let mut free = 0usize;
         for entry in self.slots.iter() {
             match entry.cell {
-                Cell::Live(_) => live = live.saturating_add(1),
-                Cell::Free => free = free.saturating_add(1),
-                Cell::Retired => {}
+                Entry::Live(_) => live = live.saturating_add(1),
+                Entry::Free => free = free.saturating_add(1),
+                Entry::Retired => {}
             }
         }
         let listed_free = self.free.iter().all(|slot| {
             usize::try_from(*slot)
                 .ok()
                 .and_then(|at| self.slots.get(at))
-                .is_some_and(|entry| matches!(entry.cell, Cell::Free))
+                .is_some_and(|entry| matches!(entry.cell, Entry::Free))
         });
         let unique = self.free.iter().enumerate().all(|(at, slot)| {
             self.free.as_slice().get(..at).is_some_and(|before| !before.contains(slot))

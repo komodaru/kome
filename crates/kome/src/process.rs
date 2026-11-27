@@ -138,7 +138,7 @@ impl<K: Kind> Holdings<K> {
         self.list.iter().all(|held| held.count > 0)
             && self.list.as_slice().windows(2).all(|pair| match pair {
                 [a, b] => a.id < b.id,
-                _ => false,
+                [] | [_] | [_, _, _, ..] => false,
             })
     }
 }

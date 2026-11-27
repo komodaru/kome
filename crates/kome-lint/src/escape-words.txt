@@ -1,0 +1,21 @@
+todo
+fixme
+xxx
+hack
+stub
+stubbed
+simplified
+simplification
+placeholder
+unimplemented
+for now
+not implemented
+not supported yet
+簡略
+省略
+未対応
+未実装
+とりあえず
+近似で済
+暫定
+仮実装
