@@ -10,7 +10,7 @@ use crate::effect::{Effect, Effects};
 use crate::error::Error;
 use crate::id::{Arena, IoId, kind};
 use crate::io::{HostError, IoEmit, IoEvent, IoOutcome, IoState, io_step};
-use crate::time::{Duration, Instant};
+use crate::time::{Duration, Instant, Period};
 
 fn any_range() -> GuestRange {
     let range = GuestRange::spanning(GuestAddr::new(kani::any()), GuestAddr::new(kani::any()));
@@ -85,6 +85,20 @@ fn instant_add_never_wraps() {
     match Instant::from_nanos(at).checked_add(Duration::from_nanos(span)) {
         Some(later) => assert!(later.nanos() >= at && later.nanos() - at == span),
         None => assert!(u128::from(at) + u128::from(span) > u128::from(u64::MAX)),
+    }
+}
+
+/// 周期を足した次の期限は、表現できる限り必ず今の期限より後になる (周期タイマは同じ時刻に留まらない)。
+#[kani::proof]
+fn a_period_moves_the_deadline_forward() {
+    let at: u64 = kani::any();
+    let span: u64 = kani::any();
+    match Period::new(Duration::from_nanos(span)) {
+        Some(period) => match Instant::from_nanos(at).checked_add(period.get()) {
+            Some(next) => assert!(next > Instant::from_nanos(at)),
+            None => assert!(u128::from(at) + u128::from(span) > u128::from(u64::MAX)),
+        },
+        None => assert!(span == 0),
     }
 }
 

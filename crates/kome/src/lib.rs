@@ -65,5 +65,5 @@ pub use object::{SignalMode, SignalOp, SignalSpec};
 pub use process::{ExitCode, ProcessCreated, ProcessPhase};
 pub use sched::{Budget, RunGen, RunPermit, Stop, ThreadFate, WorkerId};
 pub use thread::{Start, ThreadCreated, ThreadPhase};
-pub use time::{Deadline, Duration, Instant};
+pub use time::{Deadline, Duration, Instant, Period};
 pub use wait::{Interruptible, WaitMode, WaitOutcome, WaitStart};

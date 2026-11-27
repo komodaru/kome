@@ -18,7 +18,7 @@ use crate::object::{SignalOp, SignalSpec};
 use crate::process::ExitCode;
 use crate::sched::{Budget, RunPermit, Stop, ThreadFate, WorkerId};
 use crate::thread::Start;
-use crate::time::{Deadline, Duration, Instant};
+use crate::time::{Deadline, Instant, Period};
 use crate::wait::{Interruptible, WaitMode, WaitStart};
 
 /// 状態を変える一つの操作。各項目は同名の [`Kernel`] のメソッドに対応し、引数の順も同じである。
@@ -57,7 +57,7 @@ pub enum Input<'a> {
     /// [`Kernel::create_timer`]
     CreateTimer(ProcessId, ObjectId),
     /// [`Kernel::arm_timer`]
-    ArmTimer(TimerId, Instant, Option<Duration>),
+    ArmTimer(TimerId, Instant, Option<Period>),
     /// [`Kernel::disarm_timer`]
     DisarmTimer(TimerId),
     /// [`Kernel::drop_timer`]

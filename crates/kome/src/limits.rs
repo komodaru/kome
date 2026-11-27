@@ -1,7 +1,7 @@
 //! 資源の上限。kome の表はすべてここで上限を持つ。
 
 use crate::sched::Budget;
-use crate::time::Duration;
+use crate::time::{Duration, Period};
 
 macro_rules! limits {
     ($($(#[$doc:meta])* $name:ident / $with:ident : $ty:ty = $default:expr;)*) => {
@@ -62,9 +62,14 @@ limits! {
     holdings / with_holdings: u32 = 4096;
     /// 一度の実行権で実行してよい量。0 の実行権は貸さない。
     quantum / with_quantum: Budget = Budget::new(100_000);
-    /// 周期タイマの周期の下限。これより短い周期は拒否する。
-    min_period / with_min_period: Duration = Duration::from_nanos(100_000);
+    /// 周期タイマの周期の下限。これより短い周期は拒否する。0 にはできない。
+    min_period / with_min_period: Period = DEFAULT_MIN_PERIOD;
 }
+
+const DEFAULT_MIN_PERIOD: Period = match Period::new(Duration::from_nanos(100_000)) {
+    Some(period) => period,
+    None => Period::MIN,
+};
 
 impl Default for Limits {
     fn default() -> Limits {

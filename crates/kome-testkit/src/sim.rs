@@ -6,7 +6,7 @@ use std::fmt::Debug;
 use kome::{
     Access, AddrWidth, BackingId, BackingOffset, Budget, CancelReply, Completion, CompletionKind, Deadline, Duration,
     Effect, Error, ExitCode, GuestAddr, GuestRange, HostError, InstanceId, Instant, Interruptible, IoId, IoLinks,
-    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFaultKind, ObjectId, PageSize, ProcessId, ProcessPhase, Prot,
+    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFaultKind, ObjectId, PageSize, Period, ProcessId, ProcessPhase, Prot,
     Refusal, RunPermit, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, TimerId, WaitMode, WaitOutcome,
     WaitStart, WorkerId,
 };
@@ -614,11 +614,11 @@ impl Sim {
             21 => {
                 let Some(timer) = r.pick(&self.timers) else { return Ok(Outcome::Skipped) };
                 let at = Instant::from_nanos(self.k.now().nanos().saturating_add(r.below(4).saturating_mul(50)));
-                let min = limits().min_period().nanos();
+                let min = limits().min_period();
                 let period = match r.below(3) {
                     0 => None,
-                    1 => Some(Duration::from_nanos(min)),
-                    _ => Some(Duration::from_nanos(min.saturating_sub(1))),
+                    1 => Some(min),
+                    _ => Period::new(Duration::from_nanos(min.get().nanos().saturating_sub(1))),
                 };
                 done(self.k.arm_timer(timer, at, period))
             }

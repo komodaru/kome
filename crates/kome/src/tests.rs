@@ -583,12 +583,13 @@ fn periodic_timer_refires_and_stops_when_disarmed() {
     let (p, _) = process(&mut k);
     let sem = semaphore(&mut k, p, 0, 100);
     let timer = ok!(k, k.create_timer(p, sem));
-    let period = Limits::DEFAULT.min_period();
+    let min = Limits::DEFAULT.min_period();
+    let period = min.get();
     assert_eq!(
-        k.arm_timer(timer, at(5), Some(Duration::from_nanos(period.nanos() - 1))),
+        k.arm_timer(timer, at(5), Period::new(Duration::from_nanos(period.nanos() - 1))),
         Err(Error::Refused(Refusal::PeriodTooShort))
     );
-    ok!(k, k.arm_timer(timer, at(5), Some(period)));
+    ok!(k, k.arm_timer(timer, at(5), Some(min)));
     assert_eq!(ok!(k, k.advance(at(5 + 2 * period.nanos()))), 3);
     assert_eq!(k.signal_count(sem), Ok(3));
     assert_eq!(k.next_deadline(), Some(at(5 + 3 * period.nanos())));
@@ -2174,4 +2175,21 @@ fn lending_without_room_in_the_table_changes_nothing() {
     assert_eq!(k.grant(W0), Err(Error::Broken(Invariant::RunOnePermit)));
     assert_eq!(k, before);
     assert_eq!((k.ready_count(), k.running_count()), (1, 0));
+}
+
+// ---- 周期タイマは必ず時刻を進める (レビュー 1.2 の再現例) ----
+
+#[test]
+fn the_shortest_period_still_lets_time_advance() {
+    // 再現例: 周期の下限を 0 にして周期 0 のタイマを設定すると、時刻を進める操作が終わらなかった。
+    // 周期も下限も 0 を表せない (time.rs の compile_fail)。表せる最短の周期でも、期限は毎回後へ進む。
+    let mut k = kernel_with(Limits::DEFAULT.with_min_period(Period::MIN));
+    let (p, _) = process(&mut k);
+    let sem = semaphore(&mut k, p, 0, 1000);
+    let timer = ok!(k, k.create_timer(p, sem));
+    ok!(k, k.arm_timer(timer, at(0), Some(Period::MIN)));
+    assert_eq!(ok!(k, k.advance(at(0))), 1);
+    assert_eq!(k.next_deadline(), Some(at(1)));
+    assert_eq!(ok!(k, k.advance(at(9))), 9);
+    assert_eq!((k.now(), k.signal_count(sem), k.next_deadline()), (at(9), Ok(10), Some(at(10))));
 }

@@ -5,6 +5,7 @@ range_len_is_none_only_for_everything	-	両端は u64 の全ての値
 range_overlap_is_a_shared_byte	-	二つの範囲の両端とアドレスは u64 の全ての値
 page_size_divides_is_remainder_zero	-	ページの大きさと値は u64 の全ての値
 instant_add_never_wraps	-	時刻と長さは u64 の全ての値
+a_period_moves_the_deadline_forward	-	時刻と周期の長さは u64 の全ての値
 io_outcome_is_settled_once	-	全ての状態と出来事の組。結果の値は全ての値。遷移は 1 回 (どの列も 1 回の繰り返し)
 io_promises_cover_every_emission	-	全ての状態と出来事の組。遷移は 1 回
 effects_never_promise_beyond_the_limit	-	上限は 2 以下で、キューの確保が成功した場合。予約 2 回と取り消し 1 回で、数は u32 の全ての値

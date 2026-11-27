@@ -223,13 +223,15 @@ tests = [
     "crates/kome/src/tests.rs::same_instant_deadlines_fire_in_registration_order",
     "crates/kome/src/tests.rs::periodic_timer_refires_and_stops_when_disarmed",
     "crates/kome/src/tests.rs::a_period_that_leaves_the_time_range_stops_the_timer",
+    "crates/kome/src/tests.rs::the_shortest_period_still_lets_time_advance",
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
 ]
 proofs = [
     "instant_add_never_wraps",
+    "a_period_moves_the_deadline_forward",
 ]
 models = []
-scope = "時刻は外から与える仮想時刻で、戻らない。実時間との対応は Host が持つ。"
+scope = "時刻は外から与える仮想時刻で、戻らない。実時間との対応は Host が持つ。周期と周期の下限は 0 を表せない型 (Period) で、周期タイマの次の期限は必ず後になる。"
 
 [[invariant]]
 id = "PROC-1"

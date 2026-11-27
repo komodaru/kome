@@ -13,14 +13,14 @@ use crate::id::{ObjectId, ProcessId, Tag, TimerId};
 use crate::kernel::{Due, DueEntry, Kernel};
 use crate::process::Life;
 use crate::store::plain_try_clone;
-use crate::time::{Duration, Instant};
+use crate::time::{Instant, Period};
 use crate::wait::WaitOutcome;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Armed {
     pub(crate) at: Instant,
     pub(crate) seq: u64,
-    pub(crate) period: Option<Duration>,
+    pub(crate) period: Option<Period>,
 }
 
 plain_try_clone!(Timer);
@@ -47,8 +47,9 @@ impl Kernel {
     }
 
     /// タイマを `at` に設定する。`period` があれば、以後その間隔で繰り返す。
+    /// 周期は 0 にできず ([`Period`])、[`crate::Limits::min_period`] より短ければ拒否する。
     /// 設定済みなら置き換える。`at` が現在以前なら、次の [`Kernel::advance`] で通知する。
-    pub fn arm_timer(&mut self, timer: TimerId, at: Instant, period: Option<Duration>) -> Result<(), Error> {
+    pub fn arm_timer(&mut self, timer: TimerId, at: Instant, period: Option<Period>) -> Result<(), Error> {
         let entry = self.timers.get(timer).ok_or(Error::Stale(Tag::Timer))?;
         if period.is_some_and(|period| period < self.limits.min_period()) {
             return Err(Error::Refused(Refusal::PeriodTooShort));
@@ -127,8 +128,9 @@ impl Kernel {
         let Some(armed) = record.armed.filter(|armed| armed.at == entry.at && armed.seq == entry.seq) else {
             return Err(Error::Broken(Invariant::TimeOrder));
         };
-        // 周期の次回。時刻が表現できなくなったら止まる。列からは一つ外したばかりなので確保しない。
-        let next = armed.period.and_then(|period| armed.at.checked_add(period));
+        // 周期の次回。周期は 0 でないので、次回は必ず今回より後になる (証明 a_period_moves_the_deadline_forward)。時刻が表現できなくなったら
+        // 止まる。列からは一つ外したばかりなので確保しない。
+        let next = armed.period.and_then(|period| armed.at.checked_add(period.get()));
         let rearmed = match next {
             Some(at) => {
                 let seq = self.next_seq();
