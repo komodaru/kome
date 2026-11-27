@@ -16,6 +16,7 @@ const LEDGER: &str = "docs/invariants.toml";
 const CI: &str = ".github/workflows/ci.yml";
 const EXPECT: &str = "tla/expect.tsv";
 const COMPILE_FAIL: &str = "docs/compile-fail.tsv";
+const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
 
 /// すべての規則。
@@ -194,6 +195,18 @@ pub const RULES: &[Rule] = &[
             |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 新しい操作。\n    pub fn fresh_operation(&mut self) {}\n}"),
             |repo| repo.edit("checks/noalloc/tests/noalloc.rs", |text| text.replace("assert_eq!(count(), before, \"seed", "assert!(count() >= before, \"seed")),
             |repo| repo.edit("checks/noalloc/src/lib.rs", |text| text.replacen("        note();\n", "", 1)),
+        ],
+    },
+    Rule {
+        id: "capacity-audited",
+        about: "確保なしで追加する入れ物は、容量を誰が確保するかが表にあり、検査が容量を確かめる",
+        check: capacity_audited,
+        breaks: &[
+            |repo| repo.edit(CAPACITY, |text| text.lines().filter(|line| !line.starts_with("running\t")).map(|line| format!("{line}\n")).collect()),
+            |repo| repo.edit("crates/kome/src/audit.rs", |text| text.replace("\"実行待ちの列が、スレッドの数ぶんの容量を持っていない\"", "\"実行待ちの列が短い\"")),
+            |repo| repo.append(KERNEL_RS, "fn late(kernel: &mut Kernel, entry: DueEntry) -> bool { kernel.due.push_within(entry).is_ok() }"),
+            |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("owner.space.limbo.reserve(", "owner.space.maps.reserve(")),
+            |repo| repo.append(CAPACITY, "waiters\twait\tsignal\t同じ操作"),
         ],
     },
     Rule {
@@ -865,6 +878,65 @@ fn operations_covered(repo: &Repo, report: &mut Report) {
 }
 
 /// 確保しないと約束した操作 (docs/memory.md の二つ目の表)。
+/// 容量の中でだけ追加する呼び出しの、入れ物の名前 (`self.space.limbo.push_within(..)` なら `limbo`)。
+fn within_receivers(text: &str) -> Vec<(String, usize)> {
+    let mut found = Vec::new();
+    for (at, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for call in [".push_within(", ".push_back_within("] {
+            for (place, _) in line.match_indices(call) {
+                let before = line.get(..place).unwrap_or("");
+                let name: String = before.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                found.push((name.chars().rev().collect(), at.saturating_add(1)));
+            }
+        }
+    }
+    found
+}
+
+fn capacity_audited(repo: &Repo, report: &mut Report) {
+    let audit_rs = "crates/kome/src/audit.rs";
+    let rows: Vec<Vec<&str>> = repo
+        .text(CAPACITY)
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .map(|line| line.split('\t').collect())
+        .collect();
+    if rows.is_empty() {
+        report.add(CAPACITY, 1, "容量の表が無い、または空である");
+    }
+    let mut used = BTreeSet::new();
+    for (path, text) in kernel_files(repo).filter(|(path, _)| !path.ends_with("/store.rs")) {
+        for (name, line) in within_receivers(text) {
+            let Some(row) = rows.iter().find(|row| row.first() == Some(&name.as_str())) else {
+                report.add(path, line, format!("`{name}` へ確保なしで追加しているが、{CAPACITY} に容量を確保する操作が書かれていない"));
+                continue;
+            };
+            used.insert(name.clone());
+            if row.get(3) == Some(&"同じ操作") && !text.contains(&format!("{name}.reserve(")) {
+                report.add(path, line, format!("`{name}` は「同じ操作」が確保すると書かれているが、このファイルに `{name}.reserve(` が無い"));
+            }
+        }
+    }
+    for row in &rows {
+        let [name, reserves, uses, check] = row.as_slice() else {
+            report.add_at(repo, CAPACITY, row.first().copied().unwrap_or(""), "列は 4 つ (入れ物、確保する操作、使う操作、確かめ方)");
+            continue;
+        };
+        if reserves.trim().is_empty() || uses.trim().is_empty() {
+            report.add_at(repo, CAPACITY, name, "確保する操作と使う操作を書く");
+        }
+        if !used.contains(*name) {
+            report.add_at(repo, CAPACITY, name, format!("`{name}` へ確保なしで追加する呼び出しが kome に無い (表が古い)"));
+        }
+        if *check != "同じ操作" && !repo.text(audit_rs).contains(&format!("\"{check}\"")) {
+            report.add_at(repo, CAPACITY, name, format!("audit.rs が「{check}」を報告しない (容量を検査していない)"));
+        }
+    }
+}
+
 const QUIET_OPS: [&str; 20] = [
     "grant",
     "relinquish",

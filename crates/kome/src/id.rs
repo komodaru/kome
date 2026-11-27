@@ -332,6 +332,17 @@ impl<K: Kind, T> Arena<K, T> {
         })
     }
 
+    /// 取り除いたスロットの番号を戻すための容量があるか。[`Arena::remove`] は確保しない。
+    pub(crate) fn reserved(&self) -> bool {
+        self.free.capacity() >= self.slots.len()
+    }
+
+    /// 空きスロットの列の余った容量を捨てる。検査が違反を検出できることを確かめる試験のための入口。
+    #[cfg(test)]
+    pub(crate) fn corrupt_capacity(&mut self) {
+        self.free.corrupt_capacity();
+    }
+
     /// 生存数を書き換える。検査が違反を検出できることを確かめる試験のための入口。
     #[cfg(test)]
     pub(crate) fn corrupt_live(&mut self, live: u32) {

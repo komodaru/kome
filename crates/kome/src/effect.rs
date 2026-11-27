@@ -196,6 +196,17 @@ impl Effects {
         self.used() <= u64::from(self.limit)
     }
 
+    /// 上限ぶんの `Effect` を確保なしで出せる容量があるか。
+    pub(crate) fn reserved(&self) -> bool {
+        usize::try_from(self.limit).is_ok_and(|limit| self.queue.capacity() >= limit)
+    }
+
+    /// キューの余った容量を捨てる。検査が違反を検出できることを確かめる試験のための入口。
+    #[cfg(test)]
+    pub(crate) fn corrupt_capacity(&mut self) {
+        self.queue.corrupt_capacity();
+    }
+
     /// 上限を書き換える。検査が違反を検出できることを確かめる試験のための入口。
     #[cfg(test)]
     pub(crate) fn corrupt_limit(&mut self, limit: u32) {

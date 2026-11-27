@@ -60,6 +60,17 @@ impl<T> List<T> {
         self.reserve(total.saturating_sub(self.items.len()))
     }
 
+    /// 確保済みの容量。検査が、予約した容量が残っていることを確かめるのに使う。
+    pub(crate) fn capacity(&self) -> usize {
+        self.items.capacity()
+    }
+
+    /// 余っている容量を捨てる。検査が容量の不足を検出できることを確かめる試験のための入口。
+    #[cfg(test)]
+    pub(crate) fn corrupt_capacity(&mut self) {
+        self.items.shrink_to_fit();
+    }
+
     pub(crate) fn push(&mut self, value: T) -> Result<(), Error> {
         self.reserve(1)?;
         self.items.push(value);
@@ -157,6 +168,17 @@ impl<T> Queue<T> {
     pub(crate) fn reserve_total(&mut self, total: usize) -> Result<(), Error> {
         let extra = total.saturating_sub(self.items.len());
         self.items.try_reserve(extra).map_err(|_| Error::Exhausted(Resource::HostMemory))
+    }
+
+    /// 確保済みの容量。検査が、予約した容量が残っていることを確かめるのに使う。
+    pub(crate) fn capacity(&self) -> usize {
+        self.items.capacity()
+    }
+
+    /// 余っている容量を捨てる。検査が容量の不足を検出できることを確かめる試験のための入口。
+    #[cfg(test)]
+    pub(crate) fn corrupt_capacity(&mut self) {
+        self.items.shrink_to_fit();
     }
 
     /// 確保済みの容量の中でだけ末尾へ追加する。容量が無ければ値を返す。

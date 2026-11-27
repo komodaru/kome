@@ -47,6 +47,7 @@ impl Kernel {
     /// すべての不変条件を検査する。最初に見つかった違反を返す。
     pub fn audit(&self) -> Result<(), Violation> {
         self.audit_ids()?;
+        self.audit_capacity()?;
         self.audit_runs()?;
         self.audit_processes()?;
         self.audit_ios()?;
@@ -65,6 +66,31 @@ impl Kernel {
             && self.timers.consistent()
             && self.ios.consistent();
         ensure(consistent, Invariant::IdFresh, "表の空きスロットと生存数が一致しない")
+    }
+
+    /// 確保しない操作 (解放、終了、起床、実行権の貸し出し、`Effect` の発行) が使う容量が、
+    /// 予約した数だけ残っているか。どの操作が予約し、どの操作が使うかは `docs/capacity.tsv` にある。
+    fn audit_capacity(&self) -> Result<(), Violation> {
+        let arenas = self.processes.reserved()
+            && self.threads.reserved()
+            && self.objects.reserved()
+            && self.backings.reserved()
+            && self.timers.reserved()
+            && self.ios.reserved();
+        ensure(arenas, Invariant::IdFresh, "表が、取り除いた番号を戻すための容量を持っていない")?;
+        let workers = usize::try_from(self.limits.workers()).unwrap_or(usize::MAX);
+        ensure(
+            self.running.capacity() >= workers,
+            Invariant::RunOnePermit,
+            "実行権の表が、worker の上限ぶんの容量を持っていない",
+        )?;
+        let threads = usize::try_from(self.threads.len()).unwrap_or(usize::MAX);
+        ensure(
+            self.ready.capacity() >= threads,
+            Invariant::RunQueue,
+            "実行待ちの列が、スレッドの数ぶんの容量を持っていない",
+        )?;
+        ensure(self.effects.reserved(), Invariant::EffectsKept, "Effect のキューが、上限ぶんの容量を持っていない")
     }
 
     fn audit_runs(&self) -> Result<(), Violation> {

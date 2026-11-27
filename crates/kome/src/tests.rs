@@ -1887,6 +1887,11 @@ fn audit_names_every_violation_it_can_report() {
                 bent(|w| w.k.effects.corrupt_promised(w.k.effects.promised() - 1)),
             ),
             ("Effect のキューと予約が上限を超えている", bent(|w| w.k.effects.corrupt_limit(0))),
+            ("表が、取り除いた番号を戻すための容量を持っていない", bent(|w| w.k.timers.corrupt_capacity())),
+            ("表が、取り除いた番号を戻すための容量を持っていない", bent(|w| w.k.processes.corrupt_capacity())),
+            ("実行権の表が、worker の上限ぶんの容量を持っていない", bent(|w| w.k.running.corrupt_capacity())),
+            ("実行待ちの列が、スレッドの数ぶんの容量を持っていない", bent(|w| w.k.ready.corrupt_capacity())),
+            ("Effect のキューが、上限ぶんの容量を持っていない", bent(|w| w.k.effects.corrupt_capacity())),
         ]
     };
     for (at, (detail, k)) in cases.iter().enumerate() {
@@ -2077,4 +2082,96 @@ fn finishing_a_process_with_threads_is_an_internal_fault() {
     process_mut(&mut k, p).life = crate::process::Life::Exiting(CODE);
     process_mut(&mut k, p).stale_runners = 1;
     assert_eq!(k.finish_process(p), Err(Error::Broken(Invariant::ProcessTree)));
+}
+
+// ---- 復元した状態の予約容量 (レビュー 1.1 の再現例) ----
+
+/// 状態を写し、別の実行インスタンスとして復元する。復元した状態は検査を通る。
+fn restored(k: &Kernel) -> Kernel {
+    let copy = k.snapshot().unwrap().restore(InstanceId::new(2)).unwrap();
+    copy.audit().unwrap();
+    copy
+}
+
+#[test]
+fn a_restored_empty_state_creates_and_exits_a_process() {
+    // 再現例: 空の状態を複製し、プロセスを作って終了させると、Effect を出す容量が無かった。
+    let mut k = restored(&kernel());
+    let (p, p_exit) = process(&mut k);
+    ok!(k, k.exit_process(p, CODE));
+    assert_eq!(
+        drain(&mut k),
+        vec![
+            Effect::ObjectReclaimed { object: p_exit },
+            Effect::ProcessExited { process: p, code: CODE },
+            Effect::ProcessReclaimed { process: p },
+        ]
+    );
+    assert!(is_empty(&k));
+}
+
+#[test]
+fn a_restored_state_lends_the_thread_that_was_ready() {
+    // 再現例: 実行待ちのスレッドを持つ状態を複製して実行権を貸すと、貸し出しの表の容量が無く、
+    // 実行待ちの列からだけ外れた状態が残った。
+    let mut original = kernel();
+    let (p, _) = process(&mut original);
+    let (t, _) = thread(&mut original, p);
+    let mut k = restored(&original);
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    assert_eq!(permit.thread(), t);
+    assert_eq!(permit.instance(), InstanceId::new(2));
+    assert_eq!((k.ready_count(), k.running_count()), (0, 1));
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    assert_eq!((k.ready_count(), k.running_count()), (1, 0));
+    ok!(k, k.exit_process(p, CODE));
+    assert!(drain(&mut k).contains(&Effect::ProcessReclaimed { process: p }));
+    assert!(is_empty(&k));
+}
+
+#[test]
+fn a_restored_state_wakes_a_wait_and_reports_it() {
+    let mut original = kernel();
+    let (p, _) = process(&mut original);
+    let (t, _) = thread(&mut original, p);
+    let event = event(&mut original, p);
+    assert_eq!(trap(&mut original, W0), t);
+    assert_eq!(wait_any(&mut original, t, &[event]), WaitStart::Blocked);
+    let mut k = restored(&original);
+    assert_eq!(ok!(k, k.signal(event, SignalOp::Set(1))), 0);
+    assert_eq!(drain(&mut k), vec![Effect::WaitDone { thread: t, outcome: WaitOutcome::Signaled { index: 0 } }]);
+    // 起きたスレッドは、続行させると実行待ちの列へ入り、実行権を借りられる。
+    assert_eq!(k.thread_phase(t), Ok(ThreadPhase::Servicing));
+    ok!(k, k.continue_thread(t));
+    assert_eq!(ok!(k, k.grant(W1)).map(|permit| permit.thread()), Some(t));
+}
+
+#[test]
+fn a_restored_state_refuses_a_permit_lent_by_the_original() {
+    // 再現例: 元の状態が貸した実行権を、複製が受け取ってしまった。
+    let mut original = kernel();
+    let (p, _) = process(&mut original);
+    let (t, _) = thread(&mut original, p);
+    let mut k = restored(&original);
+    let lent_by_original = ok!(original, original.grant(W0)).unwrap();
+    // 復元した側も同じスレッドを同じ worker へ貸している (番号も実行の世代も同じ)。
+    let own = ok!(k, k.grant(W0)).unwrap();
+    assert_eq!((own.thread(), own.run()), (t, lent_by_original.run()));
+    let before = k.snapshot().unwrap();
+    assert_eq!(k.relinquish(lent_by_original, Stop::Trapped, Budget::new(1)), Err(Error::Foreign));
+    assert_eq!(k, before);
+    assert_eq!(ok!(k, k.relinquish(own, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+}
+
+#[test]
+fn lending_without_room_in_the_table_changes_nothing() {
+    // 貸し出しの表の容量が無い (内部の障害) とき、実行待ちの列からだけ外すことはしない。
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let _ = thread(&mut k, p);
+    k.running.corrupt_capacity();
+    let before = k.snapshot().unwrap();
+    assert_eq!(k.grant(W0), Err(Error::Broken(Invariant::RunOnePermit)));
+    assert_eq!(k, before);
+    assert_eq!((k.ready_count(), k.running_count()), (1, 0));
 }

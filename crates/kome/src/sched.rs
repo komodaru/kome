@@ -200,7 +200,11 @@ impl Kernel {
         let process = entry.process;
         let run_gen = entry.run_gen.checked_add(1).ok_or(Error::Exhausted(Resource::Identifiers))?;
         let map = self.processes.get(process).ok_or(Error::Broken(Invariant::ProcessTree))?.space.generation();
-        // この実行への中断要求の席。
+        // 貸し出しの記録は、確保済みの容量へ置く。容量が無いのは内部の障害で、何も変えずに返す。
+        if self.running.len() >= self.running.capacity() {
+            return Err(Error::Broken(Invariant::RunOnePermit));
+        }
+        // この実行への中断要求の席。ここから先は失敗しない。
         self.effects.promise(1)?;
         self.ready.remove(at).ok_or(Error::Broken(Invariant::RunQueue))?;
         self.running.push_within(Lent { worker, thread }).map_err(|_| Error::Broken(Invariant::RunOnePermit))?;
