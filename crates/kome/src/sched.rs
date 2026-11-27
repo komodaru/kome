@@ -21,7 +21,8 @@
 //! fn forge(other: &kome::RunPermit) -> kome::RunPermit { kome::RunPermit { ..*other } }
 //! ```
 //!
-//! 返した実行権は二度使えない。下の二つは二度目の呼び出しの有無だけが違う。
+//! 返した実行権は二度使えない。拒否された実行権だけは、返ってきた値から取り戻せる
+//! ([`NotRelinquished`])。下の二つは二度目の呼び出しの有無だけが違う。
 //!
 //! ```
 //! fn once(kernel: &mut kome::Kernel, permit: kome::RunPermit) {
@@ -163,6 +164,38 @@ pub enum Stop {
     Trapped,
 }
 
+/// 実行権の返却が成功しなかった理由。受理する前の拒否と、受理した後の障害を区別する。
+///
+/// 受理する前に拒否した実行権は消費しない。届け先を間違えた実行権は、ここから取り出して
+/// 正しい実行インスタンスへ返せる。
+#[must_use = "拒否された実行権は into_permit で取り戻す"]
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotRelinquished {
+    /// 受理する前に拒否した。状態は変わっていない。実行権は消費していない。
+    Rejected(RunPermit, Error),
+    /// 受理して状態を更新する途中で、内部の障害を見つけた。実行権は消費した。
+    Failed(Error),
+}
+
+impl NotRelinquished {
+    /// 理由。
+    #[must_use]
+    pub const fn error(&self) -> Error {
+        match self {
+            NotRelinquished::Rejected(_, error) | NotRelinquished::Failed(error) => *error,
+        }
+    }
+
+    /// 拒否された実行権を取り戻す。受理した後の障害なら、実行権は消費済みで `None`。
+    #[must_use]
+    pub fn into_permit(self) -> Option<RunPermit> {
+        match self {
+            NotRelinquished::Rejected(permit, _) => Some(permit),
+            NotRelinquished::Failed(_) => None,
+        }
+    }
+}
+
 /// 実行権を返した後のスレッド。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadFate {
@@ -225,22 +258,50 @@ impl Kernel {
     /// 実行権を受け取り、スレッドの次の状態を決める。
     ///
     /// `consumed` は実際に実行した量。区切りごとの検査なので、貸した量を超えてよい。
-    /// 古い実行権、別インスタンスの実行権は状態を変えずに拒否する。
-    pub fn relinquish(&mut self, permit: RunPermit, stop: Stop, consumed: Budget) -> Result<ThreadFate, Error> {
+    /// 古い実行権、別インスタンスの実行権は、状態を変えずに拒否し、実行権を
+    /// [`NotRelinquished::Rejected`] に入れて返す。
+    pub fn relinquish(
+        &mut self,
+        permit: RunPermit,
+        stop: Stop,
+        consumed: Budget,
+    ) -> Result<ThreadFate, NotRelinquished> {
+        match self.admit(&permit) {
+            Ok((stale, interrupted)) => {
+                self.take_back(permit.thread, stale, interrupted, stop, consumed).map_err(NotRelinquished::Failed)
+            }
+            Err(reason) => Err(NotRelinquished::Rejected(permit, reason)),
+        }
+    }
+
+    /// 実行権が、この状態が貸していて、まだ返っていないものかを確かめる。状態は変えない。
+    /// 貸した実行の (古い世代か, 中断を要求済みか) を返す。
+    fn admit(&self, permit: &RunPermit) -> Result<(bool, bool), Error> {
         if permit.instance != self.instance {
             return Err(Error::Foreign);
         }
-        let thread = permit.thread;
         let stale_permit = Error::Refused(Refusal::StalePermit);
-        let entry = self.threads.get_mut(thread).ok_or(stale_permit)?;
-        let (stale, interrupted) = match entry.run {
+        let entry = self.threads.get(permit.thread).ok_or(stale_permit)?;
+        match entry.run {
             Run::Running { worker, stale, interrupted }
                 if worker == permit.worker && entry.run_gen == permit.run.0 =>
             {
-                (stale, interrupted)
+                Ok((stale, interrupted))
             }
-            Run::Running { .. } | Run::Ready | Run::Servicing | Run::Blocked(_) => return Err(stale_permit),
-        };
+            Run::Running { .. } | Run::Ready | Run::Servicing | Run::Blocked(_) => Err(stale_permit),
+        }
+    }
+
+    /// 受理した実行権のスレッドを、次の状態へ進める。
+    fn take_back(
+        &mut self,
+        thread: ThreadId,
+        stale: bool,
+        interrupted: bool,
+        stop: Stop,
+        consumed: Budget,
+    ) -> Result<ThreadFate, Error> {
+        let entry = self.threads.get_mut(thread).ok_or(Error::Broken(Invariant::RunOnePermit))?;
         entry.executed = entry.executed.saturating_add(consumed.0);
         entry.run = Run::Servicing;
         let kill = entry.kill;

@@ -43,6 +43,8 @@ kome は、複数の OS Personality に共通する状態管理だけを持つ�
 
 - 状態は `Kernel` の値一つ。変更は `&mut Kernel` をとる操作だけが行う。操作は全て `Input` の
   変種としても表せる (`Kernel::apply`)。検査: lint `operations-covered`。
+- `Effect` の取り出し (`poll_effect`、`Input::PollEffect`) も入力である。取り出すと `Effect` の席が
+  空き、後の操作が受理されるかどうかが変わるので、記録・再生は取り出した位置も入力の列に持つ。
 - 状態の更新に入る情報は、操作の引数、ホストからの `Completion`、`Kernel::advance` に渡す
   仮想時刻だけである。大域状態と内部可変性を持たない。検査: lint `no-globals`。
 - 外への働きかけは `Effect` として出す。受理した操作が出しうる `Effect` の席は受理の前に
@@ -57,6 +59,9 @@ kome は、複数の OS Personality に共通する状態管理だけを持つ�
 
 - 実行権は複製できず、kome の外では作れない。返すと値が消費される。検査: `sched.rs` の
   compile_fail 試験 (lint `compile-fail-kept` が数を保つ)。
+- 返却を受理する前に拒否した実行権 (別の実行インスタンスのもの、古いもの) は消費せず、失敗の値
+  (`NotRelinquished::Rejected`) に入れて返す。届け先を間違えても実行権は失われない。受理した後の
+  内部の障害 (`NotRelinquished::Failed`) とは型で区別する。検査: lint `permit-returned`。
 - 実行権は、実行インスタンス、スレッド、プロセス、worker、実行の世代、アドレス空間の世代、
   実行してよい量を持つ。kome も貸し出しを記録し、返却のときに照合する (台帳 RUN-1)。
 - 実行量の単位は、ゲスト命令数のように最適化で変わらないものを実行器が選ぶ。

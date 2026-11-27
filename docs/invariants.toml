@@ -16,6 +16,8 @@ owner = "crates/kome/src/sched.rs"
 audit = "audit_runs"
 caught = "crates/kome/src/tests.rs::audit_detects_two_permits_for_one_thread"
 tests = [
+    "crates/kome/src/tests.rs::a_permit_given_to_the_wrong_kernel_comes_back",
+    "crates/kome/src/tests.rs::a_failure_after_acceptance_consumes_the_permit",
     "crates/kome/src/tests.rs::a_restored_state_refuses_a_permit_lent_by_the_original",
     "crates/kome/src/tests.rs::lending_without_room_in_the_table_changes_nothing",
     "crates/kome/src/tests.rs::a_restored_state_lends_the_thread_that_was_ready",
@@ -193,6 +195,7 @@ owner = "crates/kome/src/effect.rs"
 audit = "audit_effects"
 caught = "crates/kome/src/tests.rs::audit_detects_a_lost_effect_promise"
 tests = [
+    "crates/kome/src/tests.rs::the_input_sequence_alone_decides_the_replies",
     "crates/kome/src/tests.rs::a_restored_empty_state_creates_and_exits_a_process",
     "crates/kome/src/tests.rs::a_restored_state_wakes_a_wait_and_reports_it",
     "crates/kome/src/tests.rs::a_full_effect_queue_refuses_before_accepting",

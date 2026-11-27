@@ -6,7 +6,7 @@ use std::fmt::Debug;
 use kome::{
     Access, AddrWidth, BackingId, BackingOffset, Budget, CancelReply, Completion, CompletionKind, Deadline, Duration,
     Effect, Error, ExitCode, GuestAddr, GuestRange, HostError, InstanceId, Instant, Interruptible, IoId, IoLinks,
-    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFaultKind, ObjectId, PageSize, Period, ProcessId, ProcessPhase, Prot,
+    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFaultKind, NotRelinquished, ObjectId, PageSize, Period, ProcessId, ProcessPhase, Prot,
     Refusal, RunPermit, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, TimerId, WaitMode, WaitOutcome,
     WaitStart, WorkerId,
 };
@@ -528,7 +528,14 @@ impl Sim {
                 let held = self.held.remove(at);
                 let stop = if r.flag() { Stop::Trapped } else { Stop::Preempted };
                 let consumed = Budget::new(u64::from(r.byte()));
-                match self.quiet(|k| k.relinquish(held.permit, stop, consumed)) {
+                // 届け先を間違えても実行権は失われない: 別の実行インスタンスは受け取らずに返す。
+                let mut stranger = Kernel::new(InstanceId::new(u64::MAX), Limits::DEFAULT.with_effects(1))
+                    .map_err(|error| format!("別の実行インスタンスを作れない: {error:?}"))?;
+                let permit = match stranger.relinquish(held.permit, stop, consumed) {
+                    Err(NotRelinquished::Rejected(permit, Error::Foreign)) => permit,
+                    other => return Err(format!("RUN-1: 別の実行インスタンスが実行権を受理した、または返さなかった: {other:?}")),
+                };
+                match self.quiet(|k| k.relinquish(permit, stop, consumed)) {
                     Ok(_) => Outcome::Accepted,
                     Err(error) => return Err(format!("RUN-1: 正当な実行権が拒否された: {error:?}")),
                 }

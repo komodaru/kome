@@ -223,6 +223,16 @@ pub const RULES: &[Rule] = &[
         ],
     },
     Rule {
+        id: "permit-returned",
+        about: "実行権を値で受け取る公開の操作は、受理しなかった実行権を返す",
+        check: permit_returned,
+        breaks: &[
+            |repo| repo.edit("crates/kome/src/sched.rs", |text| text.replace(") -> Result<ThreadFate, NotRelinquished> {", ") -> Result<ThreadFate, Error> {")),
+            |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 捨てる。\n    pub fn discard(&mut self, permit: crate::sched::RunPermit) -> Result<(), Error> {\n        drop(permit);\n        Ok(())\n    }\n}"),
+            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("Err(NotRelinquished::Rejected(permit, reason)) => Reply::Returned(permit, reason),", "Err(NotRelinquished::Rejected(_, reason)) => return Err(reason),")),
+        ],
+    },
+    Rule {
         id: "docs-current",
         about: "文書が名指しする不変条件・規則・ファイルが実在し、台帳の全項目が責務の表にある",
         check: docs_current,
@@ -867,9 +877,9 @@ fn operations_covered(repo: &Repo, report: &mut Report) {
         let Some(found) = scanned(report, path, text, true) else { continue };
         for (name, line) in &found.kernel_ops {
             operations.insert(camel(name));
-            // `apply` は Input の入口、`poll_effect` は出力の取り出しで、どちらも Input の変種ではない。
-            let is_port = name == "apply" || name == "poll_effect";
-            if !is_port && !variants.contains(&camel(name)) {
+            // `apply` は Input の入口で、Input の変種ではない。出力の取り出し (`poll_effect`) は、
+            // 後の操作の結果を変えるので、入力として記録する。
+            if name != "apply" && !variants.contains(&camel(name)) {
                 report.add(path, *line, format!("操作 {name} に対応する Input::{} が無い", camel(name)));
             }
             if name != "apply" && !calls.contains(name) {
@@ -947,6 +957,42 @@ fn capacity_audited(repo: &Repo, report: &mut Report) {
         if *check != "同じ操作" && !repo.text(audit_rs).contains(&format!("\"{check}\"")) {
             report.add_at(repo, CAPACITY, name, format!("audit.rs が「{check}」を報告しない (容量を検査していない)"));
         }
+    }
+}
+
+fn permit_returned(repo: &Repo, report: &mut Report) {
+    for (path, text) in kernel_files(repo) {
+        let Ok(file) = syn::parse_file(text) else {
+            report.add(path, 1, "構文を読めない");
+            continue;
+        };
+        for item in &file.items {
+            let syn::Item::Impl(block) = item else { continue };
+            for member in &block.items {
+                let syn::ImplItem::Fn(method) = member else { continue };
+                if !matches!(method.vis, syn::Visibility::Public(_)) {
+                    continue;
+                }
+                let takes_permit = method.sig.inputs.iter().any(|input| match input {
+                    syn::FnArg::Typed(typed) => {
+                        matches!(&*typed.ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|last| last.ident == "RunPermit"))
+                    }
+                    syn::FnArg::Receiver(_) => false,
+                });
+                let mut output = Vec::new();
+                if let syn::ReturnType::Type(_, ty) = &method.sig.output {
+                    crate::scan::idents_of(ty, &mut output);
+                }
+                if takes_permit && !output.iter().any(|name| name == "NotRelinquished") {
+                    let line = method.sig.ident.span().start().line;
+                    report.add(path, line, format!("`{}` は実行権を値で受け取るが、拒否したときに返さない (失敗の型を NotRelinquished にする)", method.sig.ident));
+                }
+            }
+        }
+    }
+    let input = "crates/kome/src/input.rs";
+    if !repo.text(input).contains("Err(NotRelinquished::Rejected(permit, reason)) => Reply::Returned(permit, reason),") {
+        report.add_at(repo, input, "Input::Relinquish", "Kernel::apply が、受理されなかった実行権を返答に入れて返していない");
     }
 }
 

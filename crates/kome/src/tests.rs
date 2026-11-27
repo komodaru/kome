@@ -204,7 +204,7 @@ fn a_stale_or_foreign_permit_changes_nothing() {
     let idle = ok!(twin, twin.relinquish(second, Stop::Preempted, Budget::new(1)));
     assert_eq!(idle, ThreadFate::Ready);
     let third = ok!(twin, twin.grant(W0)).unwrap();
-    assert_eq!(k.relinquish(third, Stop::Trapped, Budget::new(1)), Err(Error::Refused(Refusal::StalePermit)));
+    assert_eq!(k.relinquish(third, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
     assert_eq!(k, before);
     // k は 1 回目の実行を貸しているので、4 回目の実行の実行権は古い。
     let mine = ok!(k, k.grant(W0)).unwrap();
@@ -221,7 +221,7 @@ fn a_stale_or_foreign_permit_changes_nothing() {
         ok!(late, late.grant(W0)).unwrap()
     };
     let before = k.snapshot().unwrap();
-    assert_eq!(k.relinquish(fourth, Stop::Trapped, Budget::new(1)), Err(Error::Refused(Refusal::StalePermit)));
+    assert_eq!(k.relinquish(fourth, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
     assert_eq!(k, before);
     // 別の worker が同じ回の実行権を名乗っても受け取らない。
     let other_worker = {
@@ -230,13 +230,13 @@ fn a_stale_or_foreign_permit_changes_nothing() {
         let _ = thread(&mut late, lp);
         ok!(late, late.grant(W1)).unwrap()
     };
-    assert_eq!(k.relinquish(other_worker, Stop::Trapped, Budget::new(1)), Err(Error::Refused(Refusal::StalePermit)));
+    assert_eq!(k.relinquish(other_worker, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
     assert_eq!(k, before);
     let mut other = Kernel::new(InstanceId::new(2), Limits::DEFAULT).unwrap();
     let (op, _) = process(&mut other);
     let _ = thread(&mut other, op);
     let foreign = other.grant(W0).unwrap().unwrap();
-    assert_eq!(k.relinquish(foreign, Stop::Trapped, Budget::new(1)), Err(Error::Foreign));
+    assert_eq!(k.relinquish(foreign, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
     assert_eq!(k, before);
     assert_eq!(ok!(k, k.relinquish(mine, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
 }
@@ -256,7 +256,7 @@ fn a_snapshot_is_restored_only_as_another_instance_with_nothing_lent() {
     let mut restored = quiet.restore(InstanceId::new(7)).unwrap();
     assert_eq!(restored.instance(), InstanceId::new(7));
     let before = restored.snapshot().unwrap();
-    assert_eq!(restored.relinquish(permit, Stop::Trapped, Budget::new(1)), Err(Error::Foreign));
+    assert_eq!(restored.relinquish(permit, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
     assert_eq!(restored, before);
     // 発行済みの I/O があると復元できない。完了通知は元の実行インスタンス宛てだからである。
     let own = ok!(restored, restored.grant(W0)).unwrap();
@@ -291,7 +291,7 @@ fn a_restored_state_behaves_like_the_original() {
     let mut restored = snapshot.restore(InstanceId::new(9)).unwrap();
     for kernel in [&mut k, &mut restored] {
         let permit = kernel.grant(W0).unwrap().unwrap();
-        assert_eq!(kernel.relinquish(permit, Stop::Trapped, Budget::new(5)), Ok(ThreadFate::Servicing));
+        assert_eq!(kernel.relinquish(permit, Stop::Trapped, Budget::new(5)).ok(), Some(ThreadFate::Servicing));
         let (q, _) = process(kernel);
         let _ = thread(kernel, q);
         assert!(kernel.signal(object, SignalOp::Set(1)).is_ok());
@@ -1057,6 +1057,19 @@ fn apply_is_the_same_as_calling_the_method() {
     assert_eq!(by_input.apply(Input::Advance(at(9))), Ok(Reply::Count(1)));
     by_call.advance(at(9)).unwrap();
     assert_eq!(by_input, by_call);
+    // Effect の取り出しも入力である。
+    let polled = by_call.poll_effect();
+    assert!(polled.is_some());
+    assert_eq!(by_input.apply(Input::PollEffect), Ok(Reply::Effect(polled)));
+    assert_eq!(by_input, by_call);
+    // 受理されなかった実行権は、返答に入って戻る。
+    ok!(by_input, by_input.continue_thread(t));
+    let Reply::Permit(Some(permit)) = by_input.apply(Input::Grant(W0)).unwrap() else { panic!() };
+    let Ok(Reply::Returned(permit, reason)) = by_call.apply(Input::Relinquish(permit, Stop::Trapped, Budget::new(1))) else {
+        panic!("貸していない状態が実行権を受理した")
+    };
+    assert_eq!(reason, Error::Refused(Refusal::StalePermit));
+    assert_eq!(by_input.apply(Input::Relinquish(permit, Stop::Trapped, Budget::new(1))), Ok(Reply::Fate(ThreadFate::Servicing)));
 }
 
 // ---- 検査が違反を検出できること (台帳の反例試験) ----
@@ -2172,7 +2185,7 @@ fn a_restored_state_refuses_a_permit_lent_by_the_original() {
     let own = ok!(k, k.grant(W0)).unwrap();
     assert_eq!((own.thread(), own.run()), (t, lent_by_original.run()));
     let before = k.snapshot().unwrap();
-    assert_eq!(k.relinquish(lent_by_original, Stop::Trapped, Budget::new(1)), Err(Error::Foreign));
+    assert_eq!(k.relinquish(lent_by_original, Stop::Trapped, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
     assert_eq!(k, before);
     assert_eq!(ok!(k, k.relinquish(own, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
 }
@@ -2384,4 +2397,77 @@ fn every_protection_allows_exactly_its_own_accesses() {
         }
         ok!(k, k.unmap(p, range(0x1000, PAGE)));
     }
+}
+
+// ---- Effect の取り出しは入力である (レビュー 1.4 の再現例) ----
+
+#[test]
+fn the_input_sequence_alone_decides_the_replies() {
+    // 再現例: Effect の上限が 4 のとき、資源を作って手放した後の 2 個目の資源の作成は、
+    // 間で Effect を取り出したかどうかで結果が変わる。取り出しが入力に無いと、同じ入力の列が
+    // 二通りの結果を持ってしまう。
+    let run = |polls: bool| {
+        let mut k = kernel_with(Limits::DEFAULT.with_effects(4));
+        let page = PageSize::new(PAGE).unwrap();
+        let spec = SignalSpec::new(SignalMode::Keep, 0, 1);
+        let Ok(Reply::Process(p, _)) = k.apply(Input::CreateProcess(AddrWidth::Bits32, page)) else { panic!() };
+        let Ok(Reply::Object(object)) = k.apply(Input::CreateObject(p, spec)) else { panic!() };
+        let mut replies = vec![k.apply(Input::ReleaseObject(p, object))];
+        if polls {
+            replies.push(k.apply(Input::PollEffect));
+        }
+        replies.push(k.apply(Input::CreateObject(p, spec)));
+        k.audit().unwrap();
+        (replies, k, object)
+    };
+    let (without, state, _) = run(false);
+    assert_eq!(without.last(), Some(&Err(Error::Exhausted(Resource::Effects))));
+    let (with, polled, object) = run(true);
+    assert_eq!(with.get(1), Some(&Ok(Reply::Effect(Some(Effect::ObjectReclaimed { object })))));
+    assert!(matches!(with.last(), Some(Ok(Reply::Object(_)))));
+    assert_ne!(state, polled);
+    // 同じ入力の列は、同じ返答と同じ状態になる。
+    let (again, same, _) = run(true);
+    assert_eq!((with, &polled), (again, &same));
+    // 空のキューからの取り出しも入力で、何も変えない。
+    let mut k = kernel();
+    let before = k.snapshot().unwrap();
+    assert_eq!(k.apply(Input::PollEffect), Ok(Reply::Effect(None)));
+    assert_eq!(k, before);
+}
+
+// ---- 届け先を間違えた実行権は失われない (レビュー 2.2 の再現例) ----
+
+#[test]
+fn a_permit_given_to_the_wrong_kernel_comes_back() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    let mut other = Kernel::new(InstanceId::new(2), Limits::DEFAULT).unwrap();
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    let before = other.snapshot().unwrap();
+    // 再現例: 別の実行インスタンスへ返すと、拒否はされるが実行権が消え、スレッドは実行中のまま残った。
+    let refused = other.relinquish(permit, Stop::Trapped, Budget::new(1)).unwrap_err();
+    assert_eq!(refused.error(), Error::Foreign);
+    assert_eq!(other, before);
+    assert_eq!((k.thread_phase(t), k.running_count()), (Ok(ThreadPhase::Running), 1));
+    // 取り戻した実行権を、貸した実行インスタンスへ返せる。
+    let permit = refused.into_permit().unwrap();
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+    assert_eq!((k.thread_phase(t), k.running_count()), (Ok(ThreadPhase::Servicing), 0));
+    assert_eq!(k.grant(W0), Ok(None), "返した worker がまだ実行権を持っている扱いになった");
+}
+
+#[test]
+fn a_failure_after_acceptance_consumes_the_permit() {
+    // 受理した後の内部の障害 (ここでは、貸し出しの記録が消えている) は、拒否と区別して報告する。
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let _ = thread(&mut k, p);
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    assert!(k.running.pop().is_some());
+    let failed = k.relinquish(permit, Stop::Trapped, Budget::new(1)).unwrap_err();
+    assert_eq!(failed, NotRelinquished::Failed(Error::Broken(Invariant::RunOnePermit)));
+    assert_eq!(failed.error(), Error::Broken(Invariant::RunOnePermit));
+    assert_eq!(failed.into_permit(), None);
 }

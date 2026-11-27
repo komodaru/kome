@@ -97,6 +97,13 @@ fn lint_attrs_in(tokens: TokenStream, out: &mut Vec<(String, usize)>) {
     }
 }
 
+/// 型の中に現れる識別子。
+pub fn idents_of(ty: &syn::Type, out: &mut Vec<String>) {
+    let mut found = Scan::default();
+    found.visit_type(ty);
+    out.extend(found.idents.into_iter().map(|(name, _)| name));
+}
+
 fn last_ident(tokens: TokenStream) -> Option<String> {
     let mut names = Vec::new();
     idents_in(tokens, &mut names);

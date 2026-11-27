@@ -2,13 +2,17 @@
 //!
 //! 状態を変える操作は、すべて [`Input`] の一つの値として表せる。[`Kernel::apply`] は
 //! それを対応するメソッドへ渡すだけである。記録・再生と決定的シミュレーションは、
-//! 初期状態と `Input` の列から同じ状態と同じ [`crate::Effect`] の列を得る。
+//! 初期状態と `Input` の列から同じ状態と同じ返答の列を得る。
 //!
-//! 参照だけの問い合わせ (`translate`、`next_deadline` など) は状態を変えないので、
-//! ここには無い。
+//! [`crate::Effect`] の取り出し ([`Input::PollEffect`]) も入力である。取り出すと `Effect` の
+//! 席が空き、後の操作が受理されるかどうかが変わるので、いつ取り出したかを入力の列が持つ。
+//!
+//! 参照だけの問い合わせ (`translate`、`next_deadline`、`peek_effect` など) は状態を
+//! 変えないので、ここには無い。`&mut self` をとる公開の操作が全てここにあることは、lint
+//! `operations-covered` が確かめる。
 
 use crate::addr::{AddrWidth, GuestRange, PageSize, Prot};
-use crate::effect::Completion;
+use crate::effect::{Completion, Effect};
 use crate::error::Error;
 use crate::id::{BackingId, IoId, ObjectId, ProcessId, ThreadId, TimerId};
 use crate::io::{CancelReply, IoLinks, IoOutcome, IoSettled};
@@ -16,7 +20,7 @@ use crate::kernel::Kernel;
 use crate::mem::{MapGen, MapSource};
 use crate::object::{SignalOp, SignalSpec};
 use crate::process::ExitCode;
-use crate::sched::{Budget, RunPermit, Stop, ThreadFate, WorkerId};
+use crate::sched::{Budget, NotRelinquished, RunPermit, Stop, ThreadFate, WorkerId};
 use crate::thread::Start;
 use crate::time::{Deadline, Instant, Period};
 use crate::wait::{Interruptible, WaitMode, WaitStart};
@@ -88,6 +92,8 @@ pub enum Input<'a> {
     Unmap(ProcessId, GuestRange),
     /// [`Kernel::protect`]
     Protect(ProcessId, GuestRange, Prot),
+    /// [`Kernel::poll_effect`]
+    PollEffect,
 }
 
 /// 操作への返答。
@@ -111,6 +117,10 @@ pub enum Reply {
     Permit(Option<RunPermit>),
     /// 実行権を受け取った後のスレッド。
     Fate(ThreadFate),
+    /// 実行権を受理する前に拒否した。状態は変わっていない。実行権と理由を返す。
+    Returned(RunPermit, Error),
+    /// 取り出した `Effect`。無ければ `None`。
+    Effect(Option<Effect>),
     /// 変更前の数 (信号の数、停止要求の数)、処理した期限の数、外したバイト数。
     Count(u64),
     /// タイマが設定されていたか。
@@ -145,7 +155,11 @@ impl Kernel {
             Input::UnsuspendThread(thread) => Reply::Count(u64::from(self.unsuspend_thread(thread)?)),
             Input::TerminateThread(thread, code) => self.terminate_thread(thread, code).map(|()| Reply::Done)?,
             Input::Grant(worker) => Reply::Permit(self.grant(worker)?),
-            Input::Relinquish(permit, stop, consumed) => Reply::Fate(self.relinquish(permit, stop, consumed)?),
+            Input::Relinquish(permit, stop, consumed) => match self.relinquish(permit, stop, consumed) {
+                Ok(fate) => Reply::Fate(fate),
+                Err(NotRelinquished::Rejected(permit, reason)) => Reply::Returned(permit, reason),
+                Err(NotRelinquished::Failed(error)) => return Err(error),
+            },
             Input::CreateObject(process, spec) => Reply::Object(self.create_object(process, spec)?),
             Input::RetainObject(process, object) => self.retain_object(process, object).map(|()| Reply::Done)?,
             Input::ReleaseObject(process, object) => self.release_object(process, object).map(|()| Reply::Done)?,
@@ -175,6 +189,7 @@ impl Kernel {
             Input::Map(process, range, source, prot) => Reply::Generation(self.map(process, range, source, prot)?),
             Input::Unmap(process, range) => Reply::Count(self.unmap(process, range)?),
             Input::Protect(process, range, prot) => Reply::Generation(self.protect(process, range, prot)?),
+            Input::PollEffect => Reply::Effect(self.poll_effect()),
         })
     }
 }
