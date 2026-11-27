@@ -82,6 +82,8 @@ pub const RULES: &[Rule] = &[
         check: no_globals,
         breaks: &[
             |repo| repo.append(KERNEL_RS, "static COUNT: u32 = 0;"),
+            |repo| repo.append(KERNEL_RS, "#[cfg(any(test, target_pointer_width = \"64\"))]\npub static COUNT: u32 = 0;"),
+            |repo| repo.append(KERNEL_RS, "#[cfg(not(all(test, kani)))]\nmod counters {\n    static COUNT: u32 = 0;\n}"),
             |repo| repo.append(KERNEL_RS, "fn shared(value: &core::cell::RefCell<u8>) -> u8 { *value.borrow() }"),
             |repo| repo.append(KERNEL_RS, "fn counted(value: &core::sync::atomic::AtomicU32) -> u32 { value.load(core::sync::atomic::Ordering::Relaxed) }"),
         ],
@@ -257,6 +259,15 @@ pub const RULES: &[Rule] = &[
         ],
     },
     Rule {
+        id: "checked-insert",
+        about: "試験の道具は、重複を拒否する前に既存の値を置き換えない",
+        check: checked_insert,
+        breaks: &[
+            |repo| repo.edit("crates/kome-testkit/src/host.rs", |text| text.replace("match self.memory.entry(backing) {", "match self.memory.insert(backing, vec![0; len]) {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("self.blocked.insert(thread, targets);", "if self.blocked.insert(thread, targets).is_some() { return Err(String::new()); }")),
+        ],
+    },
+    Rule {
         id: "docs-current",
         about: "文書が名指しする不変条件・規則・ファイルが実在し、台帳の全項目が責務の表にある",
         check: docs_current,
@@ -285,6 +296,20 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(CI, |text| text.replacen("actions/checkout@", "actions/checkout@v4 # ", 1)),
             |repo| repo.append("scripts/ci/tla.sh", "cargo fmt --all"),
             |repo| repo.append(".github/workflows/extra.yml", "jobs:\n  a:\n    steps:\n      - run: npm install"),
+            |repo| repo.edit(CI, |text| text.replace("run: scripts/ci/test.sh", "run: echo scripts/ci/test.sh")),
+            |repo| repo.edit(CI, |text| text.replace("run: cargo test --locked --manifest-path", "run: echo cargo test --locked --manifest-path")),
+            |repo| repo.edit(CI, |text| text.replace("      - name: kome-lint\n", "      - name: kome-lint\n        if: false\n")),
+            |repo| repo.edit(CI, |text| text.replace("      - name: kani\n        run:", "      - name: kani\n        shell: echo {0}\n        run:")),
+            |repo| repo.edit(CI, |text| text.replace("    name: tla\n", "    name: tla\n    if: github.event_name == 'schedule'\n")),
+            |repo| repo.append(CI, "defaults:\n  run:\n    shell: echo {0}"),
+            |repo| repo.edit(CI, |text| text.replace("  push:\n    branches: [main]\n", "")),
+            |repo| repo.edit(CI, |text| text.replace("      - name: miri\n        run: cargo miri test -p kome --locked --lib", "      - name: miri\n        env:\n          CARGO: echo\n        run: cargo miri test -p kome --locked --lib")),
+            |repo| repo.edit(CI, |text| text.replace("  kani:\n    name: kani\n", "  kani:\n    name: kani\n    env:\n      PATH: /nowhere\n")),
+            |repo| repo.edit(CI, |text| {
+                let moved = text.replace("      - name: kani\n        run: scripts/ci/kani.sh\n", "");
+                moved.replace("      - name: tla\n        run: scripts/ci/tla.sh", "      - name: tla\n        run: scripts/ci/tla.sh\n      - name: kani\n        run: scripts/ci/kani.sh")
+            }),
+            |repo| repo.edit(CI, |text| text.replace("runs-on: ubuntu-latest\n    timeout-minutes: 30", "runs-on: self-hosted\n    timeout-minutes: 30")),
         ],
     },
 ];
@@ -984,6 +1009,20 @@ fn capacity_audited(repo: &Repo, report: &mut Report) {
     }
 }
 
+fn checked_insert(repo: &Repo, report: &mut Report) {
+    for (path, text) in repo.under("crates/kome-testkit/src/", ".rs") {
+        for (at, line) in text.lines().enumerate() {
+            let code = line.trim();
+            // 対応表の insert は値を置き換えて古い値を返す。その返り値で重複を判定すると、
+            // 拒否するときには既に置き換わっている。
+            let judged = code.starts_with("match ") || code.contains(").is_some()") || code.contains(").is_none()");
+            if !code.starts_with("//") && code.contains(".insert(") && code.contains(", ") && judged {
+                report.add(path, at.saturating_add(1), "置き換えてから重複を判定している。entry() か contains_key() で先に確かめる");
+            }
+        }
+    }
+}
+
 fn stale_at_lookup(repo: &Repo, report: &mut Report) {
     let id_rs = "crates/kome/src/id.rs";
     // error.rs は変種を定義するだけで、作らない。
@@ -1262,18 +1301,26 @@ fn quiet_operations(repo: &Repo, report: &mut Report) {
     }
 }
 
-const CI_STEPS: [&str; 10] = [
-    "cargo test --locked --manifest-path checks/noalloc/Cargo.toml",
-    "cargo run -q --locked -p kome-lint",
-    "cargo clippy --workspace --all-targets --locked -- -D warnings",
-    "scripts/ci/test.sh",
-    "cargo build -p kome --locked --target wasm32v1-none",
-    "cargo build -p kome --locked --target thumbv7em-none-eabi",
-    "cargo miri test -p kome",
-    "scripts/ci/kani.sh",
-    "scripts/ci/tla.sh",
-    "cancel-in-progress: false",
+/// CI が必ず実行するコマンドと、それを置くジョブ。ステップの `run` は、この文字列ちょうどである。
+const CI_RUNS: [(&str, &str); 10] = [
+    ("lint", "cargo run -q --locked -p kome-lint"),
+    ("lint", "cargo clippy --workspace --all-targets --locked -- -D warnings"),
+    ("test", "scripts/ci/test.sh"),
+    ("test", "git diff --exit-code -- tla"),
+    ("test", "cargo test --locked --manifest-path checks/noalloc/Cargo.toml"),
+    ("no-std", "cargo build -p kome --locked --target wasm32v1-none"),
+    ("no-std", "cargo build -p kome --locked --target thumbv7em-none-eabi"),
+    ("miri", "cargo miri test -p kome --locked --lib"),
+    ("kani", "scripts/ci/kani.sh"),
+    ("tla", "scripts/ci/tla.sh"),
 ];
+/// ワークフロー、ジョブ、ステップに書いてよいキー。実行の条件や殻を変えるキー (`if`、
+/// `continue-on-error`、`shell`、`defaults`、`working-directory`、ステップの `env`) は無い。
+const CI_TOP_KEYS: [&str; 6] = ["name", "on", "permissions", "concurrency", "env", "jobs"];
+const CI_JOB_KEYS: [&str; 5] = ["name", "runs-on", "timeout-minutes", "env", "steps"];
+const CI_STEP_KEYS: [&str; 4] = ["name", "run", "uses", "with"];
+/// ワークフローとジョブの `env` に置いてよい変数 (コマンドの意味を変えないもの)。
+const CI_ENV: [&str; 4] = ["CARGO_TERM_COLOR", "CARGO_INCREMENTAL", "RUSTUP_TOOLCHAIN", "MIRIFLAGS"];
 /// 試験のスクリプトが必ず行うこと: 全クレートの試験と、走った試験の照合。
 const TEST_SH: &str = "scripts/ci/test.sh";
 const TEST_STEPS: [&str; 2] = ["cargo test --workspace --locked 2>&1 | tee \"$log\"", "cargo run -q --locked -p kome-lint -- ran \"$log\""];
@@ -1286,14 +1333,72 @@ const CI_BANNED: [(&str, &str); 6] = [
     ("cargo fmt", "cargo fmt は使わない"),
 ];
 
-fn ci_required(repo: &Repo, report: &mut Report) {
-    let text = repo.text(CI);
-    let runs: Vec<&str> = text.lines().map(str::trim).collect();
-    for step in CI_STEPS {
-        if !runs.iter().any(|line| !line.starts_with('#') && line.contains(step)) {
-            report.add(CI, 1, format!("CI が `{step}` を実行していない"));
+fn yaml_keys(node: &yaml_rust2::Yaml) -> Vec<&str> {
+    node.as_hash().map(|hash| hash.keys().filter_map(yaml_rust2::Yaml::as_str).collect()).unwrap_or_default()
+}
+
+/// CI の構造: 必須のコマンドが、決まったジョブの、条件の付かないステップの `run` そのものであること。
+fn ci_structure(repo: &Repo, report: &mut Report) {
+    let docs = match yaml_rust2::YamlLoader::load_from_str(repo.text(CI)) {
+        Ok(docs) => docs,
+        Err(error) => {
+            report.add(CI, 1, format!("YAML として読めない: {error}"));
+            return;
+        }
+    };
+    let Some(doc) = docs.first() else {
+        report.add(CI, 1, "CI の定義が無い");
+        return;
+    };
+    for key in yaml_keys(doc) {
+        if !CI_TOP_KEYS.contains(&key) {
+            report.add_at(repo, CI, key, format!("ワークフローに `{key}` を置かない (実行のしかたを変えるキー)"));
         }
     }
+    let on_main = doc["on"]["push"]["branches"].as_vec().is_some_and(|branches| branches.iter().any(|b| b.as_str() == Some("main")));
+    if !on_main || !yaml_keys(&doc["on"]).contains(&"pull_request") {
+        report.add_at(repo, CI, "on:", "CI は main への push と pull request で動く");
+    }
+    if doc["concurrency"]["cancel-in-progress"].as_bool() != Some(false) {
+        report.add_at(repo, CI, "concurrency:", "`cancel-in-progress: false` にする (main への push が続くと実行が終わらなくなる)");
+    }
+    let env_ok = |node: &yaml_rust2::Yaml| yaml_keys(node).into_iter().all(|key| CI_ENV.contains(&key));
+    if !env_ok(&doc["env"]) {
+        report.add_at(repo, CI, "env:", "ワークフローの env に、決めた変数以外を置かない");
+    }
+    let jobs = &doc["jobs"];
+    for (id, job) in jobs.as_hash().into_iter().flatten() {
+        let id = id.as_str().unwrap_or("");
+        let at = format!("  {id}:");
+        for key in yaml_keys(job) {
+            if !CI_JOB_KEYS.contains(&key) {
+                report.add_at(repo, CI, &at, format!("ジョブ {id} に `{key}` を置かない (実行の条件や失敗の扱いを変えるキー)"));
+            }
+        }
+        if job["runs-on"].as_str() != Some("ubuntu-latest") || job["timeout-minutes"].as_i64().is_none() {
+            report.add_at(repo, CI, &at, format!("ジョブ {id} は GitHub の ubuntu-latest で動かし、制限時間を持つ"));
+        }
+        if !env_ok(&job["env"]) {
+            report.add_at(repo, CI, &at, format!("ジョブ {id} の env に、決めた変数以外を置かない"));
+        }
+        for step in job["steps"].as_vec().into_iter().flatten() {
+            for key in yaml_keys(step) {
+                if !CI_STEP_KEYS.contains(&key) {
+                    report.add_at(repo, CI, &at, format!("ジョブ {id} のステップに `{key}` を置かない (実行の条件や殻を変えるキー)"));
+                }
+            }
+        }
+    }
+    for (id, command) in CI_RUNS {
+        let steps = jobs[id]["steps"].as_vec().map_or(&[][..], Vec::as_slice);
+        if !steps.iter().any(|step| step["run"].as_str().map(str::trim) == Some(command)) {
+            report.add(CI, 1, format!("CI のジョブ {id} に、`run` がちょうど `{command}` のステップが無い"));
+        }
+    }
+}
+
+fn ci_required(repo: &Repo, report: &mut Report) {
+    ci_structure(repo, report);
     for step in TEST_STEPS {
         if !repo.text(TEST_SH).lines().any(|line| line.trim() == step) {
             report.add(TEST_SH, 1, format!("試験のスクリプトが `{step}` を実行していない"));

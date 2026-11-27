@@ -122,3 +122,47 @@ fn a_run_that_left_out_any_required_test_is_rejected() {
     }
     assert!(!crate::check_run(&repo, "").is_empty(), "何も走っていない出力を合格にした");
 }
+
+#[test]
+fn a_cfg_is_test_only_when_it_cannot_hold_without_test_or_kani() {
+    use crate::scan::{Holds, holds_outside_tests};
+    let cases = [
+        ("test", Holds::Never),
+        ("kani", Holds::Never),
+        ("not(test)", Holds::Always),
+        ("not(kani)", Holds::Always),
+        ("feature = \"std\"", Holds::Depends),
+        ("unix", Holds::Depends),
+        ("any(test, kani)", Holds::Never),
+        ("any()", Holds::Never),
+        ("all()", Holds::Always),
+        ("any(test, target_pointer_width = \"64\")", Holds::Depends),
+        ("any(test, not(kani))", Holds::Always),
+        ("all(test, target_pointer_width = \"64\")", Holds::Never),
+        ("all(not(test), not(kani))", Holds::Always),
+        ("all(not(test), unix)", Holds::Depends),
+        ("not(any(test, kani))", Holds::Always),
+        ("not(all(test, unix))", Holds::Always),
+        ("not(any(test, unix))", Holds::Depends),
+        ("not(not(test))", Holds::Never),
+        ("all(any(test, unix), kani)", Holds::Never),
+        ("any(all(test, unix), all(kani, windows))", Holds::Never),
+        ("any(all(test, unix), not(kani))", Holds::Always),
+        ("not(unix)", Holds::Depends),
+    ];
+    for (text, expected) in cases {
+        let condition: syn::Meta = syn::parse_str(text).unwrap();
+        assert_eq!(holds_outside_tests(&condition), expected, "{text}");
+    }
+    // 走査は、試験にしか入らない項目だけを外す。
+    let seen = |cfg: &str| {
+        let text = format!("#[cfg({cfg})]\npub static COUNT: u32 = 0;\n");
+        !crate::scan::scan(&text, true).unwrap().statics.is_empty()
+    };
+    assert!(!seen("test") && !seen("all(test, unix)") && !seen("any(test, kani)"));
+    assert!(seen("any(test, target_pointer_width = \"64\")"));
+    assert!(seen("not(test)") && seen("unix") && seen("not(all(test, unix))"));
+    // 二つの cfg は両方とも成り立つ必要がある。片方が試験だけなら、項目は試験にしか入らない。
+    let both = "#[cfg(unix)]\n#[cfg(test)]\npub static COUNT: u32 = 0;\n";
+    assert!(crate::scan::scan(both, true).unwrap().statics.is_empty());
+}

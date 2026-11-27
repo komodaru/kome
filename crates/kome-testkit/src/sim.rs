@@ -608,9 +608,10 @@ impl Sim {
                         Outcome::Accepted
                     }
                     Ok(WaitStart::Blocked) => {
-                        if self.blocked.insert(thread, targets).is_some() {
+                        if self.blocked.contains_key(&thread) {
                             return Err(format!("WAIT-1: 待機中のスレッドがもう一つ待機を登録した: {thread:?}"));
                         }
+                        self.blocked.insert(thread, targets);
                         Outcome::Accepted
                     }
                     Err(error) => Outcome::Refused(error),

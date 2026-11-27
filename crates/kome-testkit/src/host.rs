@@ -7,6 +7,7 @@
 //! I/O のバッファは、ホストが所有して完了と一緒に返すコピー経路である。
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use kome::{BackingId, Duration, Effect, HostError, Instant, IoId, IoOutcome};
 
@@ -86,9 +87,13 @@ impl FakeHost {
     /// 実体の内容を確保する。
     pub fn alloc(&mut self, backing: BackingId, len: u64) -> Result<(), String> {
         let len = usize::try_from(len).map_err(|error| error.to_string())?;
-        match self.memory.insert(backing, vec![0; len]) {
-            None => Ok(()),
-            Some(_) => Err(format!("{backing:?} を二度確保した")),
+        // 二度目の確保は、既にある内容に触れずに拒否する。
+        match self.memory.entry(backing) {
+            Entry::Vacant(vacant) => {
+                vacant.insert(vec![0; len]);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(format!("{backing:?} を二度確保した")),
         }
     }
 
@@ -178,5 +183,28 @@ impl FakeHost {
             std::mem::take(&mut self.scheduled).into_iter().partition(|scheduled| scheduled.at <= now);
         self.scheduled = later;
         due.into_iter().map(|scheduled| scheduled.arrived).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kome::{AddrWidth, InstanceId, Kernel, Limits, PageSize};
+
+    use super::*;
+
+    #[test]
+    fn a_rejected_second_alloc_leaves_the_contents_alone() {
+        // 再現例 (レビュー 4.5): 二度目の確保は拒否されたが、その前に既存の内容を置き換えていた。
+        let mut kernel = Kernel::new(InstanceId::new(1), Limits::DEFAULT).unwrap();
+        let (process, _) = kernel.create_process(AddrWidth::Bits32, PageSize::new(4096).unwrap()).unwrap();
+        let backing = kernel.create_backing(process, 4096).unwrap();
+        let mut host = FakeHost::new(Behavior::default());
+        host.alloc(backing, 8).unwrap();
+        host.write(backing, 2, &[7, 8, 9]).unwrap();
+        assert!(host.alloc(backing, 4).is_err());
+        assert_eq!(host.bytes(backing), Some(&[0, 0, 7, 8, 9, 0, 0, 0][..]));
+        assert!(host.alloc(backing, 16).is_err());
+        assert_eq!(host.bytes(backing).map(<[u8]>::len), Some(8));
+        assert_eq!(host.live_backings(), 1);
     }
 }

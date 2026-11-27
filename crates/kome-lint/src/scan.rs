@@ -45,16 +45,65 @@ fn line_of(span: proc_macro2::Span) -> usize {
     span.start().line
 }
 
-/// `#[cfg(test)]` / `#[cfg(kani)]` (否定を含まないもの) が付いているか。
+/// cfg の条件が成り立つか。試験でも Kani でもないビルドについて、分かる範囲で答える。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holds {
+    /// 必ず成り立つ。
+    Always,
+    /// 決して成り立たない。
+    Never,
+    /// 他の設定 (対象の機種、機能フラグなど) による。
+    Depends,
+}
+
+/// cfg の条件を、`test` と `kani` が偽のビルドについて評価する。それ以外の条件は「設定による」。
+pub fn holds_outside_tests(condition: &syn::Meta) -> Holds {
+    let parts = |list: &syn::MetaList| {
+        list.parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+            .map(|parts| parts.iter().map(holds_outside_tests).collect::<Vec<_>>())
+    };
+    match condition {
+        syn::Meta::Path(path) if path.is_ident("test") || path.is_ident("kani") => Holds::Never,
+        syn::Meta::Path(_) | syn::Meta::NameValue(_) => Holds::Depends,
+        syn::Meta::List(list) => {
+            let Ok(parts) = parts(list) else { return Holds::Depends };
+            if list.path.is_ident("any") {
+                if parts.contains(&Holds::Always) {
+                    Holds::Always
+                } else if parts.iter().all(|part| *part == Holds::Never) {
+                    Holds::Never
+                } else {
+                    Holds::Depends
+                }
+            } else if list.path.is_ident("all") {
+                if parts.contains(&Holds::Never) {
+                    Holds::Never
+                } else if parts.iter().all(|part| *part == Holds::Always) {
+                    Holds::Always
+                } else {
+                    Holds::Depends
+                }
+            } else if list.path.is_ident("not") {
+                match parts.as_slice() {
+                    [Holds::Always] => Holds::Never,
+                    [Holds::Never] => Holds::Always,
+                    [Holds::Depends] | [] | [_, _, ..] => Holds::Depends,
+                }
+            } else {
+                Holds::Depends
+            }
+        }
+    }
+}
+
+/// 項目が、試験でも Kani でもないビルドには決して入らないか。
+///
+/// `#[cfg(..)]` の条件を真偽の式として評価する。`test` という名前を含むだけでは外さない:
+/// `#[cfg(any(test, target_pointer_width = "64"))]` は本番のビルドにも入る。
 fn test_only(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        if !attr.path().is_ident("cfg") {
-            return false;
-        }
-        let syn::Meta::List(list) = &attr.meta else { return false };
-        let mut names = Vec::new();
-        idents_in(list.tokens.clone(), &mut names);
-        names.iter().any(|(name, _)| name == "test" || name == "kani") && !names.iter().any(|(name, _)| name == "not")
+        attr.path().is_ident("cfg")
+            && attr.parse_args::<syn::Meta>().is_ok_and(|condition| holds_outside_tests(&condition) == Holds::Never)
     })
 }
 
