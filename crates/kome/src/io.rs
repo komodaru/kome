@@ -415,6 +415,94 @@ mod tests {
         }
     }
 
+    const fn state_name(state: IoState) -> &'static str {
+        match state {
+            IoState::Prepared => "Prepared",
+            IoState::Issued => "Issued",
+            IoState::CancelRequested => "CancelRequested",
+            IoState::Settled(_) => "Settled",
+            IoState::Published(_) => "Published",
+        }
+    }
+
+    const fn event_name(event: IoEvent) -> &'static str {
+        match event {
+            IoEvent::Issue => "Issue",
+            IoEvent::Cancel => "Cancel",
+            IoEvent::Complete(_) => "Complete",
+            IoEvent::Publish => "Publish",
+        }
+    }
+
+    const fn emit_name(emit: IoEmit) -> &'static str {
+        match emit {
+            IoEmit::Nothing => "Nothing",
+            IoEmit::Submit => "Submit",
+            IoEmit::Cancel => "Cancel",
+        }
+    }
+
+    /// `io_step` の受理する遷移を TLA+ の表として書き出す。
+    fn tla_table() -> String {
+        let quoted = |names: Vec<&str>| names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
+        let mut rows = Vec::new();
+        for state in STATES {
+            for event in EVENTS {
+                if let Ok((after, emit)) = io_step(state, event) {
+                    rows.push(format!(
+                        "    (<<\"{}\", \"{}\">> :> <<\"{}\", \"{}\">>)",
+                        state_name(state),
+                        event_name(event),
+                        state_name(after),
+                        emit_name(emit)
+                    ));
+                }
+            }
+        }
+        format!(
+            "------------------------------ MODULE IoTable ------------------------------\n\
+             (* crates/kome/src/io.rs の io_step から生成した。手で書き換えない。\n\
+             \x20  書き直す: KOME_UPDATE_GOLDEN=1 cargo test -p kome the_tla_table_is_io_step *)\n\
+             EXTENDS TLC\n\n\
+             IoStates == {{{}}}\n\
+             IoEvents == {{{}}}\n\n\
+             \\* 受理する (状態, 出来事) から (次の状態, 出す Effect) への表。載っていない組は拒否する。\n\
+             IoStep ==\n{}\n\
+             =============================================================================\n",
+            quoted(STATES.map(state_name).to_vec()),
+            quoted(EVENTS.map(event_name).to_vec()),
+            rows.join(" @@\n")
+        )
+    }
+
+    /// TLA+ のモデル (tla/IoLifecycle.tla) が使う表は、この実装そのものである。
+    #[test]
+    fn the_tla_table_is_io_step() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tla/IoTable.tla");
+        let table = tla_table();
+        if std::env::var("KOME_UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty()) {
+            std::fs::write(path, &table).unwrap();
+        }
+        let on_disk = std::fs::read_to_string(path).unwrap();
+        assert_eq!(on_disk, table, "tla/IoTable.tla が io_step と違う。KOME_UPDATE_GOLDEN=1 で書き直す");
+    }
+
+    /// 内容だけが違う状態・出来事は、遷移の形を変えない (表が内容を落としてよい根拠)。
+    #[test]
+    fn the_step_shape_ignores_payloads() {
+        let other = IoOutcome::Failed { error: HostError::new(5), transferred: 1 };
+        for (state, twin) in [(IoState::Settled(DONE), IoState::Settled(other)), (IoState::Published(DONE), IoState::Published(other))] {
+            for event in EVENTS {
+                let shape = |r: Result<(IoState, IoEmit), Refusal>| r.map(|(s, e)| (state_name(s), emit_name(e)));
+                assert_eq!(shape(io_step(state, event)), shape(io_step(twin, event)));
+            }
+        }
+        for state in STATES {
+            let shape = |r: Result<(IoState, IoEmit), Refusal>| r.map(|(s, e)| (state_name(s), emit_name(e)));
+            assert_eq!(shape(io_step(state, IoEvent::Complete(DONE))), shape(io_step(state, IoEvent::Complete(other))));
+        }
+    }
+
     #[test]
     fn cancel_after_issue_is_a_request_not_an_outcome() {
         let (state, emit) = io_step(IoState::Issued, IoEvent::Cancel).unwrap();

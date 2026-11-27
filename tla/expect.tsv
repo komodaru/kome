@@ -1,0 +1,11 @@
+# 設定ファイル	モジュール	期待する結果 (ok、または破られるべき不変条件の名前)
+IoLifecycle.cfg	IoLifecycle	ok
+IoLifecycleDuplicate.cfg	IoLifecycle	SettlesOnce
+IoLifecycleReleaseInFlight.cfg	IoLifecycle	NoReleaseInFlight
+IoLifecycleWakeOnComplete.cfg	IoLifecycle	NoWakeBeforeOutput
+IoLifecycleReach.cfg	IoLifecycle	ReachPublished
+WaitRace.cfg	WaitRace	ok
+WaitRaceSplitCheck.cfg	WaitRace	NoLostWake
+WaitRacePartialAll.cfg	WaitRace	AllOrNothing
+WaitRaceLateTimeout.cfg	WaitRace	OneOutcome
+WaitRaceReach.cfg	WaitRace	ReachAllWokenBySignal

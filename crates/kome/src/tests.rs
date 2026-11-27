@@ -1142,3 +1142,62 @@ fn an_internal_fault_is_never_a_guest_refusal() {
     assert_eq!(class(error), "内部の障害");
     assert_eq!(class(Error::Refused(Refusal::IoSettled)), "ゲストへ返せる");
 }
+
+/// 実際の `Kernel::wait` が下す判定を、数 0..=2 の資源二つについて TLA+ の表として書き出す。
+fn tla_wait_table() -> String {
+    const NAMES: [&str; 2] = ["a", "b"];
+    let orders: [&[usize]; 4] = [&[0], &[1], &[0, 1], &[1, 0]];
+    let mut rows = Vec::new();
+    for mode in [WaitMode::Any, WaitMode::All] {
+        for order in orders {
+            for a in 0..=2u64 {
+                for b in 0..=2u64 {
+                    let mut k = kernel();
+                    let (p, _) = process(&mut k);
+                    thread(&mut k, p);
+                    let t = trap(&mut k, W0);
+                    let objects = [semaphore(&mut k, p, a, 2), semaphore(&mut k, p, b, 2)];
+                    let targets: Vec<ObjectId> = order.iter().map(|at| objects[*at]).collect();
+                    let started = k.wait(t, &targets, mode, Deadline::Never, Interruptible::No);
+                    let verdict = match ok!(k, started) {
+                        WaitStart::Blocked => "Blocked",
+                        WaitStart::Done(WaitOutcome::Signaled { index: 0 }) => "First",
+                        WaitStart::Done(WaitOutcome::Signaled { index: 1 }) => "Second",
+                        WaitStart::Done(WaitOutcome::AllSignaled) => "All",
+                        WaitStart::Done(other) => panic!("期限も中断も無い待機が {other:?} で終わった"),
+                    };
+                    let after = objects.map(|o| k.signal_count(o).unwrap());
+                    let names: Vec<String> = order.iter().map(|at| format!("\"{}\"", NAMES[*at])).collect();
+                    rows.push(format!(
+                        "    (<<{a}, {b}, <<{}>>, \"{mode:?}\">> :> <<\"{verdict}\", {}, {}>>)",
+                        names.join(", "),
+                        after[0],
+                        after[1]
+                    ));
+                }
+            }
+        }
+    }
+    format!(
+        "----------------------------- MODULE WaitTable -----------------------------\n\
+         (* crates/kome の Kernel::wait を実際に動かして生成した。手で書き換えない。\n\
+         \x20  書き直す: KOME_UPDATE_GOLDEN=1 cargo test -p kome the_tla_wait_table_is_the_kernel *)\n\
+         EXTENDS TLC\n\n\
+         \\* (a の数, b の数, 対象の列, 条件) から (判定, 消費後の a の数, 消費後の b の数) への表。\n\
+         WaitDecide ==\n{}\n\
+         =============================================================================\n",
+        rows.join(" @@\n")
+    )
+}
+
+/// TLA+ のモデル (tla/WaitRace.tla) が使う判定は、このカーネルの判定そのものである。
+#[test]
+fn the_tla_wait_table_is_the_kernel() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tla/WaitTable.tla");
+    let table = tla_wait_table();
+    if std::env::var("KOME_UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty()) {
+        std::fs::write(path, &table).unwrap();
+    }
+    let on_disk = std::fs::read_to_string(path).unwrap();
+    assert_eq!(on_disk, table, "tla/WaitTable.tla がカーネルと違う。KOME_UPDATE_GOLDEN=1 で書き直す");
+}
