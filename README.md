@@ -7,7 +7,7 @@
 - 特定の OS・ホスト・実行基盤の語彙を持たない。ゲスト OS の意味づけ (ハンドルの番号、状態コード、
   名前空間、優先度) は Personality が、実時間・I/O の中身・メモリのバイトは Host が持つ。
 - 状態は `Kernel` の値一つ。変更は `&mut Kernel` を通る操作だけで、同じ入力列からは同じ状態と同じ
-  `Effect` 列になる。
+  `Effect` 列になる。`Kernel` は複製できず、写し (`Snapshot`) は別の実行インスタンスとしてだけ復元できる。
 - 外への働きかけは `Effect` (中断、I/O の開始・取消、資源の回収の通知) として出し、ホストの応答は
   `Completion` として受ける。操作は、将来出しうる `Effect` の席を受理の時点で予約するので、受理した
   操作の `Effect` を失わない。
@@ -20,7 +20,11 @@
 | `crates/kome` | カーネル本体 |
 | `crates/kome-testkit` | 決定的シミュレーション (バイト列 → 操作列)、制御可能なホスト、ページごとの独立モデル |
 | `crates/kome-lint` | 設計上の規則の検査。規則ごとに、検出しなければならない壊し方を持つ |
+| `docs/architecture.md` | 責務と依存方向、入力と出力、実行権、写しと復元 |
+| `docs/memory.md` | メモリ契約: ゲストのメモリの管理と、kome 自身が確保する操作・確保しない操作 |
 | `docs/invariants.toml` | 不変条件の台帳: 検査・試験・証明・モデルとの対応 |
+| `docs/proofs.tsv` | Kani の証明ごとの検証条件と範囲 |
+| `checks/noalloc` | 確保しないと約束した操作が確保しないことを、確保を数えて確かめる |
 | `tla/` | TLA+ のモデル (I/O の寿命、待機と通知の競合)。遷移の表は実装から生成する |
 | `fuzz/` | libFuzzer の入口 (property test と同じ `kome_testkit::drive`) |
 
@@ -29,10 +33,11 @@
 ```sh
 cargo run -q -p kome-lint                                  # 設計上の規則
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                                     # 単体・シナリオ・property test・保存した入力の再生
+scripts/ci/test.sh                                         # 全ての試験と、必須の試験が走ったことの照合
+cargo test --manifest-path checks/noalloc/Cargo.toml       # 確保しないと約束した操作が確保しない
 cargo build -p kome --target wasm32v1-none                 # OS もホストも無いターゲット
 scripts/ci/tla.sh                                          # TLC。正しい設定は違反なし、誤りの変種は反例
-scripts/ci/kani.sh                                         # Kani の証明を一つずつ
+scripts/ci/kani.sh                                         # Kani の証明を一つずつ (検証条件と範囲つき)
 cargo mutants -p kome --profile mutants   # 変異試験 (週次)
 ```
 

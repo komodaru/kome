@@ -133,8 +133,26 @@ enum Outcome {
     Skipped,
 }
 
+/// 確保しないと約束している操作 (docs/memory.md) の前後で呼ぶ印。
+///
+/// 試験基盤そのものは確保を数えない (大域のアロケータを差し替えるには unsafe が要る)。
+/// `checks/noalloc` がこの印の間の確保を数え、0 であることを確かめる。
+#[derive(Clone, Copy, Debug)]
+pub struct Probe {
+    /// 操作を呼ぶ直前。
+    pub enter: fn(),
+    /// 操作から戻った直後。
+    pub leave: fn(),
+}
+
+impl Probe {
+    /// 何もしない印。
+    pub const NONE: Probe = Probe { enter: || {}, leave: || {} };
+}
+
 struct Sim {
     k: Kernel,
+    probe: Probe,
     processes: Vec<ProcessId>,
     threads: Vec<ThreadId>,
     objects: Vec<ObjectId>,
@@ -183,10 +201,19 @@ fn pages(first: u64, count: u64) -> Option<GuestRange> {
 }
 
 impl Sim {
-    fn new() -> Result<Sim, String> {
+    /// 確保しないと約束している操作を、印で挟んで呼ぶ。
+    fn quiet<T>(&mut self, call: impl FnOnce(&mut Kernel) -> T) -> T {
+        (self.probe.enter)();
+        let out = call(&mut self.k);
+        (self.probe.leave)();
+        out
+    }
+
+    fn new(probe: Probe) -> Result<Sim, String> {
         let k = Kernel::new(InstanceId::new(1), limits()).map_err(|error| format!("{error:?}"))?;
         Ok(Sim {
             k,
+            probe,
             processes: Vec::new(),
             threads: Vec::new(),
             objects: Vec::new(),
@@ -412,7 +439,7 @@ impl Sim {
                     return Ok(Outcome::Skipped);
                 }
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
-                done(self.k.exit_process(process, ExitCode::new(u64::from(r.byte()))))
+                done(self.quiet(|k| k.exit_process(process, ExitCode::new(u64::from(r.byte())))))
             }
             2 => {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
@@ -430,26 +457,26 @@ impl Sim {
             }
             3 => {
                 let Some(thread) = r.prefer(&self.threads, self.in_phase(ThreadPhase::Servicing)) else { return Ok(Outcome::Skipped) };
-                done(self.k.continue_thread(thread))
+                done(self.quiet(|k| k.continue_thread(thread)))
             }
             4 => {
                 let Some(thread) = r.pick(&self.threads) else { return Ok(Outcome::Skipped) };
-                done(self.k.suspend_thread(thread).map(|_| ()))
+                done(self.quiet(|k| k.suspend_thread(thread)).map(|_| ()))
             }
             5 => {
                 let Some(thread) = r.prefer(&self.threads, |thread| self.k.suspend_count(*thread).is_ok_and(|count| count > 0)) else { return Ok(Outcome::Skipped) };
-                done(self.k.unsuspend_thread(thread).map(|_| ()))
+                done(self.quiet(|k| k.unsuspend_thread(thread)).map(|_| ()))
             }
             6 => {
                 if r.below(3) != 0 {
                     return Ok(Outcome::Skipped);
                 }
                 let Some(thread) = r.pick(&self.threads) else { return Ok(Outcome::Skipped) };
-                done(self.k.terminate_thread(thread, ExitCode::new(u64::from(r.byte()))))
+                done(self.quiet(|k| k.terminate_thread(thread, ExitCode::new(u64::from(r.byte())))))
             }
             7 | 8 => {
                 let worker = WorkerId::new(u32::try_from(r.below(u64::from(WORKERS))).map_err(|e| e.to_string())?);
-                match self.k.grant(worker) {
+                match self.quiet(|k| k.grant(worker)) {
                     Ok(Some(permit)) => {
                         let process = permit.process();
                         for held in &self.held {
@@ -480,7 +507,7 @@ impl Sim {
                 let held = self.held.remove(at);
                 let stop = if r.flag() { Stop::Trapped } else { Stop::Preempted };
                 let consumed = Budget::new(u64::from(r.byte()));
-                match self.k.relinquish(held.permit, stop, consumed) {
+                match self.quiet(|k| k.relinquish(held.permit, stop, consumed)) {
                     Ok(_) => Outcome::Accepted,
                     Err(error) => return Err(format!("RUN-1: 正当な実行権が拒否された: {error:?}")),
                 }
@@ -515,12 +542,12 @@ impl Sim {
                 let (Some(process), Some(object)) = (r.prefer(&self.processes, self.alive()), r.prefer(&self.objects, self.exists())) else {
                     return Ok(Outcome::Skipped);
                 };
-                done(self.k.release_object(process, object))
+                done(self.quiet(|k| k.release_object(process, object)))
             }
             14 | 15 => {
                 let Some(object) = r.prefer(&self.objects, self.exists()) else { return Ok(Outcome::Skipped) };
                 let op = if r.flag() { SignalOp::Add(r.below(3)) } else { SignalOp::Set(r.below(4)) };
-                match self.k.signal(object, op) {
+                match self.quiet(|k| k.signal(object, op)) {
                     Ok(previous) => {
                         if let Some(count) = self.counted.get_mut(&object) {
                             *count = match op {
@@ -563,7 +590,7 @@ impl Sim {
             }
             19 => {
                 let Some(thread) = r.prefer(&self.threads, self.in_phase(ThreadPhase::Blocked)) else { return Ok(Outcome::Skipped) };
-                match self.k.interrupt_wait(thread) {
+                match self.quiet(|k| k.interrupt_wait(thread)) {
                     Ok(()) => {
                         self.blocked.remove(&thread).ok_or("WAIT-1: 登録の無い待機を中断した")?;
                         Outcome::Accepted
@@ -597,11 +624,11 @@ impl Sim {
             }
             22 => {
                 let Some(timer) = r.pick(&self.timers) else { return Ok(Outcome::Skipped) };
-                done(self.k.disarm_timer(timer).map(|_| ()))
+                done(self.quiet(|k| k.disarm_timer(timer)).map(|_| ()))
             }
             23 => {
                 let Some(timer) = r.pick(&self.timers) else { return Ok(Outcome::Skipped) };
-                done(self.k.drop_timer(timer))
+                done(self.quiet(|k| k.drop_timer(timer)))
             }
             24..=26 => {
                 let now = self.k.now().nanos();
@@ -609,7 +636,7 @@ impl Sim {
                     (true, Some(next)) => next.max(self.k.now()),
                     (true, None) | (false, _) => Instant::from_nanos(now.saturating_add(r.below(8).saturating_mul(35))),
                 };
-                done(self.k.advance(to).map(|_| ()))
+                done(self.quiet(|k| k.advance(to)).map(|_| ()))
             }
             27 | 28 => {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
@@ -642,11 +669,11 @@ impl Sim {
             }
             29 | 30 => {
                 let Some(io) = r.prefer(&self.ios, self.io_in(&[IoPhase::Prepared])) else { return Ok(Outcome::Skipped) };
-                done(self.k.issue_io(io))
+                done(self.quiet(|k| k.issue_io(io)))
             }
             31 => {
                 let Some(io) = r.prefer(&self.ios, self.io_in(&[IoPhase::Issued, IoPhase::Prepared])) else { return Ok(Outcome::Skipped) };
-                match self.k.cancel_io(io) {
+                match self.quiet(|k| k.cancel_io(io)) {
                     Ok(CancelReply::Withdrawn) => {
                         if !self.settled.insert(io) {
                             return Err(format!("IO-1: 終端済みの I/O を取り下げた: {io:?}"));
@@ -664,7 +691,7 @@ impl Sim {
                 let outcome = Sim::outcome(r.byte());
                 let awaited = self.in_flight.contains(&io);
                 let instance = if r.below(16) == 0 { InstanceId::new(2) } else { self.k.instance() };
-                match self.k.complete(Completion::new(instance, CompletionKind::Io { io, outcome })) {
+                match self.quiet(|k| k.complete(Completion::new(instance, CompletionKind::Io { io, outcome }))) {
                     Ok(_) => {
                         if !awaited || instance != self.k.instance() {
                             return Err(format!("IO-1: 応答を待っていない I/O の完了を受理した: {io:?}"));
@@ -686,7 +713,7 @@ impl Sim {
             35 | 36 => {
                 let Some(io) = r.prefer(&self.ios, self.io_in(&[IoPhase::Settled])) else { return Ok(Outcome::Skipped) };
                 let before = self.k.io_outcome(io);
-                match self.k.publish_io(io) {
+                match self.quiet(|k| k.publish_io(io)) {
                     Ok(outcome) => {
                         if before != Ok(Some(outcome)) {
                             return Err(format!("IO-1: 公開した結果 {outcome:?} が確定した結果 {before:?} と違う"));
@@ -699,7 +726,7 @@ impl Sim {
             37 => {
                 let Some(io) = r.prefer(&self.ios, self.io_in(&[IoPhase::Published, IoPhase::Settled])) else { return Ok(Outcome::Skipped) };
                 let phase = self.k.io_phase(io);
-                match self.k.release_io(io) {
+                match self.quiet(|k| k.release_io(io)) {
                     Ok(()) => {
                         if matches!(phase, Ok(IoPhase::Issued | IoPhase::CancelRequested)) {
                             return Err(format!("応答待ちの I/O を回収した: {io:?}"));
@@ -730,7 +757,7 @@ impl Sim {
                 let (Some(process), Some(backing)) = (r.prefer(&self.processes, self.alive()), r.prefer(&self.backings, |backing| self.k.backing_len(*backing).is_ok())) else {
                     return Ok(Outcome::Skipped);
                 };
-                done(self.k.release_backing(process, backing))
+                done(self.quiet(|k| k.release_backing(process, backing)))
             }
             41..=44 => {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
@@ -866,7 +893,7 @@ impl Sim {
         // 実行権を返したスレッドの古い世代の印は、Held ごと消えている。
         self.check_counts()?;
         if code & 0x40 != 0 {
-            while self.k.poll_effect().is_some() {}
+            while self.quiet(|k| k.poll_effect()).is_some() {}
         }
         Ok(())
     }
@@ -874,7 +901,12 @@ impl Sim {
 
 /// バイト列を操作列として実行し、すべての性質を確かめる。
 pub fn drive(bytes: &[u8]) -> Result<Summary, Failure> {
-    let mut sim = Sim::new().map_err(|message| Failure { step: 0, message })?;
+    drive_probed(bytes, Probe::NONE)
+}
+
+/// [`drive`] と同じ。確保しないと約束している操作の前後で `probe` を呼ぶ。
+pub fn drive_probed(bytes: &[u8], probe: Probe) -> Result<Summary, Failure> {
+    let mut sim = Sim::new(probe).map_err(|message| Failure { step: 0, message })?;
     let mut reader = Reader { bytes };
     let mut steps = 0usize;
     while !reader.done() {

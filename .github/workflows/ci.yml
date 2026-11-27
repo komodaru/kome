@@ -53,6 +53,8 @@ jobs:
         run: scripts/ci/test.sh
       - name: 生成した表が実装と同じ
         run: git diff --exit-code -- tla
+      - name: 確保しないと約束した操作が確保しない
+        run: cargo test --locked --manifest-path checks/noalloc/Cargo.toml
 
   no-std:
     name: no_std

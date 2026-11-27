@@ -1,0 +1,14 @@
+[package]
+name = "kome-noalloc"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "kome が「確保しない」と約束した操作が、実際に確保しないことを確かめる"
+
+[dev-dependencies]
+kome-testkit = { path = "../../crates/kome-testkit" }
+
+# ワークスペースの外に置く (確保を数えるには大域のアロケータを差し替える unsafe が要る。
+# ワークスペースは unsafe を禁止している)。
+[workspace]

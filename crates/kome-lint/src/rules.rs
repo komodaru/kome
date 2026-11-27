@@ -8,6 +8,10 @@ use crate::{Repo, Report, Rule};
 const KOME_SRC: &str = "crates/kome/src/";
 const KOME_MANIFEST: &str = "crates/kome/Cargo.toml";
 const KERNEL_RS: &str = "crates/kome/src/kernel.rs";
+const SIM_RS: &str = "crates/kome-testkit/src/sim.rs";
+const MEMORY_MD: &str = "docs/memory.md";
+const ARCHITECTURE_MD: &str = "docs/architecture.md";
+const PROOFS_TSV: &str = "docs/proofs.tsv";
 const LEDGER: &str = "docs/invariants.toml";
 const CI: &str = ".github/workflows/ci.yml";
 const EXPECT: &str = "tla/expect.tsv";
@@ -149,6 +153,10 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(LEDGER, |text| text.replacen("audit = \"audit_runs\"", "audit = \"audit_nothing\"", 1)),
             |repo| repo.edit("crates/kome/src/error.rs", |text| text.replacen("=> \"MEM-3\"", "=> \"MEM-4\"", 1)),
             |repo| repo.edit("crates/kome/src/proofs.rs", |text| text.replacen("#[kani::proof]\n", "", 1)),
+            |repo| repo.edit(PROOFS_TSV, |text| text.replace("instant_add_never_wraps\t-\t", "instant_add_never_overflows\t-\t")),
+            |repo| repo.edit("crates/kome/src/proofs.rs", |text| text.replace("#[kani::unwind(4)]", "#[kani::unwind(9)]")),
+            |repo| repo.edit(PROOFS_TSV, |text| text.replace("an_exhausted_slot_is_retired\t3\t表", "an_exhausted_slot_is_retired\t3\t \n# 表")),
+            |repo| repo.remove(PROOFS_TSV),
         ],
     },
     Rule {
@@ -172,11 +180,38 @@ pub const RULES: &[Rule] = &[
         ],
     },
     Rule {
+        id: "quiet-operations",
+        about: "確保しないと約束した操作は、文書・確保を数える検査・決定的シミュレーションで同じ一覧になる",
+        check: quiet_operations,
+        breaks: &[
+            |repo| repo.edit(SIM_RS, |text| text.replace("self.quiet(|k| k.exit_process(", "self.plain(|k| k.exit_process(")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("match self.k.create_thread(", "match self.quiet(|k| k.create_thread(")),
+            |repo| repo.edit(MEMORY_MD, |text| text.replace("`signal`、`interrupt_wait`、`advance`", "`signal`、`interrupt_wait`")),
+            |repo| repo.edit(MEMORY_MD, |text| text.replace("| `arm_timer` | 期限の列 |", "| `arm_timer`、`advance` | 期限の列 |")),
+            |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 新しい操作。\n    pub fn fresh_operation(&mut self) {}\n}"),
+            |repo| repo.edit("checks/noalloc/tests/noalloc.rs", |text| text.replace("assert_eq!(count(), before, \"seed", "assert!(count() >= before, \"seed")),
+            |repo| repo.edit("checks/noalloc/src/lib.rs", |text| text.replacen("        note();\n", "", 1)),
+        ],
+    },
+    Rule {
+        id: "docs-current",
+        about: "文書が名指しする不変条件・規則・ファイルが実在し、台帳の全項目が責務の表にある",
+        check: docs_current,
+        breaks: &[
+            |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("| TIME-1 |", "| |")),
+            |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("lint `no-globals`", "lint `no-statics`")),
+            |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("`wait.rs`", "`waiting.rs`")),
+            |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("| IO-1 |", "| IO-7 |")),
+            |repo| repo.remove(MEMORY_MD),
+        ],
+    },
+    Rule {
         id: "ci-required",
         about: "CI は全ての検証を実行し、失敗を見逃さない",
         check: ci_required,
         breaks: &[
             |repo| repo.edit(CI, |text| text.replace("scripts/ci/kani.sh", "true")),
+            |repo| repo.edit(CI, |text| text.replace("--manifest-path checks/noalloc/Cargo.toml", "-p kome")),
             |repo| repo.edit(CI, |text| text.replace("scripts/ci/test.sh", "cargo test -p kome")),
             |repo| repo.edit(TEST_SH, |text| text.replace("cargo run -q --locked -p kome-lint -- ran \"$log\"\n", "")),
             |repo| repo.edit(TEST_SH, |text| text.replace("cargo test --workspace --locked", "cargo test -p kome --locked")),
@@ -309,8 +344,10 @@ fn required_lints(repo: &Repo, report: &mut Report) {
         need(KOME_MANIFEST, kome_lints, "clippy", name, "deny");
     }
     for (path, text) in repo.under("", "Cargo.toml") {
-        // fuzz はワークスペースの外にあり、libFuzzer の入口が unsafe な属性を要るので継承できない。
-        let member = path != "Cargo.toml" && path != KOME_MANIFEST && path != "fuzz/Cargo.toml";
+        // fuzz と checks/noalloc はワークスペースの外にある。libFuzzer の入口と、確保を数える
+        // アロケータは unsafe を要るので、unsafe を禁止するワークスペースの設定を継承できない。
+        let outside = ["fuzz/Cargo.toml", "checks/noalloc/Cargo.toml"];
+        let member = path != "Cargo.toml" && path != KOME_MANIFEST && !outside.contains(&path);
         let inherits = text
             .parse::<toml::Table>()
             .ok()
@@ -559,7 +596,7 @@ fn skip_word() -> String {
 
 fn no_skipped_tests(repo: &Repo, report: &mut Report) {
     let word = skip_word();
-    let files = repo.under("crates/", ".rs").chain(repo.under("fuzz/", ".rs"));
+    let files = repo.under("crates/", ".rs").chain(repo.under("fuzz/", ".rs")).chain(repo.under("checks/", ".rs"));
     for (path, text) in files {
         for (at, line) in text.lines().enumerate() {
             // 属性の中にこの語があれば、マクロの中 (proptest!) でも cfg_attr 越しでも見つける。
@@ -677,6 +714,47 @@ fn ledger(repo: &Repo, report: &mut Report) {
             report.add_at(repo, proofs_rs, &format!("fn {name}("), format!("証明 {name} が台帳のどの不変条件にも載っていない"));
         }
     }
+    // 証明ごとの検証条件と範囲 (docs/proofs.tsv)。ループ展開の上限は proofs.rs の属性と同じ値を書く。
+    let bounds: Vec<(&str, &str, &str)> = repo
+        .text(PROOFS_TSV)
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .filter_map(|line| {
+            let mut cells = line.split('\t');
+            Some((cells.next()?, cells.next()?, cells.next()?))
+        })
+        .collect();
+    let mut unwinds: Vec<(String, String)> = Vec::new();
+    let mut pending: Option<String> = None;
+    for line in repo.text(proofs_rs).lines() {
+        if line == "#[kani::proof]" {
+            pending = Some("-".to_owned());
+        } else if let Some(count) = line.strip_prefix("#[kani::unwind(").and_then(|rest| rest.strip_suffix(")]")) {
+            pending = pending.map(|_| count.to_owned());
+        } else if let Some(name) = line.strip_prefix("fn ").and_then(|rest| rest.split('(').next())
+            && let Some(unwind) = pending.take()
+        {
+            unwinds.push((name.to_owned(), unwind));
+        }
+    }
+    for (name, unwind) in &unwinds {
+        let row = bounds.iter().find(|(listed, _, _)| listed == name);
+        match row {
+            None => report.add(PROOFS_TSV, 1, format!("証明 {name} の検証条件と範囲が無い")),
+            Some((_, listed, _)) if listed != unwind => {
+                report.add_at(repo, PROOFS_TSV, name, format!("{name}: ループ展開の上限は {unwind} (表では {listed})"));
+            }
+            Some((_, _, range)) if range.trim().is_empty() => {
+                report.add_at(repo, PROOFS_TSV, name, format!("{name}: 範囲が空"));
+            }
+            Some(_) => {}
+        }
+    }
+    for (listed, _, _) in &bounds {
+        if !unwinds.iter().any(|(name, _)| name == listed) {
+            report.add_at(repo, PROOFS_TSV, listed, format!("証明 {listed} は proofs.rs に無い"));
+        }
+    }
     let harness_like = proofs.iter().filter(|(_, attrs)| attrs.is_empty()).filter(|(name, _)| {
         // 補助関数 (any_* / some_* / outcome_of) 以外で属性の無い関数は、証明の付け忘れ。
         !name.starts_with("any_") && !name.starts_with("some_") && name != "outcome_of"
@@ -775,7 +853,138 @@ fn operations_covered(repo: &Repo, report: &mut Report) {
     }
 }
 
-const CI_STEPS: [&str; 9] = [
+/// 確保しないと約束した操作 (docs/memory.md の二つ目の表)。
+const QUIET_OPS: [&str; 20] = [
+    "grant",
+    "relinquish",
+    "continue_thread",
+    "suspend_thread",
+    "unsuspend_thread",
+    "signal",
+    "interrupt_wait",
+    "advance",
+    "issue_io",
+    "cancel_io",
+    "complete",
+    "publish_io",
+    "release_object",
+    "release_backing",
+    "release_io",
+    "disarm_timer",
+    "drop_timer",
+    "terminate_thread",
+    "exit_process",
+    "poll_effect",
+];
+
+/// `text` の中の、バッククォートで囲んだ語と、その直前の文字列。
+fn quoted(text: &str) -> Vec<(&str, &str)> {
+    let mut found = Vec::new();
+    let mut parts = text.split('`');
+    let mut before = parts.next().unwrap_or("");
+    while let Some(word) = parts.next() {
+        found.push((before, word));
+        before = parts.next().unwrap_or("");
+    }
+    found
+}
+
+fn docs_current(repo: &Repo, report: &mut Report) {
+    let ledger = table(report, repo, LEDGER);
+    let entries = ledger.get("invariant").and_then(toml::Value::as_array).map_or(&[][..], Vec::as_slice);
+    let ids: BTreeSet<&str> = entries.iter().filter_map(|entry| entry.get("id")?.as_str()).collect();
+    let architecture = repo.text(ARCHITECTURE_MD);
+    for id in &ids {
+        if !architecture.contains(id) {
+            report.add(ARCHITECTURE_MD, 1, format!("台帳の {id} が責務の表に無い"));
+        }
+    }
+    for path in [ARCHITECTURE_MD, MEMORY_MD, "README.md"] {
+        if !repo.has(path) {
+            report.add(path, 1, "文書が無い");
+        }
+        for (at, line) in repo.text(path).lines().enumerate() {
+            let number = at.saturating_add(1);
+            let lists_rules = line.contains("lint `");
+            for (_, word) in quoted(line) {
+                // 規則の名前の形 (小文字とハイフン)。クレートの名前 (kome-...) は規則ではない。
+                let rule_like = word.contains('-')
+                    && word.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                    && !word.starts_with("kome-");
+                if lists_rules && rule_like && !RULES.iter().any(|rule| rule.id == word) {
+                    report.add(path, number, format!("規則 {word} は無い"));
+                }
+                let is_source = word.ends_with(".rs") && !word.contains('/');
+                if is_source && !repo.has(&format!("{KOME_SRC}{word}")) {
+                    report.add(path, number, format!("{KOME_SRC}{word} が無い"));
+                }
+            }
+            // 「英大文字-数字」の形は台帳の識別子として読む。
+            for token in line.split(|c: char| !c.is_ascii_alphanumeric() && c != '-') {
+                let looks_like_id = token.split_once('-').is_some_and(|(head, tail)| {
+                    !head.is_empty()
+                        && head.chars().all(|c| c.is_ascii_uppercase())
+                        && !tail.is_empty()
+                        && tail.chars().all(|c| c.is_ascii_digit())
+                });
+                if looks_like_id && !ids.contains(token) {
+                    report.add(path, number, format!("{token} は台帳に無い"));
+                }
+            }
+        }
+    }
+}
+
+fn quiet_operations(repo: &Repo, report: &mut Report) {
+    let sim = repo.text(SIM_RS);
+    let doc = repo.text(MEMORY_MD);
+    let Some((may_allocate, never_allocate)) = doc.split_once("次の操作は確保しない。") else {
+        report.add(MEMORY_MD, 1, "「次の操作は確保しない。」の表が無い");
+        return;
+    };
+    let mut operations = BTreeSet::new();
+    for (path, text) in kernel_files(repo) {
+        let Some(found) = scanned(report, path, text, true) else { continue };
+        operations.extend(found.kernel_ops.into_iter().map(|(name, _)| name));
+    }
+    for name in QUIET_OPS {
+        if !operations.contains(name) {
+            report.add(MEMORY_MD, 1, format!("確保しない操作の一覧にある {name} が Kernel に無い"));
+        }
+    }
+    for name in &operations {
+        // `apply` は他の操作への入口で、確保するかどうかは呼び出す操作で決まる。
+        if name == "apply" {
+            continue;
+        }
+        let quoted = format!("`{name}`");
+        let quiet = QUIET_OPS.contains(&name.as_str());
+        let (home, other, kind) =
+            if quiet { (never_allocate, may_allocate, "確保しない") } else { (may_allocate, never_allocate, "確保しうる") };
+        if !home.contains(&quoted) || other.contains(&quoted) {
+            report.add(MEMORY_MD, 1, format!("操作 {name} は「{kind}操作」の表にだけ載せる"));
+        }
+        let marked = sim.contains(&format!("self.quiet(|k| k.{name}("));
+        let bare = sim.contains(&format!("self.k.{name}("));
+        if quiet && (!marked || bare) {
+            report.add(SIM_RS, 1, format!("確保しない操作 {name} は self.quiet で挟んで呼ぶ (確保を数える印が付く)"));
+        }
+        if !quiet && marked {
+            report.add(SIM_RS, 1, format!("確保しうる操作 {name} を self.quiet で挟まない"));
+        }
+    }
+    let check = repo.text("checks/noalloc/tests/noalloc.rs");
+    let counted = check.matches("assert_eq!(count(), before, ").count();
+    if counted < 2 || !check.contains("static ALLOCATOR: Counting = Counting;") {
+        report.add("checks/noalloc/tests/noalloc.rs", 1, "確保を数える検査が、印の間の確保が 0 であることを確かめていない");
+    }
+    if repo.text("checks/noalloc/src/lib.rs").matches("        note();\n").count() != 2 {
+        report.add("checks/noalloc/src/lib.rs", 1, "確保と再確保の両方を数える");
+    }
+}
+
+const CI_STEPS: [&str; 10] = [
+    "cargo test --locked --manifest-path checks/noalloc/Cargo.toml",
     "cargo run -q --locked -p kome-lint",
     "cargo clippy --workspace --all-targets --locked -- -D warnings",
     "scripts/ci/test.sh",

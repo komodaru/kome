@@ -21,4 +21,4 @@ pub mod host;
 pub mod pages;
 pub mod sim;
 
-pub use sim::{Failure, Summary, drive};
+pub use sim::{Failure, Probe, Summary, drive, drive_probed};
