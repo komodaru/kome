@@ -1,0 +1,5 @@
+# Flux (篩型) で確かめる定義の数 (ファイルごと)。kome-lint の refinements-kept が照合する。
+# 列: ファイル、篩型の仕様 (flux::spec) の数、確かめずに信じる定義 (flux::trusted) の数。
+crates/kome/src/addr.rs	10	0
+crates/kome/src/effect.rs	10	1
+crates/kome/src/id.rs	8	0

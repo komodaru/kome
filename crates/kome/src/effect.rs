@@ -131,31 +131,48 @@ impl TryClone for Effects {
 /// キューに入っている数は呼び出し側が渡す。確保を伴わないので、Kani は上限・予約数・キューの数の
 /// 全ての値について、予約が上限を超えないことを確かめられる (証明 `seats_never_promise_beyond_the_limit`)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(flux, flux::refined_by(promised: int, limit: int))]
+#[cfg_attr(flux, flux::invariant(promised <= limit))]
 pub(crate) struct Seats {
     /// まだ出していないが、出すことを約束した `Effect` の数。
+    #[cfg_attr(flux, flux::field(u32[promised]))]
     promised: u32,
+    #[cfg_attr(flux, flux::field({u32[limit] | promised <= limit}))]
     limit: u32,
 }
 
+/// `u32` を `u64` に広げる。値は変わらない。
+///
+/// Flux は `u64::from` の結果を知らないので、ここだけは確かめずに信じる (`docs/flux.md`)。
+#[cfg_attr(flux, flux::trusted)]
+#[cfg_attr(flux, flux::spec(fn(value: u32) -> u64[value]))]
+fn wide(value: u32) -> u64 {
+    u64::from(value)
+}
+
 impl Seats {
+    #[cfg_attr(flux, flux::spec(fn(limit: u32) -> Seats[0, limit]))]
     pub(crate) const fn new(limit: u32) -> Seats {
         Seats { promised: 0, limit }
     }
 
     /// キューに `queued` 個あるときに使っている席の数。
+    #[cfg_attr(flux, flux::spec(fn(&Seats[@seats], queued: u64) -> u64{used: (queued + seats.promised <= u64::MAX => used == queued + seats.promised) && (queued + seats.promised > u64::MAX => used == u64::MAX)}))]
     fn used(&self, queued: u64) -> u64 {
-        queued.saturating_add(u64::from(self.promised))
+        queued.saturating_add(wide(self.promised))
     }
 
     /// キューに `queued` 個あるとき、あと `count` 個を予約できるか。
+    #[cfg_attr(flux, flux::spec(fn(&Seats[@seats], queued: u64, count: u32) -> Result<(), Error>[queued + seats.promised + count <= seats.limit]))]
     pub(crate) fn room_for(&self, queued: u64, count: u32) -> Result<(), Error> {
-        if self.used(queued).saturating_add(u64::from(count)) > u64::from(self.limit) {
+        if self.used(queued).saturating_add(wide(count)) > wide(self.limit) {
             return Err(Error::Exhausted(Resource::Effects));
         }
         Ok(())
     }
 
     /// `count` 個の席を予約する。
+    #[cfg_attr(flux, flux::spec(fn(self: &strg Seats[@seats], queued: u64, count: u32) -> Result<(), Error>[queued + seats.promised + count <= seats.limit] ensures self: Seats[if queued + seats.promised + count <= seats.limit { seats.promised + count } else { seats.promised }, seats.limit]))]
     pub(crate) fn promise(&mut self, queued: u64, count: u32) -> Result<(), Error> {
         self.room_for(queued, count)?;
         self.promised = self.promised.checked_add(count).ok_or(Error::Broken(Invariant::EffectsKept))?;
@@ -163,21 +180,32 @@ impl Seats {
     }
 
     /// 使わなかった予約を返す。予約した `Effect` を出すときも、その一席をここで返す。
+    #[cfg_attr(flux, flux::spec(fn(self: &strg Seats[@seats], count: u32) -> Result<(), Error>[count <= seats.promised] ensures self: Seats[if count <= seats.promised { seats.promised - count } else { seats.promised }, seats.limit]))]
     pub(crate) fn forgo(&mut self, count: u32) -> Result<(), Error> {
         self.promised = self.promised.checked_sub(count).ok_or(Error::Broken(Invariant::EffectsKept))?;
         Ok(())
     }
 
+    /// Flux が誤りを見つけることを確かめるための、わざと誤った定義。`scripts/ci/flux.sh` だけが有効にする。
+    #[cfg(flux_broken)]
+    #[cfg_attr(flux, flux::spec(fn(&Seats[@seats], count: u32) -> Result<(), Error>[true]))]
+    fn flux_broken_room(&self, count: u32) -> Result<(), Error> {
+        self.room_for(0, count)
+    }
+
+    #[cfg_attr(flux, flux::spec(fn(&Seats[@seats]) -> u32[seats.promised]))]
     pub(crate) const fn promised(&self) -> u32 {
         self.promised
     }
 
+    #[cfg_attr(flux, flux::spec(fn(&Seats[@seats]) -> u32[seats.limit]))]
     pub(crate) const fn limit(&self) -> u32 {
         self.limit
     }
 
+    #[cfg_attr(flux, flux::spec(fn(&Seats[@seats], queued: u64) -> bool[queued + seats.promised <= seats.limit]))]
     pub(crate) fn within_limit(&self, queued: u64) -> bool {
-        self.used(queued) <= u64::from(self.limit)
+        self.used(queued) <= wide(self.limit)
     }
 }
 

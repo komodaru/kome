@@ -12,9 +12,15 @@ description = "複数の OS Personality に共通するライブラリカーネ�
 
 [dev-dependencies]
 
+# Flux (篩型) で確かめる範囲。属性は `cfg_attr(flux, ..)` で書くので、依存は増えない。
+[package.metadata.flux]
+enabled = true
+include = ["src/addr.rs", "def:effect::Seats", "src/id.rs"]
+check-overflow = "strict"
+
 [lints.rust]
 unsafe_code = "forbid"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(flux)", "cfg(flux_broken)"] }
 missing_docs = "deny"
 unused_must_use = "deny"
 

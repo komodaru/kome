@@ -27,6 +27,9 @@
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
+// Flux で確かめるときだけ、標準ライブラリの篩型 (checked_add など) を読み込む。
+#[cfg(flux)]
+extern crate flux_core;
 
 mod addr;
 mod audit;

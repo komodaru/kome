@@ -268,11 +268,15 @@ impl Lineage {
 
 /// 世代を持つ表。
 #[derive(Debug)]
+#[cfg_attr(flux, flux::refined_by(live: int, limit: int))]
+#[cfg_attr(flux, flux::invariant(live <= limit))]
 pub(crate) struct Arena<K: Kind, T> {
     slots: List<Slot<T>>,
     /// 再利用できるスロット。後入れ先出し。容量は常に `slots` の長さ以上を確保してある。
     free: List<u32>,
+    #[cfg_attr(flux, flux::field(u32[live]))]
     live: u32,
+    #[cfg_attr(flux, flux::field({u32[limit] | live <= limit}))]
     limit: u32,
     first_generation: NonZeroU32,
     /// これから作る資源の発行元。
@@ -292,11 +296,13 @@ impl<K: Kind, T: PartialEq> PartialEq for Arena<K, T> {
 impl<K: Kind, T: Eq> Eq for Arena<K, T> {}
 
 impl<K: Kind, T> Arena<K, T> {
+    #[cfg_attr(flux, flux::spec(fn(issuer: InstanceId, limit: u32) -> Arena<K, T>[0, limit]))]
     pub(crate) const fn new(issuer: InstanceId, limit: u32) -> Arena<K, T> {
         Arena::starting_at(issuer, limit, NonZeroU32::MIN)
     }
 
     /// 新しいスロットの最初の世代を指定して作る。世代の使い切りを試験・証明するための入口。
+    #[cfg_attr(flux, flux::spec(fn(issuer: InstanceId, limit: u32, first_generation: NonZeroU32) -> Arena<K, T>[0, limit]))]
     pub(crate) const fn starting_at(issuer: InstanceId, limit: u32, first_generation: NonZeroU32) -> Arena<K, T> {
         Arena { slots: List::new(), free: List::new(), live: 0, limit, first_generation, issuer, kind: PhantomData }
     }
@@ -307,11 +313,13 @@ impl<K: Kind, T> Arena<K, T> {
         self.issuer = issuer;
     }
 
+    #[cfg_attr(flux, flux::spec(fn(&Arena<K, T>[@arena]) -> u32[arena.live]))]
     pub(crate) fn len(&self) -> u32 {
         self.live
     }
 
     /// 次の [`Arena::insert`] が成功することを保証する。
+    #[cfg_attr(flux, flux::spec(fn(self: &mut Arena<K, T>[@arena]) -> Result<(), Error>{ok: ok => arena.live < arena.limit}))]
     pub(crate) fn reserve(&mut self) -> Result<(), Error> {
         if self.live >= self.limit {
             return Err(Error::Exhausted(K::RESOURCE));
@@ -327,9 +335,11 @@ impl<K: Kind, T> Arena<K, T> {
     }
 
     /// 続く `count` 回の [`Arena::insert`] が成功することを保証する。
+    #[cfg_attr(flux, flux::spec(fn(self: &mut Arena<K, T>[@arena], count: u32) -> Result<(), Error>{ok: ok => arena.live + count <= arena.limit}))]
     pub(crate) fn reserve_many(&mut self, count: u32) -> Result<(), Error> {
-        if self.live.checked_add(count).is_none_or(|after| after > self.limit) {
-            return Err(Error::Exhausted(K::RESOURCE));
+        match self.live.checked_add(count) {
+            Some(after) if after <= self.limit => {}
+            Some(_) | None => return Err(Error::Exhausted(K::RESOURCE)),
         }
         let fresh = usize::try_from(count).unwrap_or(usize::MAX).saturating_sub(self.free.len());
         let total = self.slots.len().checked_add(fresh).filter(|total| u32::try_from(*total).is_ok());
@@ -338,6 +348,7 @@ impl<K: Kind, T> Arena<K, T> {
         self.free.reserve_total(total)
     }
 
+    #[cfg_attr(flux, flux::spec(fn(self: &strg Arena<K, T>[@arena], value: T) -> Result<Id<K>, Error>[#ok] ensures self: Arena<K, T>[if ok { arena.live + 1 } else { arena.live }, arena.limit]))]
     pub(crate) fn insert(&mut self, value: T) -> Result<Id<K>, Error> {
         self.reserve()?;
         let id = match self.free.pop() {
@@ -359,6 +370,13 @@ impl<K: Kind, T> Arena<K, T> {
         };
         self.live = self.live.saturating_add(1);
         Ok(id)
+    }
+
+    /// Flux が誤りを見つけることを確かめるための、わざと誤った定義。`scripts/ci/flux.sh` だけが有効にする。
+    #[cfg(flux_broken)]
+    #[cfg_attr(flux, flux::spec(fn(self: &strg Arena<K, T>[@arena], value: T) -> Result<Id<K>, Error> ensures self: Arena<K, T>[arena.live + 1, arena.limit]))]
+    fn flux_broken_insert(&mut self, value: T) -> Result<Id<K>, Error> {
+        self.insert(value)
     }
 
     fn slot(&self, id: Id<K>) -> Option<&Slot<T>> {
@@ -406,6 +424,7 @@ impl<K: Kind, T> Arena<K, T> {
 
     /// 資源を取り除く。スロットの世代を進め、進められなければ退役させる。確保しない。
     #[must_use = "取り除けなかったこと (None) を呼び出し側が扱う"]
+    #[cfg_attr(flux, flux::spec(fn(self: &strg Arena<K, T>[@arena], id: Id<K>) -> Option<T>[#some] ensures self: Arena<K, T>{after: after.limit == arena.limit && after.live <= arena.live && arena.live <= after.live + 1 && (some && arena.live > 0 => after.live == arena.live - 1)}))]
     pub(crate) fn remove(&mut self, id: Id<K>) -> Option<T> {
         let slot = self.slots.get_mut(usize::try_from(id.slot).ok()?)?;
         if slot.generation != id.generation || slot.issuer != id.issuer || !matches!(slot.cell, Entry::Live(_)) {

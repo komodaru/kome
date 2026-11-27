@@ -23,6 +23,11 @@ const PIPES_RS: &str = "crates/kome-testkit/src/pipes.rs";
 const IPC_RS: &str = "crates/kome/src/ipc.rs";
 const OBJECT_RS: &str = "crates/kome/src/object.rs";
 const BACKEND_RS: &str = "crates/kome/src/backend.rs";
+const FLUX_TSV: &str = "docs/flux.tsv";
+const FLUX_SH: &str = "scripts/ci/flux.sh";
+const ADDR_RS: &str = "crates/kome/src/addr.rs";
+const EFFECT_RS: &str = "crates/kome/src/effect.rs";
+const ID_RS: &str = "crates/kome/src/id.rs";
 const SCHED_RS: &str = "crates/kome/src/sched.rs";
 const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
@@ -288,6 +293,25 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("total <= owner.quota.mapped_bytes()", "total <= u64::MAX")),
             |repo| repo.edit("crates/kome/src/process.rs", |text| text.replace("self.limits.holdings().min(quota)", "self.limits.holdings()")),
             |repo| repo.edit(SIM_RS, |text| text.replace("Ok(()) if after > quota => Err(", "Ok(()) if false => Err(")),
+        ],
+    },
+    Rule {
+        id: "refinements-kept",
+        about: "篩型 (Flux) の仕様を減らさず、書いた仕様は必ず確かめ、確かめずに信じる定義を増やさない",
+        check: refinements_kept,
+        breaks: &[
+            |repo| repo.edit(ADDR_RS, |text| text.replacen("    #[cfg_attr(flux, flux::spec(fn(GuestRange[@range], GuestRange[@other]) -> bool[range.start <= other.last && other.start <= range.last]))]\n", "", 1)),
+            |repo| repo.edit(ID_RS, |text| text.replacen("#[cfg_attr(flux, flux::spec(", "#[cfg_attr(flux, flux::trusted)]\n    #[cfg_attr(flux, flux::spec(", 1)),
+            |repo| repo.append("crates/kome/src/time.rs", "#[cfg_attr(flux, flux::spec(fn(a: u64) -> u64[a]))]\nfn same(a: u64) -> u64 { a }"),
+            |repo| repo.append(TIMER_RS, &format!("#[cfg_attr(flux, flux::{}nore)]\nfn unseen() {{}}", "ig")),
+            |repo| repo.edit(KOME_MANIFEST, |text| text.replace("\"def:effect::Seats\", ", "")),
+            |repo| repo.edit(KOME_MANIFEST, |text| text.replace("check-overflow = \"strict\"\n", "")),
+            |repo| repo.edit(KOME_MANIFEST, |text| text.replace("[package.metadata.flux]\nenabled = true", "[package.metadata.flux]\nenabled = false")),
+            |repo| repo.edit(EFFECT_RS, |text| text.replace("    fn flux_broken_room(", "    fn room_twice(")),
+            |repo| repo.edit(FLUX_SH, |text| text.replace("--cfg flux_broken", "")),
+            |repo| repo.edit(FLUX_SH, |text| text.replace("    exit 1\n", "")),
+            |repo| repo.remove(FLUX_TSV),
+            |repo| repo.edit("crates/kome/src/lib.rs", |text| text.replace("#[cfg(flux)]\nextern crate flux_core;", "")),
         ],
     },
     Rule {
@@ -1358,6 +1382,82 @@ fn independent_model(repo: &Repo, report: &mut Report) {
     }
 }
 
+fn refinements_kept(repo: &Repo, report: &mut Report) {
+    if !repo.has(FLUX_TSV) {
+        report.add(FLUX_TSV, 1, "篩型の仕様の一覧が無い");
+    }
+    let listed: Vec<(&str, usize, usize)> = repo
+        .text(FLUX_TSV)
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            Some((columns.next()?, columns.next()?.parse().ok()?, columns.next()?.parse().ok()?))
+        })
+        .collect();
+    let manifest = repo.text(KOME_MANIFEST);
+    let table = manifest.split_once("[package.metadata.flux]\n").map_or("", |(_, rest)| rest.split("\n[").next().unwrap_or(""));
+    for (needed, why) in [
+        ("enabled = true", "Flux が kome を確かめない"),
+        ("check-overflow = \"strict\"", "あふれを確かめないと、Flux は整数の上限を知らず、容量の式を証明できない"),
+    ] {
+        if !table.lines().any(|line| line == needed) {
+            report.add(KOME_MANIFEST, 1, format!("[package.metadata.flux] に `{needed}` が無い: {why}"));
+        }
+    }
+    let include = table.lines().find(|line| line.starts_with("include = ")).unwrap_or("");
+    for (path, text) in repo.under(KOME_SRC, ".rs") {
+        let specs = text.matches("flux::spec(").count();
+        let trusted = text.matches("flux::trusted").count();
+        let (want_specs, want_trusted) =
+            listed.iter().find(|(listed, _, _)| *listed == path).map_or((0, 0), |(_, specs, trusted)| (*specs, *trusted));
+        if specs != want_specs {
+            report.add(path, 1, format!("篩型の仕様が {specs} 個 ({FLUX_TSV} では {want_specs} 個)。減らさない。増やしたら一覧を直す"));
+        }
+        if trusted != want_trusted {
+            report.add(path, 1, format!("確かめずに信じる定義が {trusted} 個 ({FLUX_TSV} では {want_trusted} 個)。増やさない"));
+        }
+        // 無視の指定は、仕様を書いたまま確かめない抜け道になる。
+        let skip = ["flux::", "ig", "nore"].concat();
+        if let Some(at) = text.lines().position(|line| line.contains(&skip)) {
+            report.add(path, at.saturating_add(1), "Flux に無視させない。確かめられない定義は仕様を書かない");
+        }
+        if specs == 0 {
+            continue;
+        }
+        let name = path.strip_prefix(KOME_SRC).unwrap_or(path);
+        let module = name.strip_suffix(".rs").unwrap_or(name);
+        if !include.contains(&format!("\"src/{name}\"")) && !include.contains(&format!("\"def:{module}::")) {
+            report.add(path, 1, format!("篩型の仕様があるが、{KOME_MANIFEST} の include に無いので Flux が確かめない"));
+        }
+        // わざと誤った定義がこのファイルで拒まれることを、flux.sh が確かめる。
+        if text.matches("#[cfg(flux_broken)]\n").count() != 1 || text.matches("fn flux_broken_").count() != 1 {
+            report.add(path, 1, "Flux がこのファイルを確かめていることを示す、わざと誤った定義 (`fn flux_broken_..`) が一つ要る");
+        }
+    }
+    for (path, _, _) in &listed {
+        if !repo.has(path) {
+            report.add(FLUX_TSV, 1, format!("{path} が無い"));
+        }
+    }
+    if !repo.text("crates/kome/src/lib.rs").contains("#[cfg(flux)]\nextern crate flux_core;") {
+        report.add("crates/kome/src/lib.rs", 1, "Flux で確かめるときに flux_core を読み込まないと、checked_add などの結果が分からず仕様が通らない");
+    }
+    let script = repo.text(FLUX_SH);
+    for (needed, why) in [
+        ("RUSTFLAGS=\"-L $sysroot/lib\" cargo flux -p kome\n", "仕様を確かめる"),
+        ("if RUSTFLAGS=\"-L $sysroot/lib --cfg flux_broken\" cargo flux -p kome >\"$log\" 2>&1; then\n", "わざと誤った定義が拒まれることを確かめる"),
+        ("if [ \"$(echo \"$refused\" | sed 's/.*:://' | sort -u)\" != \"$expected\" ]; then\n", "拒まれた定義が、わざと誤った定義とちょうど同じであることを確かめる"),
+    ] {
+        if !script.contains(needed) {
+            report.add(FLUX_SH, 1, format!("Flux のスクリプトが足りない: {why}"));
+        }
+    }
+    if script.matches("    exit 1\n").count() != 2 {
+        report.add(FLUX_SH, 1, "わざと誤った定義が通ったとき、または拒まれた定義が合わないときは失敗させる");
+    }
+}
+
 fn backend_boundary(repo: &Repo, report: &mut Report) {
     let backend = repo.text(BACKEND_RS);
     // 境界は、ホストが呼べる公開の操作と問い合わせだけで書く。状態の中身には触れない。
@@ -1674,7 +1774,7 @@ fn quiet_operations(repo: &Repo, report: &mut Report) {
 }
 
 /// CI が必ず実行するコマンドと、それを置くジョブ。ステップの `run` は、この文字列ちょうどである。
-const CI_RUNS: [(&str, &str); 10] = [
+const CI_RUNS: [(&str, &str); 12] = [
     ("lint", "cargo run -q --locked -p kome-lint"),
     ("lint", "cargo clippy --workspace --all-targets --locked -- -D warnings"),
     ("test", "scripts/ci/test.sh"),
@@ -1685,6 +1785,8 @@ const CI_RUNS: [(&str, &str); 10] = [
     ("miri", "cargo miri test -p kome --locked --lib"),
     ("kani", "scripts/ci/kani.sh"),
     ("tla", "scripts/ci/tla.sh"),
+    ("flux", "scripts/ci/flux-install.sh"),
+    ("flux", "scripts/ci/flux.sh"),
 ];
 /// ワークフロー、ジョブ、ステップに書いてよいキー。実行の条件や殻を変えるキー (`if`、
 /// `continue-on-error`、`shell`、`defaults`、`working-directory`、ステップの `env`) は無い。

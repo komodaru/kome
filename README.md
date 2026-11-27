@@ -24,6 +24,7 @@
 | `docs/memory.md` | メモリ契約: ゲストのメモリの管理と、kome 自身が確保する操作・確保しない操作 |
 | `docs/invariants.toml` | 不変条件の台帳: 検査・試験・証明・モデルとの対応 |
 | `docs/proofs.tsv` | Kani の証明ごとの検証条件と範囲 |
+| `docs/flux.md` | 篩型 (Flux) で確かめている性質と、その入れ方 |
 | `checks/noalloc` | 確保しないと約束した操作が確保しないことを、確保を数えて確かめる |
 | `tla/` | TLA+ のモデル (I/O の寿命、待機と通知の競合、プロセスの終了処理)。遷移の表は実装から生成する |
 | `fuzz/` | libFuzzer の入口 (property test と同じ `kome_testkit::drive`) |
@@ -38,6 +39,7 @@ cargo test --manifest-path checks/noalloc/Cargo.toml       # 確保しないと�
 cargo build -p kome --target wasm32v1-none                 # OS もホストも無いターゲット
 scripts/ci/tla.sh                                          # TLC。正しい設定は違反なし、誤りの変種は反例
 scripts/ci/kani.sh                                         # Kani の証明を一つずつ (検証条件と範囲つき)
+scripts/ci/flux.sh                                         # 篩型 (Flux): 範囲計算と容量の会計を全ての値について
 cargo mutants -p kome --profile mutants   # 変異試験 (週次)
 ```
 
