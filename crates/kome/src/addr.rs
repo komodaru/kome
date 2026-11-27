@@ -220,6 +220,9 @@ mod tests {
         let all = GuestRange::spanning(GuestAddr::new(0), GuestAddr::new(u64::MAX)).unwrap();
         assert_eq!(all.byte_len(), None);
         assert_eq!(GuestRange::spanning(GuestAddr::new(2), GuestAddr::new(1)), None);
+        // 一バイトの範囲は作れる。
+        let one = GuestRange::spanning(GuestAddr::new(2), GuestAddr::new(2)).unwrap();
+        assert_eq!(one.byte_len(), Some(1));
     }
 
     #[test]

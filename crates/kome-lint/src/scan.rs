@@ -17,6 +17,8 @@ pub struct Scan {
     pub pub_fields: Vec<(String, usize)>,
     /// `_` だけのパターンを持つ `match` の腕。
     pub wild_arms: Vec<usize>,
+    /// 終わりの無い範囲 (`a..`)。
+    pub open_ranges: Vec<usize>,
     /// `impl Kernel` の、公開されていて `&mut self` をとるメソッド。
     pub kernel_ops: Vec<(String, usize)>,
     /// メソッド呼び出しの名前。
@@ -235,6 +237,17 @@ impl<'ast> Visit<'ast> for Scan {
             self.string_arms.push((name, text.value()));
         }
         visit::visit_arm(self, node);
+    }
+
+    fn visit_expr_range(&mut self, node: &'ast syn::ExprRange) {
+        if node.start.is_some() && node.end.is_none() {
+            let span = match &node.limits {
+                syn::RangeLimits::HalfOpen(dots) => dots.spans[0],
+                syn::RangeLimits::Closed(dots) => dots.spans[0],
+            };
+            self.open_ranges.push(line_of(span));
+        }
+        visit::visit_expr_range(self, node);
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {

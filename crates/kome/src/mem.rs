@@ -382,12 +382,9 @@ impl Kernel {
         if split && u64::try_from(space.maps.len()).unwrap_or(u64::MAX) >= u64::from(self.limits.mappings()) {
             return Err(Error::Exhausted(Resource::Mappings));
         }
-        let runners = self.runners_of(process);
         let owner = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
         owner.space.maps.reserve(usize::from(split))?;
-        if cut_backed > 0 && runners > 0 {
-            owner.space.limbo.reserve(usize::try_from(cut_backed).map_err(|_| Error::Exhausted(Resource::HostMemory))?)?;
-        }
+        owner.space.limbo.reserve(usize::try_from(cut_backed).map_err(|_| Error::Exhausted(Resource::HostMemory))?)?;
         // 確定。権限が減るなら、先に古い世代の実行を数えて中断を要求する。
         let hold_old = cut_backed > 0 && self.reduce(process)?;
         let mut at = first;
@@ -396,7 +393,7 @@ impl Kernel {
             let maps = &mut owner.space.maps;
             let Some(mapping) = maps.get(at).copied().filter(|mapping| mapping.start <= last) else { break };
             let keep_left = mapping.start < start;
-            let right = last.checked_add(1).filter(|_| mapping.last > last).and_then(|from| mapping.tail_from(from));
+            let right = last.checked_add(1).and_then(|from| mapping.tail_from(from));
             let mut more_maps = false;
             match (keep_left, right) {
                 (false, None) => {
@@ -469,7 +466,7 @@ impl Kernel {
         let head = *space.maps.get(first).ok_or(Error::Broken(Invariant::MemLayout))?;
         let tail = *space.maps.get(end).ok_or(Error::Broken(Invariant::MemLayout))?;
         let middle = if head.start < start { head.tail_from(start) } else { None };
-        let right = if tail.last > last { last.checked_add(1).and_then(|from| tail.tail_from(from)) } else { None };
+        let right = last.checked_add(1).and_then(|from| tail.tail_from(from));
         let extra = usize::from(middle.is_some()).saturating_add(usize::from(right.is_some()));
         // 分割で増えるマッピングの数を、実体ごとに先に確かめる。
         let grown = [middle.and_then(Mapping::backing), right.and_then(Mapping::backing)];
@@ -482,7 +479,7 @@ impl Kernel {
             }
         }
         let count = u64::try_from(space.maps.len().saturating_add(extra)).unwrap_or(u64::MAX);
-        if extra > 0 && count > u64::from(self.limits.mappings()) {
+        if count > u64::from(self.limits.mappings()) {
             return Err(Error::Exhausted(Resource::Mappings));
         }
         let generation = space.generation.checked_add(1).ok_or(Error::Exhausted(Resource::Identifiers))?;
@@ -595,13 +592,6 @@ impl Kernel {
         Ok(self.processes.get(process).ok_or(Error::Stale(Tag::Process))?.space.maps.len())
     }
 
-    /// 実行権を貸しているこのプロセスのスレッドの数。
-    fn runners_of(&self, process: ProcessId) -> usize {
-        self.running
-            .iter()
-            .filter(|lent| self.threads.get(lent.thread).is_some_and(|thread| thread.process == process))
-            .count()
-    }
 
     /// 権限を減らす変更に伴い、いま実行中のこのプロセスのスレッドを「古い世代」と数え、
     /// 中断を要求する。古い世代の実行が残っているかを返す。確保しない。

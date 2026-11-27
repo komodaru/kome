@@ -85,7 +85,10 @@ impl Kernel {
         }
         let mut fired = 0u32;
         while let Some(entry) = self.due.get(0).copied().filter(|entry| entry.at <= to) {
-            self.due.remove(0);
+            // 先頭を外せなければ同じ期限を繰り返すことになるので、内部の障害として止める。
+            if self.due.remove(0).is_none() {
+                return Err(Error::Broken(Invariant::TimeOrder));
+            }
             // 過去の時刻に設定されたタイマは、現在の時刻で通知する。
             self.now = self.now.max(entry.at);
             fired = fired.saturating_add(1);
@@ -141,6 +144,9 @@ impl Kernel {
             let found = self.timers.iter().find(|(_, timer)| timer.process == process).map(|(id, _)| id);
             let Some(timer) = found else { return Ok(()) };
             self.drop_timer(timer).map_err(|_| Error::Broken(Invariant::TimeOrder))?;
+            if self.timers.contains(timer) {
+                return Err(Error::Broken(Invariant::TimeOrder));
+            }
         }
     }
 

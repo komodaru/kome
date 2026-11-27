@@ -1201,3 +1201,487 @@ fn the_tla_wait_table_is_the_kernel() {
     let on_disk = std::fs::read_to_string(path).unwrap();
     assert_eq!(on_disk, table, "tla/WaitTable.tla がカーネルと違う。KOME_UPDATE_GOLDEN=1 で書き直す");
 }
+
+// ---- 検査の文言ごとの壊し方 ----
+
+fn thread_mut(k: &mut Kernel, thread: ThreadId) -> &mut crate::thread::Thread {
+    k.threads.get_mut(thread).unwrap()
+}
+
+fn process_mut(k: &mut Kernel, process: ProcessId) -> &mut crate::process::Process {
+    k.processes.get_mut(process).unwrap()
+}
+
+fn wait_mut(k: &mut Kernel, thread: ThreadId) -> &mut crate::wait::Wait {
+    match &mut thread_mut(k, thread).run {
+        Run::Blocked(wait) => wait,
+        other @ (Run::Ready | Run::Running { .. } | Run::Servicing) => panic!("待機中ではない: {other:?}"),
+    }
+}
+
+fn mapping_mut(k: &mut Kernel, process: ProcessId, at: usize) -> &mut crate::mem::Mapping {
+    process_mut(k, process).space.maps.get_mut(at).unwrap()
+}
+
+/// `world` を一か所だけ壊した状態。
+fn bent(change: impl FnOnce(&mut World)) -> Kernel {
+    let mut w = world();
+    change(&mut w);
+    w.k
+}
+
+/// I/O の応答待ちだけが残った終了済みのプロセス `p` と、生きているプロセス `q`。
+struct Drained {
+    k: Kernel,
+    p: ProcessId,
+    io: IoId,
+    q: ProcessId,
+    thread: ThreadId,
+    object: ObjectId,
+    backing: BackingId,
+    timer: TimerId,
+}
+
+fn drained(change: impl FnOnce(&mut Drained)) -> Kernel {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let io = ok!(k, k.prepare_io(p, IoLinks::NONE));
+    ok!(k, k.issue_io(io));
+    ok!(k, k.exit_process(p, ExitCode::new(3)));
+    assert_eq!(k.process_phase(p), Ok(ProcessPhase::Draining));
+    let (q, _) = process(&mut k);
+    let (thread, _) = thread(&mut k, q);
+    let object = event(&mut k, q);
+    let backing = ok!(k, k.create_backing(q, PAGE));
+    let timer = ok!(k, k.create_timer(q, object));
+    let mut d = Drained { k, p, io, q, thread, object, backing, timer };
+    d.k.audit().unwrap();
+    change(&mut d);
+    d.k
+}
+
+const CODE: ExitCode = ExitCode::new(1);
+
+/// 検査の文言ごとに、その違反だけを起こした状態を作り、検査がその文言で報告することを確かめる。
+/// 同じ文言に、条件の一部分ずつを破る状態を並べる。
+#[test]
+fn audit_names_every_violation_it_can_report() {
+    let cases: Vec<(&'static str, Kernel)> = {
+    let exiting_with_a_runner_nobody_asked_to_stop = {
+            let mut k = kernel();
+            let (p, _) = process(&mut k);
+            thread(&mut k, p);
+            let _lent = ok!(k, k.grant(W0)).unwrap();
+            process_mut(&mut k, p).life = crate::process::Life::Exiting(CODE);
+            k
+        };
+        let exiting_without_threads = {
+            let mut k = kernel();
+            let (p, _) = process(&mut k);
+            process_mut(&mut k, p).life = crate::process::Life::Exiting(CODE);
+            k
+        };
+        vec![
+            ("表の空きスロットと生存数が一致しない", bent(|w| w.k.objects.corrupt_live(w.k.objects.len() + 1))),
+            (
+                "貸し出しが worker の上限を超えている",
+                bent(|w| {
+                    w.k.running.push(crate::kernel::Lent { worker: W1, thread: w.ready }).unwrap();
+                    w.k.running.push(crate::kernel::Lent { worker: WorkerId::new(2), thread: w.blocked }).unwrap();
+                }),
+            ),
+            (
+                "一つの worker が二つの実行権を持っている",
+                bent(|w| w.k.running.push(crate::kernel::Lent { worker: W0, thread: w.ready }).unwrap()),
+            ),
+            (
+                "一つのスレッドに二つの実行権がある",
+                bent(|w| w.k.running.push(crate::kernel::Lent { worker: W1, thread: w.permit.thread() }).unwrap()),
+            ),
+            (
+                "貸し出しの記録とスレッドの状態が一致しない",
+                bent(|w| w.k.running.push(crate::kernel::Lent { worker: W1, thread: w.ready }).unwrap()),
+            ),
+            ("実行中のスレッドに貸し出しの記録が無い", bent(|w| assert!(w.k.running.pop().is_some()))),
+            (
+                "実行中のスレッドが実行待ちの列にある",
+                bent(|w| {
+                    w.k.running.push(crate::kernel::Lent { worker: W1, thread: w.ready }).unwrap();
+                    thread_mut(&mut w.k, w.ready).run = Run::Running { worker: W1, stale: false, interrupted: false };
+                }),
+            ),
+            ("実行可能なスレッドと実行待ちの列が一致しない", bent(|w| assert!(w.k.ready.pop_front().is_some()))),
+            ("終了要求が実行待ちのスレッドに残っている", bent(|w| thread_mut(&mut w.k, w.ready).kill = Some(CODE))),
+            ("実行できないスレッドが実行待ちの列にある", bent(|w| thread_mut(&mut w.k, w.ready).run = Run::Servicing)),
+            ("終了要求が止まっているスレッドに残っている", bent(|w| thread_mut(&mut w.k, w.blocked).kill = Some(CODE))),
+            ("実行待ちの列に、終了したスレッドがある", bent(|w| assert!(w.k.threads.remove(w.ready).is_some()))),
+            (
+                "スレッドが所属プロセスの一覧にちょうど一度現れない",
+                bent(|w| assert!(process_mut(&mut w.k, w.p).threads.pop().is_some())),
+            ),
+            (
+                "プロセスの一覧に、所属していないスレッドがある",
+                bent(|w| {
+                    let (q, _) = process(&mut w.k);
+                    let (other, _) = thread(&mut w.k, q);
+                    process_mut(&mut w.k, w.p).threads.push(other).unwrap();
+                }),
+            ),
+            ("プロセスの参照の記録が整列していない", bent(|w| process_mut(&mut w.k, w.p).objects.corrupt_first_count(0))),
+            ("プロセスの参照の記録が整列していない", bent(|w| process_mut(&mut w.k, w.p).backings.corrupt_first_count(0))),
+            ("プロセスの I/O 数が一致しない", bent(|w| process_mut(&mut w.k, w.p).ios = 0)),
+            ("古い世代の実行の数が一致しない", bent(|w| process_mut(&mut w.k, w.p).stale_runners = 1)),
+            (
+                "古い世代の実行が無いのに保留が残っている",
+                bent(|w| process_mut(&mut w.k, w.p).space.limbo.push(w.backing).unwrap()),
+            ),
+            (
+                "終了中のプロセスに、終了要求の無いスレッドがある",
+                bent(|w| process_mut(&mut w.k, w.p).life = crate::process::Life::Exiting(CODE)),
+            ),
+            ("終了中のプロセスに、終了要求の無いスレッドがある", exiting_with_a_runner_nobody_asked_to_stop),
+            ("終了中のプロセスに、終了要求の無いスレッドがある", exiting_without_threads),
+            (
+                "終了済みのプロセスが資源を持っている",
+                drained(|d| {
+                    process_mut(&mut d.k, d.q).threads.pop();
+                    process_mut(&mut d.k, d.p).threads.push(d.thread).unwrap();
+                    thread_mut(&mut d.k, d.thread).process = d.p;
+                }),
+            ),
+            (
+                "終了済みのプロセスが資源を持っている",
+                drained(|d| process_mut(&mut d.k, d.p).objects.add(d.object, 100).unwrap()),
+            ),
+            (
+                "終了済みのプロセスが資源を持っている",
+                drained(|d| process_mut(&mut d.k, d.p).backings.add(d.backing, 100).unwrap()),
+            ),
+            (
+                "終了済みのプロセスが資源を持っている",
+                drained(|d| {
+                    let reserved =
+                        crate::mem::Mapping { start: PAGE, last: 2 * PAGE - 1, prot: Prot::NONE, source: MapSource::Reserved };
+                    process_mut(&mut d.k, d.p).space.maps.push(reserved).unwrap();
+                }),
+            ),
+            (
+                "終了済みのプロセスに、取消を要求していない I/O がある",
+                drained(|d| d.k.ios.get_mut(d.io).unwrap().state = crate::io::IoState::Issued),
+            ),
+            (
+                "終了済みのプロセスに、取消を要求していない I/O がある",
+                drained(|d| {
+                    d.k.ios.remove(d.io);
+                    process_mut(&mut d.k, d.p).ios = 0;
+                }),
+            ),
+            ("終了済みのプロセスがタイマを持っている", drained(|d| d.k.timers.get_mut(d.timer).unwrap().process = d.p)),
+            (
+                "I/O が、存在しないプロセスまたは資源を指している",
+                bent(|w| {
+                    let gone = ok!(w.k, w.k.create_object(w.p, SignalSpec::new(SignalMode::Keep, 0, 1)));
+                    ok!(w.k, w.k.release_object(w.p, gone));
+                    w.k.ios.get_mut(w.io).unwrap().notify = Some(gone);
+                    w.k.objects.get_mut(w.event).unwrap().pins -= 1;
+                }),
+            ),
+            (
+                "I/O が、存在しないプロセスまたは資源を指している",
+                bent(|w| {
+                    let (gone, _) = process(&mut w.k);
+                    ok!(w.k, w.k.exit_process(gone, CODE));
+                    w.k.ios.get_mut(w.io).unwrap().process = gone;
+                    process_mut(&mut w.k, w.p).ios = 0;
+                }),
+            ),
+            ("資源の保持数が一致しない", bent(|w| w.k.objects.get_mut(w.event).unwrap().handles = 0)),
+            ("資源の固定数が一致しない", bent(|w| w.k.objects.get_mut(w.event).unwrap().pins += 1)),
+            (
+                "参照の無い資源が残っている",
+                bent(|w| {
+                    let lone = event(&mut w.k, w.p);
+                    process_mut(&mut w.k, w.p).objects.sub(lone).unwrap();
+                    w.k.objects.get_mut(lone).unwrap().handles = 0;
+                }),
+            ),
+            ("資源の数が上限を超えている", bent(|w| w.k.objects.get_mut(w.event).unwrap().count = 2)),
+            (
+                "待機が対象の待機列にちょうど一度現れない",
+                bent(|w| assert!(w.k.objects.get_mut(w.event).unwrap().waiters.pop().is_some())),
+            ),
+            ("待機の対象が重複している", bent(|w| wait_mut(&mut w.k, w.blocked).targets.push(w.event).unwrap())),
+            ("成立している待機が登録されたまま残っている", bent(|w| w.k.objects.get_mut(w.event).unwrap().count = 1)),
+            ("待機の期限が期限の列にちょうど一度現れない", bent(|w| w.k.due.get_mut(0).unwrap().seq = 999)),
+            ("期限を過ぎた待機が登録されたまま残っている", bent(|w| w.k.now = at(100))),
+            (
+                "待機列に、この資源を待っていないスレッドがある",
+                bent(|w| w.k.objects.get_mut(w.event).unwrap().waiters.push(w.ready).unwrap()),
+            ),
+            (
+                "期限の列が (時刻, 登録順) の順でない",
+                bent(|w| {
+                    let first = w.k.due.remove(0).unwrap();
+                    w.k.due.push(first).unwrap();
+                }),
+            ),
+            ("期限の列に、対応する待機もタイマも無い項目がある", bent(|w| w.k.due.get_mut(1).unwrap().seq += 1)),
+            (
+                "期限の列の長さが、設定済みのタイマと期限付きの待機の数に一致しない",
+                bent(|w| assert!(w.k.due.pop().is_some())),
+            ),
+            (
+                "タイマが、存在しないプロセスまたは資源を指している",
+                bent(|w| {
+                    let gone = event(&mut w.k, w.p);
+                    ok!(w.k, w.k.release_object(w.p, gone));
+                    w.k.timers.get_mut(w.timer).unwrap().object = gone;
+                    w.k.objects.get_mut(w.event).unwrap().pins -= 1;
+                }),
+            ),
+            (
+                "タイマが、存在しないプロセスまたは資源を指している",
+                bent(|w| {
+                    let (gone, _) = process(&mut w.k);
+                    ok!(w.k, w.k.exit_process(gone, CODE));
+                    w.k.timers.get_mut(w.timer).unwrap().process = gone;
+                }),
+            ),
+            ("マッピングが昇順でない、または重なっている", bent(|w| mapping_mut(&mut w.k, w.p, 1).start = 2 * PAGE - 1)),
+            ("マッピングが粒度に揃っていない", bent(|w| mapping_mut(&mut w.k, w.p, 1).last = 3 * PAGE - 2)),
+            ("マッピングが粒度に揃っていない", bent(|w| mapping_mut(&mut w.k, w.p, 0).start = PAGE + 1)),
+            ("マッピングが幅を超えている", bent(|w| mapping_mut(&mut w.k, w.p, 1).last = 0x1_0000_0fff)),
+            (
+                "予約だけのマッピングが権限を持っている",
+                bent(|w| mapping_mut(&mut w.k, w.p, 0).source = MapSource::Reserved),
+            ),
+            (
+                "マッピングが、解放済みの実体または実体の外を指している",
+                bent(|w| w.k.backings.get_mut(w.backing).unwrap().len = 2 * PAGE - 1),
+            ),
+            (
+                "マッピングが、解放済みの実体または実体の外を指している",
+                bent(|w| assert!(w.k.backings.remove(w.backing).is_some())),
+            ),
+            ("実体の中の位置が揃っていない", bent(|w| mapping_mut(&mut w.k, w.p, 0).source = backed(w.backing, 1))),
+            ("マッピングの数が上限を超えている", bent(|w| w.k.limits = w.k.limits.with_mappings(1))),
+            (
+                "保留が、解放済みの実体を指している",
+                bent(|w| {
+                    let gone = ok!(w.k, w.k.create_backing(w.p, PAGE));
+                    ok!(w.k, w.k.release_backing(w.p, gone));
+                    let running = w.permit.thread();
+                    thread_mut(&mut w.k, running).run = Run::Running { worker: W0, stale: true, interrupted: false };
+                    process_mut(&mut w.k, w.p).stale_runners = 1;
+                    process_mut(&mut w.k, w.p).space.limbo.push(gone).unwrap();
+                }),
+            ),
+            ("実体の参照の数が一致しない", bent(|w| w.k.backings.get_mut(w.backing).unwrap().maps = 1)),
+            ("実体の参照の数が一致しない", bent(|w| w.k.backings.get_mut(w.backing).unwrap().holds = 2)),
+            ("実体の参照の数が一致しない", bent(|w| w.k.backings.get_mut(w.backing).unwrap().limbo = 1)),
+            (
+                "参照の無い実体が残っている",
+                bent(|w| {
+                    let lone = ok!(w.k, w.k.create_backing(w.p, PAGE));
+                    process_mut(&mut w.k, w.p).backings.sub(lone).unwrap();
+                    w.k.backings.get_mut(lone).unwrap().holds = 0;
+                }),
+            ),
+            ("実体の合計バイト数が一致しない", bent(|w| w.k.backing_bytes += 1)),
+            ("実体の合計バイト数が一致しない", bent(|w| w.k.limits = w.k.limits.with_backing_bytes(PAGE))),
+            (
+                "Effect の予約数が、状態から数えた数と一致しない",
+                bent(|w| w.k.effects.corrupt_promised(w.k.effects.promised() - 1)),
+            ),
+            ("Effect のキューと予約が上限を超えている", bent(|w| w.k.effects.corrupt_limit(0))),
+        ]
+    };
+    for (at, (detail, k)) in cases.iter().enumerate() {
+        assert_eq!(k.audit().map_err(|v| v.detail()), Err(*detail), "壊し方 {at}");
+    }
+    // audit.rs が報告しうる文言は、どれも上の壊し方を持つ。文言を足したら壊し方も足す。
+    let stated: alloc::collections::BTreeSet<&str> =
+        include_str!("audit.rs").split('"').skip(1).step_by(2).filter(|text| !text.is_ascii()).collect();
+    let covered: alloc::collections::BTreeSet<&str> = cases.iter().map(|(detail, _)| *detail).collect();
+    assert_eq!(stated, covered);
+}
+
+// ---- 値の読み出し ----
+
+#[test]
+fn accessors_return_what_was_stored() {
+    assert_eq!(kernel_with(Limits::DEFAULT).instance(), InstanceId::new(1));
+    assert_eq!(InstanceId::new(7).get(), 7);
+    assert_eq!(WorkerId::new(5).get(), 5);
+    assert_eq!(ExitCode::new(9).get(), 9);
+    assert_eq!(HostError::new(7).get(), 7);
+}
+
+#[test]
+fn the_census_counts_every_kind_of_resource() {
+    let mut w = world();
+    let (q, _) = process(&mut w.k);
+    ok!(w.k, w.k.create_backing(q, PAGE));
+    let second = ok!(w.k, w.k.create_timer(q, w.event));
+    ok!(w.k, w.k.prepare_io(q, IoLinks::NONE));
+    let census = w.k.census();
+    assert_eq!(census.processes(), 2);
+    assert_eq!(census.threads(), 3);
+    // 待機用の資源 1、プロセスの終了通知 2、スレッドの終了通知 3。
+    assert_eq!(census.objects(), 6);
+    assert_eq!(census.backings(), 2);
+    assert_eq!(census.timers(), 2);
+    assert_eq!(census.ios(), 2);
+    assert_eq!(w.k.thread_count(w.p), Ok(3));
+    assert_eq!(w.k.thread_count(q), Ok(0));
+    ok!(w.k, w.k.drop_timer(second));
+    assert_eq!(w.k.census().timers(), 1);
+}
+
+#[test]
+fn run_counts_follow_grants() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (first, _) = thread(&mut k, p);
+    thread(&mut k, p);
+    thread(&mut k, p);
+    assert_eq!((k.ready_count(), k.running_count()), (3, 0));
+    let _lent = [ok!(k, k.grant(W0)).unwrap(), ok!(k, k.grant(W1)).unwrap()];
+    assert_eq!((k.ready_count(), k.running_count()), (1, 2));
+    assert_eq!(ok!(k, k.suspend_thread(first)), 0);
+    assert_eq!(ok!(k, k.suspend_thread(first)), 1);
+    assert_eq!(k.suspend_count(first), Ok(2));
+}
+
+#[test]
+fn the_map_generation_counts_changes() {
+    let mut w = world();
+    let before = w.k.map_generation(w.p).unwrap();
+    assert_eq!(before.get(), 2);
+    ok!(w.k, w.k.unmap(w.p, range(0x2000, PAGE)));
+    assert_eq!(w.k.map_generation(w.p).unwrap().get(), 3);
+}
+
+// ---- 境界 ----
+
+#[test]
+fn registration_numbers_are_distinct_and_increase() {
+    let mut w = world();
+    let second = ok!(w.k, w.k.create_timer(w.p, w.event));
+    ok!(w.k, w.k.arm_timer(second, at(200), None));
+    let seqs: Vec<u64> = w.k.due.iter().map(|entry| entry.seq).collect();
+    assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
+}
+
+#[test]
+fn a_deadline_record_that_disagrees_is_an_internal_fault() {
+    // 待機の側の期限の記録が、期限の列と食い違っている。
+    let mut w = world();
+    wait_mut(&mut w.k, w.blocked).due = Some((at(100), 999));
+    assert_eq!(w.k.advance(at(150)), Err(Error::Broken(Invariant::TimeOrder)));
+    let mut w = world();
+    wait_mut(&mut w.k, w.blocked).due = Some((at(100), 999));
+    assert_eq!(w.k.terminate_thread(w.blocked, CODE), Err(Error::Broken(Invariant::TimeOrder)));
+    // タイマの側の記録が食い違っている。
+    let mut w = world();
+    w.k.timers.get_mut(w.timer).unwrap().armed.as_mut().unwrap().seq = 999;
+    assert_eq!(w.k.advance(at(250)), Err(Error::Broken(Invariant::TimeOrder)));
+}
+
+#[test]
+fn an_initial_count_may_equal_the_maximum() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let full = ok!(k, k.create_object(p, SignalSpec::new(SignalMode::Consume, 2, 2)));
+    assert_eq!(k.signal_count(full), Ok(2));
+    assert_eq!(k.create_object(p, SignalSpec::new(SignalMode::Consume, 3, 2)), Err(Error::Refused(Refusal::BadSignalSpec)));
+}
+
+#[test]
+fn one_object_as_both_target_and_notify_needs_two_pins() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let object = event(&mut k, p);
+    k.objects.get_mut(object).unwrap().pins = u32::MAX - 1;
+    let before = k.clone();
+    let links = IoLinks::NONE.with_target(object).with_notify(object);
+    assert_eq!(k.prepare_io(p, links), Err(Error::Exhausted(Resource::Pins)));
+    assert!(k == before, "断った操作が状態を変えた");
+}
+
+#[test]
+fn a_mapping_must_end_inside_its_backing() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    // 実体が 2 ページに 1 バイト足りない。
+    let short = ok!(k, k.create_backing(p, 2 * PAGE - 1));
+    assert_eq!(
+        k.map(p, range(0x1000, 2 * PAGE), backed(short, 0), Prot::READ),
+        Err(Error::Refused(Refusal::BeyondBacking))
+    );
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(short, 0), Prot::READ));
+}
+
+#[test]
+fn trimming_a_mapping_needs_no_extra_slot() {
+    let limits = Limits::DEFAULT.with_workers(2).with_mappings(2);
+    for (start, pages) in [(0x1000, 1), (0x2000, 1), (0x1000, 2)] {
+        let mut k = kernel_with(limits);
+        let (p, _) = process(&mut k);
+        let backing = ok!(k, k.create_backing(p, 4 * PAGE));
+        ok!(k, k.map(p, range(0x1000, 2 * PAGE), backed(backing, 0), Prot::READ));
+        ok!(k, k.map(p, range(0x4000, 2 * PAGE), backed(backing, 2 * PAGE), Prot::READ));
+        // 端を削る・全体を外すのは、マッピングの数を増やさない。
+        assert_eq!(ok!(k, k.unmap(p, range(start, pages * PAGE))), pages * PAGE);
+        assert!(k.mapping_count(p).unwrap() <= 2);
+    }
+    // 中をくり抜くと一つ増えるので、上限に当たる。
+    let mut k = kernel_with(limits);
+    let (p, _) = process(&mut k);
+    let backing = ok!(k, k.create_backing(p, 4 * PAGE));
+    ok!(k, k.map(p, range(0x1000, 3 * PAGE), backed(backing, 0), Prot::READ));
+    ok!(k, k.map(p, range(0x5000, PAGE), backed(backing, 3 * PAGE), Prot::READ));
+    assert_eq!(k.unmap(p, range(0x2000, PAGE)), Err(Error::Exhausted(Resource::Mappings)));
+}
+
+#[test]
+fn a_split_may_fill_the_mapping_limit_exactly() {
+    let mut k = kernel_with(Limits::DEFAULT.with_workers(2).with_mappings(3));
+    let (p, _) = process(&mut k);
+    let backing = ok!(k, k.create_backing(p, 3 * PAGE));
+    ok!(k, k.map(p, range(0x1000, 3 * PAGE), backed(backing, 0), Prot::READ));
+    ok!(k, k.protect(p, range(0x2000, PAGE), Prot::NONE));
+    assert_eq!(k.mapping_count(p), Ok(3));
+    // もう一度分けると上限を超える。
+    let mut k = kernel_with(Limits::DEFAULT.with_workers(2).with_mappings(2));
+    let (p, _) = process(&mut k);
+    let backing = ok!(k, k.create_backing(p, 3 * PAGE));
+    ok!(k, k.map(p, range(0x1000, 3 * PAGE), backed(backing, 0), Prot::READ));
+    assert_eq!(k.protect(p, range(0x2000, PAGE), Prot::NONE), Err(Error::Exhausted(Resource::Mappings)));
+}
+
+#[test]
+fn splits_count_every_new_reference_to_the_backing() {
+    // 中の一ページの権限を変えると、同じ実体を指すマッピングが二つ増える。
+    let mut w = world();
+    ok!(w.k, w.k.unmap(w.p, range(0x1000, 2 * PAGE)));
+    let wide = ok!(w.k, w.k.create_backing(w.p, 3 * PAGE));
+    ok!(w.k, w.k.map(w.p, range(0x1000, 3 * PAGE), backed(wide, 0), Prot::READ));
+    w.k.backings.get_mut(wide).unwrap().maps = u32::MAX - 1;
+    assert_eq!(w.k.protect(w.p, range(0x2000, PAGE), Prot::NONE), Err(Error::Exhausted(Resource::Pins)));
+    // 解除でくり抜く場合も、増える前に確かめる。
+    w.k.backings.get_mut(wide).unwrap().maps = u32::MAX;
+    assert_eq!(w.k.unmap(w.p, range(0x2000, PAGE)), Err(Error::Exhausted(Resource::Pins)));
+}
+
+#[test]
+fn finishing_a_process_with_threads_is_an_internal_fault() {
+    let mut w = world();
+    process_mut(&mut w.k, w.p).life = crate::process::Life::Exiting(CODE);
+    assert_eq!(w.k.finish_process(w.p), Err(Error::Broken(Invariant::ProcessTree)));
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    process_mut(&mut k, p).life = crate::process::Life::Exiting(CODE);
+    process_mut(&mut k, p).stale_runners = 1;
+    assert_eq!(k.finish_process(p), Err(Error::Broken(Invariant::ProcessTree)));
+}

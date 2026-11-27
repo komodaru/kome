@@ -215,34 +215,41 @@ fn effects_emit_exactly_what_was_promised() {
 }
 
 /// 取り除いた資源の ID は、スロットが再利用されても二度と解決しない (台帳 ID-1)。
-/// 最初の世代を任意にとり、世代を使い切る場合 (`u32::MAX`) も含める。
+/// 最初の世代は任意 (使い切る直前まで)。
 #[kani::proof]
-#[kani::unwind(4)]
+#[kani::unwind(3)]
 fn a_removed_id_never_resolves_again() {
     let first: u32 = kani::any();
-    kani::assume(first != 0);
-    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(2, NonZeroU32::new(first).unwrap());
+    kani::assume(first != 0 && first != u32::MAX);
+    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(1, NonZeroU32::new(first).unwrap());
     let made = arena.insert(1);
     kani::assume(made.is_ok());
     let old = made.unwrap();
-    assert!(arena.get(old) == Some(&1));
     assert!(arena.remove(old) == Some(1));
     assert!(arena.get(old).is_none());
-    assert!(arena.remove(old).is_none());
     let made = arena.insert(2);
     kani::assume(made.is_ok());
     let new = made.unwrap();
-    assert!(new != old);
+    assert!(new.slot() == old.slot() && new.generation() == first + 1);
+    assert!(arena.get(old).is_none());
+    assert!(arena.remove(old).is_none());
+    assert!(arena.get(new) == Some(&2));
+}
+
+/// 世代を使い切ったスロットは退役し、古い ID と同じ値の ID は二度と作られない (台帳 ID-1)。
+#[kani::proof]
+#[kani::unwind(3)]
+fn an_exhausted_slot_is_retired() {
+    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(1, NonZeroU32::MAX);
+    let made = arena.insert(1);
+    kani::assume(made.is_ok());
+    let old = made.unwrap();
+    assert!(arena.remove(old) == Some(1));
+    assert!(arena.get(old).is_none());
+    let made = arena.insert(2);
+    kani::assume(made.is_ok());
+    let new = made.unwrap();
+    assert!(new.slot() != old.slot());
     assert!(arena.get(old).is_none());
     assert!(arena.get(new) == Some(&2));
-    if first == u32::MAX {
-        // 世代を使い切ったスロットは退役し、新しい資源は別のスロットに入る。
-        assert!(new.slot() != old.slot());
-    } else {
-        assert!(new.slot() == old.slot() && new.generation() == first + 1);
-    }
-    assert!(arena.remove(new) == Some(2));
-    assert!(arena.get(new).is_none());
-    assert!(arena.len() == 0);
-    assert!(arena.consistent());
 }

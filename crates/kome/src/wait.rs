@@ -155,7 +155,7 @@ impl Kernel {
     pub(crate) fn evaluate(&self, targets: &[ObjectId], mode: WaitMode) -> Result<Option<WaitOutcome>, Error> {
         let mut first = None;
         let mut all = !targets.is_empty();
-        for (index, target) in (0u32..).zip(targets) {
+        for (index, target) in (0u32..=u32::MAX).zip(targets) {
             let object = self.objects.get(*target).ok_or(Error::Broken(Invariant::WaitOnce))?;
             if object.count == 0 {
                 all = false;
@@ -234,7 +234,14 @@ impl Kernel {
             let waiter = self.threads.get(thread).ok_or(Error::Broken(Invariant::WaitOnce))?;
             let Run::Blocked(wait) = &waiter.run else { return Err(Error::Broken(Invariant::WaitOnce)) };
             match self.evaluate(wait.targets.as_slice(), wait.mode)? {
-                Some(outcome) => self.finish_wait(thread, outcome)?,
+                Some(outcome) => {
+                    self.finish_wait(thread, outcome)?;
+                    // 確定した待機は待機列から外れている。残っていれば同じ待機を繰り返すので止める。
+                    let listed = self.objects.get(object).is_some_and(|o| o.waiters.iter().any(|w| *w == thread));
+                    if listed {
+                        return Err(Error::Broken(Invariant::WaitOnce));
+                    }
+                }
                 None => at = at.saturating_add(1),
             }
         }

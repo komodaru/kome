@@ -53,6 +53,7 @@ tests = [
 ]
 proofs = [
     "a_removed_id_never_resolves_again",
+    "an_exhausted_slot_is_retired",
 ]
 models = []
 scope = "スロットごとの世代で見分ける。世代を使い切ったスロットは二度と使わない。ゲストに見せるハンドルの番号は Personality が持ち、ここには含まない。"

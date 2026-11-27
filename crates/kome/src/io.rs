@@ -354,8 +354,8 @@ impl Kernel {
         loop {
             let found = self
                 .ios
-                .iter()
-                .find(|(id, io)| io.process == process && id.slot() >= slot)
+                .iter_from(slot)
+                .find(|(_, io)| io.process == process)
                 .map(|(id, io)| (id, io.state));
             let Some((io, state)) = found else { return Ok(()) };
             slot = io.slot().saturating_add(1);

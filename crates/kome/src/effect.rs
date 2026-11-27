@@ -183,6 +183,12 @@ impl Effects {
         self.used() <= u64::from(self.limit)
     }
 
+    /// 上限を書き換える。検査が違反を検出できることを確かめる試験のための入口。
+    #[cfg(test)]
+    pub(crate) fn corrupt_limit(&mut self, limit: u32) {
+        self.limit = limit;
+    }
+
     /// 予約数を書き換える。検査が違反を検出できることを確かめる試験のための入口。
     #[cfg(test)]
     pub(crate) fn corrupt_promised(&mut self, promised: u32) {

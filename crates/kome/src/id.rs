@@ -288,7 +288,13 @@ impl<K: Kind, T> Arena<K, T> {
 
     /// 生きている資源をスロット順に返す。
     pub(crate) fn iter(&self) -> impl Iterator<Item = (Id<K>, &T)> {
-        (0u32..).zip(self.slots.iter()).filter_map(|(slot, entry)| match &entry.cell {
+        self.iter_from(0)
+    }
+
+    /// スロット番号が `first` 以上の生きている資源をスロット順に返す。
+    pub(crate) fn iter_from(&self, first: u32) -> impl Iterator<Item = (Id<K>, &T)> {
+        let skipped = usize::try_from(first).unwrap_or(usize::MAX);
+        (first..=u32::MAX).zip(self.slots.iter().skip(skipped)).filter_map(|(slot, entry)| match &entry.cell {
             Entry::Live(value) => Some((Id { slot, generation: entry.generation, kind: PhantomData }, value)),
             Entry::Free | Entry::Retired => None,
         })
@@ -329,6 +335,38 @@ mod tests {
     use super::*;
 
     type Things = Arena<kind::Object, u32>;
+
+    #[test]
+    fn iteration_can_start_at_a_slot() {
+        let mut arena = Things::new(4);
+        let ids = [10, 20, 30].map(|value| arena.insert(value).unwrap());
+        arena.remove(ids[1]);
+        let from = |first: u32| arena.iter_from(first).map(|(id, value)| (id.slot(), *value)).collect::<Vec<_>>();
+        assert_eq!(from(0), [(0, 10), (2, 30)]);
+        assert_eq!(from(1), [(2, 30)]);
+        assert_eq!(from(2), [(2, 30)]);
+        assert_eq!(from(3), []);
+        assert_eq!(from(u32::MAX), []);
+    }
+
+    #[test]
+    fn arenas_are_equal_only_when_everything_matches() {
+        let build = |limit: u32, value: u32| {
+            let mut arena = Things::new(limit);
+            arena.insert(value).unwrap();
+            arena
+        };
+        assert!(build(4, 1) == build(4, 1));
+        // 中身だけが違う。
+        assert!(build(4, 1) != build(4, 2));
+        // 上限だけが違う。
+        assert!(build(4, 1) != build(5, 1));
+        // 空きスロットの有無だけが違う (生存数と上限は同じ)。
+        let mut reused = build(4, 1);
+        let extra = reused.insert(9).unwrap();
+        reused.remove(extra);
+        assert!(reused != build(4, 1));
+    }
 
     #[test]
     fn stale_id_resolves_nothing_after_reuse() {

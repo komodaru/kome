@@ -169,6 +169,8 @@ mod tests {
         assert_eq!(list.as_slice(), &[1, 2, 3]);
         assert_eq!(list.insert(5, 9, Invariant::TimeOrder), Err(Error::Broken(Invariant::TimeOrder)));
         assert_eq!(list.remove(7), None);
+        // 長さちょうどの位置にも要素は無い。
+        assert_eq!(list.remove(3), None);
         assert_eq!(list.remove_first(|v| *v == 2), Some(2));
         assert_eq!(list.as_slice(), &[1, 3]);
     }

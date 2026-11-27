@@ -125,6 +125,14 @@ impl<K: Kind> Holdings<K> {
         Some(id)
     }
 
+    /// 先頭の参照の数を書き換える。検査が違反を検出できることを確かめる試験のための入口。
+    #[cfg(test)]
+    pub(crate) fn corrupt_first_count(&mut self, count: u32) {
+        if let Some(held) = self.list.get_mut(0) {
+            held.count = count;
+        }
+    }
+
     pub(crate) fn count_of(&self, id: Id<K>) -> u32 {
         self.find(id).ok().and_then(|at| self.list.get(at)).map_or(0, |held| held.count)
     }
@@ -208,6 +216,9 @@ impl Kernel {
                 at = at.saturating_add(1);
             } else {
                 self.exit_thread_now(thread, code)?;
+                if self.threads.contains(thread) {
+                    return Err(Error::Broken(Invariant::ProcessTree));
+                }
             }
         }
         let idle = self
@@ -276,6 +287,30 @@ impl Kernel {
 mod tests {
     use super::*;
     use crate::id::Arena;
+
+    #[test]
+    fn holdings_notice_a_zero_count_and_a_wrong_order() {
+        let mut arena = Arena::<kind::Object, ()>::new(8);
+        let a = arena.insert(()).unwrap();
+        let b = arena.insert(()).unwrap();
+        let mut held = Holdings::new();
+        assert!(held.is_empty() && held.well_formed());
+        held.add(a, 8).unwrap();
+        held.add(b, 8).unwrap();
+        assert!(!held.is_empty() && held.well_formed());
+        let mut zero = held.clone();
+        zero.corrupt_first_count(0);
+        assert!(!zero.well_formed());
+        // 同じ ID が二度並ぶ (昇順は「より小さい」でなければならない)。
+        let mut twice = Holdings::new();
+        twice.list.push(Held { id: a, count: 1 }).unwrap();
+        twice.list.push(Held { id: a, count: 1 }).unwrap();
+        assert!(!twice.well_formed());
+        let mut reversed = Holdings::new();
+        reversed.list.push(Held { id: b, count: 1 }).unwrap();
+        reversed.list.push(Held { id: a, count: 1 }).unwrap();
+        assert!(!reversed.well_formed());
+    }
 
     #[test]
     fn holdings_count_and_stay_sorted() {

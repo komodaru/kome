@@ -101,6 +101,12 @@ pub const RULES: &[Rule] = &[
         breaks: &[|repo| repo.append(KERNEL_RS, "fn kind(value: u8) -> u8 { match value { 0 => 1, _ => 2 } }")],
     },
     Rule {
+        id: "no-open-range",
+        about: "kome は終わりの無い範囲を数え上げない (端で桁あふれして止まる)",
+        check: no_open_range,
+        breaks: &[|repo| repo.append(KERNEL_RS, "fn numbered(items: &[u8]) -> usize { (0u32..).zip(items).count() }")],
+    },
+    Rule {
         id: "escape-comments",
         about: "コメントに書いて実装を省かない",
         check: escape_comments,
@@ -413,6 +419,15 @@ fn no_catch_all(repo: &Repo, report: &mut Report) {
         let Some(found) = scanned(report, path, text, true) else { continue };
         for line in &found.wild_arms {
             report.add(path, *line, "`_` の腕で残りをまとめない。場合を全て書く (増えたときにコンパイルが止まるように)");
+        }
+    }
+}
+
+fn no_open_range(repo: &Repo, report: &mut Report) {
+    for (path, text) in kernel_files(repo) {
+        let Some(found) = scanned(report, path, text, true) else { continue };
+        for line in &found.open_ranges {
+            report.add(path, *line, "`a..` は最後の値の次へ進むときに桁あふれする。`a..=最大値` と書く");
         }
     }
 }
