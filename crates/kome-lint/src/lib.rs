@@ -7,6 +7,7 @@
 //! 型や API で防げる誤りはそちらで防ぐ。ここにあるのは、型では表せない約束である:
 //! 依存を持たないこと、OS の語彙を持ち込まないこと、台帳と実装と検証が食い違わないこと。
 
+mod ran;
 mod rules;
 mod scan;
 #[cfg(test)]
@@ -15,6 +16,7 @@ mod tests;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+pub use ran::check_run;
 pub use rules::RULES;
 
 /// リポジトリの中の、文字として読めるファイル。パスは `/` 区切りの相対パス。

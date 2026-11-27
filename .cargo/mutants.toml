@@ -1,0 +1,5 @@
+# 変異試験 (cargo-mutants) の対象。
+#
+# proofs.rs は Kani だけが読む (cfg(kani))。試験からは見えないので、変異させても何も確かめられない。
+# 証明そのものは scripts/ci/kani.sh が毎回動かす。
+exclude_globs = ["crates/kome/src/proofs.rs"]

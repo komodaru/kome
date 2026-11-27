@@ -65,6 +65,7 @@ impl<T> List<T> {
         Ok(())
     }
 
+    #[must_use = "取り除けなかったこと (None) を呼び出し側が扱う"]
     pub(crate) fn remove(&mut self, at: usize) -> Option<T> {
         if at < self.items.len() { Some(self.items.remove(at)) } else { None }
     }
@@ -98,6 +99,7 @@ impl<T> List<T> {
     }
 
     /// 条件に合う最初の要素を取り除く。
+    #[must_use = "取り除けなかったこと (None) を呼び出し側が扱う"]
     pub(crate) fn remove_first(&mut self, found: impl FnMut(&T) -> bool) -> Option<T> {
         let at = self.position(found)?;
         self.remove(at)
@@ -143,6 +145,7 @@ impl<T> Queue<T> {
         self.items.get(at)
     }
 
+    #[must_use = "取り除けなかったこと (None) を呼び出し側が扱う"]
     pub(crate) fn remove(&mut self, at: usize) -> Option<T> {
         self.items.remove(at)
     }

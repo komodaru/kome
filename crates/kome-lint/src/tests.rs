@@ -67,3 +67,58 @@ fn findings_carry_the_line() {
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].line, before + 2);
 }
+
+/// 必須の試験が全て合格した出力を、リポジトリから組み立てる。
+fn passing_log(repo: &Repo) -> String {
+    let mut names = std::collections::BTreeSet::new();
+    for (_, text) in repo.under("crates/", ".rs") {
+        for (name, attrs) in crate::scan::scan(text, false).unwrap().fns {
+            if attrs.iter().any(|attr| attr == "test") {
+                names.insert(name);
+            }
+        }
+    }
+    for line in repo.text("docs/invariants.toml").lines() {
+        if let Some((_, name)) = line.trim().trim_end_matches(',').trim_matches('"').rsplit_once("::") {
+            names.insert(name.to_owned());
+        }
+    }
+    let mut log: String = names.iter().map(|name| format!("test tests::{name} ... ok\n")).collect();
+    for line in repo.text("docs/compile-fail.tsv").lines().filter(|line| !line.starts_with('#')) {
+        let (path, count) = line.split_once('\t').unwrap();
+        for at in 0..count.parse::<usize>().unwrap() {
+            log.push_str(&format!("test {path} - module (line {at}) - compile fail ... ok\n"));
+        }
+    }
+    log.push_str("test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n");
+    log
+}
+
+#[test]
+fn a_complete_run_is_accepted() {
+    let repo = repo();
+    assert_eq!(crate::check_run(&repo, &passing_log(&repo)), Vec::<String>::new());
+}
+
+#[test]
+fn a_run_that_left_out_any_required_test_is_rejected() {
+    let repo = repo();
+    let log = passing_log(&repo);
+    type Breakage = fn(&str) -> String;
+    let breakages: [(&str, Breakage); 8] = [
+        ("台帳の caught が走っていない", |log| log.replace("test tests::audit_detects_two_permits_for_one_thread ... ok\n", "")),
+        ("台帳の試験 (proptest) が走っていない", |log| log.replace("test tests::every_property_holds_for_any_operation_sequence ... ok\n", "")),
+        ("台帳に無い #[test] が走っていない", |log| log.replace("test tests::rule_names_are_unique ... ok\n", "")),
+        ("無視された", |log| log.replacen("... ok", "... ignored", 1)),
+        ("失敗した", |log| log.replacen("... ok", "... FAILED", 1)),
+        ("無視の数が 0 でない", |log| log.replace(" 0 ignored;", " 1 ignored;")),
+        ("絞り込んで走らせた", |log| log.replace(" 0 filtered out;", " 97 filtered out;")),
+        ("compile_fail が一つ走っていない", |log| log.replacen("- compile fail ... ok\n", "... ok\n", 1)),
+    ];
+    for (what, breakage) in breakages {
+        let broken = breakage(&log);
+        assert_ne!(broken, log, "{what}: 壊し方が何も変えていない");
+        assert!(!crate::check_run(&repo, &broken).is_empty(), "{what}: 検出しなかった");
+    }
+    assert!(!crate::check_run(&repo, "").is_empty(), "何も走っていない出力を合格にした");
+}

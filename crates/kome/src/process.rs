@@ -108,7 +108,7 @@ impl<K: Kind> Holdings<K> {
         let held = self.list.get_mut(at).ok_or(Error::Broken(Invariant::ObjectRefs))?;
         held.count = held.count.checked_sub(1).ok_or(Error::Broken(Invariant::ObjectRefs))?;
         if held.count == 0 {
-            self.list.remove(at);
+            self.list.remove(at).ok_or(Error::Broken(Invariant::ObjectRefs))?;
         }
         Ok(())
     }
@@ -120,7 +120,8 @@ impl<K: Kind> Holdings<K> {
         let id = held.id;
         held.count = held.count.saturating_sub(1);
         if held.count == 0 {
-            self.list.remove(at);
+            // 外せなければ同じ参照を繰り返し取り出すことになるので、ここで止める。
+            self.list.remove(at)?;
         }
         Some(id)
     }
@@ -278,7 +279,7 @@ impl Kernel {
         if !matches!(entry.life, Life::Draining(_)) || entry.ios != 0 {
             return Ok(());
         }
-        self.processes.remove(process);
+        self.processes.remove(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
         self.effects.emit(Effect::ProcessReclaimed { process })
     }
 }

@@ -266,6 +266,7 @@ impl<K: Kind, T> Arena<K, T> {
     }
 
     /// 資源を取り除く。スロットの世代を進め、進められなければ退役させる。確保しない。
+    #[must_use = "取り除けなかったこと (None) を呼び出し側が扱う"]
     pub(crate) fn remove(&mut self, id: Id<K>) -> Option<T> {
         let slot = self.slots.get_mut(usize::try_from(id.slot).ok()?)?;
         if slot.generation != id.generation || !matches!(slot.cell, Entry::Live(_)) {
@@ -340,7 +341,7 @@ mod tests {
     fn iteration_can_start_at_a_slot() {
         let mut arena = Things::new(4);
         let ids = [10, 20, 30].map(|value| arena.insert(value).unwrap());
-        arena.remove(ids[1]);
+        assert!(arena.remove(ids[1]).is_some());
         let from = |first: u32| arena.iter_from(first).map(|(id, value)| (id.slot(), *value)).collect::<Vec<_>>();
         assert_eq!(from(0), [(0, 10), (2, 30)]);
         assert_eq!(from(1), [(2, 30)]);
@@ -364,7 +365,7 @@ mod tests {
         // 空きスロットの有無だけが違う (生存数と上限は同じ)。
         let mut reused = build(4, 1);
         let extra = reused.insert(9).unwrap();
-        reused.remove(extra);
+        assert!(reused.remove(extra).is_some());
         assert!(reused != build(4, 1));
     }
 
@@ -387,7 +388,7 @@ mod tests {
         let mut arena = Things::new(1);
         let id = arena.insert(1).unwrap();
         assert_eq!(arena.insert(2), Err(Error::Exhausted(Resource::Objects)));
-        arena.remove(id);
+        assert!(arena.remove(id).is_some());
         assert!(arena.insert(3).is_ok());
     }
 
@@ -409,7 +410,7 @@ mod tests {
         let a = arena.insert(1).unwrap();
         let b = arena.insert(2).unwrap();
         let c = arena.insert(3).unwrap();
-        arena.remove(b);
+        assert!(arena.remove(b).is_some());
         let seen: Vec<_> = arena.iter().map(|(id, v)| (id, *v)).collect();
         assert_eq!(seen, vec![(a, 1), (c, 3)]);
     }

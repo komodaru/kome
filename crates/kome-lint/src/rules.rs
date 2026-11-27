@@ -128,6 +128,16 @@ pub const RULES: &[Rule] = &[
         ],
     },
     Rule {
+        id: "no-skipped-tests",
+        about: "試験を無視・条件つきで外さない (走らない試験は合格に数えない)",
+        check: no_skipped_tests,
+        breaks: &[
+            |repo| repo.edit("crates/kome/src/tests.rs", |text| text.replacen("#[test]\n", &format!("#[test]\n#[{}]\n", skip_word()), 1)),
+            |repo| repo.edit("crates/kome-testkit/tests/sim.rs", |text| text.replacen("    #[test]\n", &format!("    #[test]\n    #[{} = \"遅い\"]\n", skip_word()), 1)),
+            |repo| repo.edit("crates/kome-testkit/tests/headless.rs", |text| text.replacen("#[test]\n", &format!("#[cfg_attr(miri, {})]\n#[test]\n", skip_word()), 1)),
+        ],
+    },
+    Rule {
         id: "ledger",
         about: "不変条件の台帳・実装・試験・証明・モデルが食い違わない",
         check: ledger,
@@ -164,6 +174,10 @@ pub const RULES: &[Rule] = &[
         check: ci_required,
         breaks: &[
             |repo| repo.edit(CI, |text| text.replace("scripts/ci/kani.sh", "true")),
+            |repo| repo.edit(CI, |text| text.replace("scripts/ci/test.sh", "cargo test -p kome")),
+            |repo| repo.edit(TEST_SH, |text| text.replace("cargo run -q --locked -p kome-lint -- ran \"$log\"\n", "")),
+            |repo| repo.edit(TEST_SH, |text| text.replace("cargo test --workspace --locked", "cargo test -p kome --locked")),
+            |repo| repo.edit(TEST_SH, |text| text.replace("set -euo pipefail", "set -eu")),
             |repo| repo.edit(CI, |text| text.replace("--target wasm32v1-none", "")),
             |repo| repo.edit(CI, |text| text.replacen("timeout-minutes:", "continue-on-error: true\n    timeout-minutes:", 1)),
             |repo| repo.edit(CI, |text| text.replace("cancel-in-progress: false", "cancel-in-progress: true")),
@@ -535,6 +549,28 @@ fn compile_fail_kept(repo: &Repo, report: &mut Report) {
     }
 }
 
+/// 試験を外す属性の名前 (この規則のファイル自身に、その属性の形を書かないために組み立てる)。
+fn skip_word() -> String {
+    ["ig", "nore"].concat()
+}
+
+fn no_skipped_tests(repo: &Repo, report: &mut Report) {
+    let word = skip_word();
+    let files = repo.under("crates/", ".rs").chain(repo.under("fuzz/", ".rs"));
+    for (path, text) in files {
+        for (at, line) in text.lines().enumerate() {
+            // 属性の中にこの語があれば、マクロの中 (proptest!) でも cfg_attr 越しでも見つける。
+            let attribute = line.split_once("#[").or_else(|| line.split_once("#![")).map(|(_, rest)| rest);
+            let skips = attribute.is_some_and(|rest| {
+                rest.split(|c: char| !c.is_alphanumeric() && c != '_').any(|part| part == word)
+            });
+            if skips && !line.trim_start().starts_with("//") {
+                report.add(path, at.saturating_add(1), "試験を外す属性は書かない。走らせられない試験は、走る形に直すか消す");
+            }
+        }
+    }
+}
+
 fn has_fn(repo: &Repo, path: &str, name: &str) -> bool {
     repo.text(path).contains(&format!("fn {name}("))
 }
@@ -733,7 +769,7 @@ fn operations_covered(repo: &Repo, report: &mut Report) {
 const CI_STEPS: [&str; 9] = [
     "cargo run -q --locked -p kome-lint",
     "cargo clippy --workspace --all-targets --locked -- -D warnings",
-    "cargo test --workspace --locked",
+    "scripts/ci/test.sh",
     "cargo build -p kome --locked --target wasm32v1-none",
     "cargo build -p kome --locked --target thumbv7em-none-eabi",
     "cargo miri test -p kome",
@@ -741,6 +777,9 @@ const CI_STEPS: [&str; 9] = [
     "scripts/ci/tla.sh",
     "cancel-in-progress: false",
 ];
+/// 試験のスクリプトが必ず行うこと: 全クレートの試験と、走った試験の照合。
+const TEST_SH: &str = "scripts/ci/test.sh";
+const TEST_STEPS: [&str; 2] = ["cargo test --workspace --locked 2>&1 | tee \"$log\"", "cargo run -q --locked -p kome-lint -- ran \"$log\""];
 const CI_BANNED: [(&str, &str); 6] = [
     ("continue-on-error", "失敗を見逃す設定を置かない"),
     ("|| true", "失敗を握りつぶさない"),
@@ -757,6 +796,14 @@ fn ci_required(repo: &Repo, report: &mut Report) {
         if !runs.iter().any(|line| !line.starts_with('#') && line.contains(step)) {
             report.add(CI, 1, format!("CI が `{step}` を実行していない"));
         }
+    }
+    for step in TEST_STEPS {
+        if !repo.text(TEST_SH).lines().any(|line| line.trim() == step) {
+            report.add(TEST_SH, 1, format!("試験のスクリプトが `{step}` を実行していない"));
+        }
+    }
+    if !repo.text(TEST_SH).lines().any(|line| line.trim() == "set -euo pipefail") {
+        report.add(TEST_SH, 1, "`set -euo pipefail` が無いと、試験の失敗が照合の前で消える");
     }
     let scripts = repo.under(".github/", "").chain(repo.under("scripts/", ""));
     for (path, text) in scripts {

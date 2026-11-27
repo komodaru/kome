@@ -397,7 +397,7 @@ impl Kernel {
             let mut more_maps = false;
             match (keep_left, right) {
                 (false, None) => {
-                    maps.remove(at);
+                    maps.remove(at).ok_or(Error::Broken(Invariant::MemLayout))?;
                 }
                 (true, None) => {
                     let entry = maps.get_mut(at).ok_or(Error::Broken(Invariant::MemLayout))?;
@@ -659,7 +659,7 @@ impl Kernel {
             return Ok(());
         }
         let len = entry.len;
-        self.backings.remove(backing);
+        self.backings.remove(backing).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
         self.backing_bytes = self.backing_bytes.checked_sub(len).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
         self.effects.emit(Effect::BackingReclaimed { backing })
     }

@@ -1,4 +1,6 @@
 //! `cargo run -q -p kome-lint` で、リポジトリ全体を規則に照らして確かめる。
+//!
+//! `cargo run -q -p kome-lint -- ran <cargo test の出力>` は、必須の試験が全て走って合格したことを確かめる。
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -17,6 +19,30 @@ fn main() -> ExitCode {
             println!("{:<20} {}", rule.id, rule.about);
         }
         return ExitCode::SUCCESS;
+    }
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "ran") {
+        let log = match args.get(2).map(std::fs::read_to_string) {
+            Some(Ok(log)) => log,
+            Some(Err(error)) => {
+                eprintln!("試験の出力を読めない: {error}");
+                return ExitCode::FAILURE;
+            }
+            None => {
+                eprintln!("使い方: kome-lint ran <cargo test の出力>");
+                return ExitCode::FAILURE;
+            }
+        };
+        let problems = kome_lint::check_run(&repo, &log);
+        for problem in &problems {
+            eprintln!("{problem}");
+        }
+        if problems.is_empty() {
+            println!("kome-lint ran: 必須の試験は全て走って合格した");
+            return ExitCode::SUCCESS;
+        }
+        eprintln!("kome-lint ran: {} 件の問題", problems.len());
+        return ExitCode::FAILURE;
     }
     let findings = kome_lint::run(&repo);
     for finding in &findings {

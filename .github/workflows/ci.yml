@@ -49,8 +49,8 @@ jobs:
           key: test
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: test
-        run: cargo test --workspace --locked
+      - name: test (必須の試験が走ったことの照合つき)
+        run: scripts/ci/test.sh
       - name: 生成した表が実装と同じ
         run: git diff --exit-code -- tla
 

@@ -170,7 +170,7 @@ impl Kernel {
         if !entry.waiters.is_empty() {
             return Err(Error::Broken(Invariant::WaitOnce));
         }
-        self.objects.remove(object);
+        self.objects.remove(object).ok_or(Error::Broken(Invariant::ObjectRefs))?;
         self.effects.emit(Effect::ObjectReclaimed { object })
     }
 }

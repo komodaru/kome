@@ -1054,7 +1054,7 @@ fn audit_detects_a_freed_backing_still_mapped() {
     w.k.backings.get_mut(w.backing).unwrap().maps = 1;
     assert_eq!(broken(&w.k), Invariant::MemBackingAlive);
     let mut w = world();
-    w.k.backings.remove(w.backing);
+    assert!(w.k.backings.remove(w.backing).is_some());
     assert_eq!(broken(&w.k), Invariant::MemBackingAlive);
 }
 
@@ -1372,7 +1372,7 @@ fn audit_names_every_violation_it_can_report() {
             (
                 "終了済みのプロセスに、取消を要求していない I/O がある",
                 drained(|d| {
-                    d.k.ios.remove(d.io);
+                    assert!(d.k.ios.remove(d.io).is_some());
                     process_mut(&mut d.k, d.p).ios = 0;
                 }),
             ),
