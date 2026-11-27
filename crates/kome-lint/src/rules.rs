@@ -166,7 +166,10 @@ pub const RULES: &[Rule] = &[
         id: "operations-covered",
         about: "Kernel の操作は全て Input にあり、決定的シミュレーションが呼ぶ",
         check: operations_covered,
-        breaks: &[|repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 新しい操作。\n    pub fn fresh_operation(&mut self) {}\n}")],
+        breaks: &[
+            |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 新しい操作。\n    pub fn fresh_operation(&mut self) {}\n}"),
+            |repo| repo.edit("crates/kome-testkit/src/sim.rs", |text| text.replace("snapshot.restore(", "snapshot.instance_of(")),
+        ],
     },
     Rule {
         id: "ci-required",
@@ -757,6 +760,12 @@ fn operations_covered(repo: &Repo, report: &mut Report) {
             if name != "apply" && !calls.contains(name) {
                 report.add(path, *line, format!("操作 {name} を決定的シミュレーション ({sim}) が呼んでいない"));
             }
+        }
+    }
+    // 写しと復元は状態を変えない操作 (`&self`) なので上の一覧に入らない。名指しで求める。
+    for name in ["snapshot", "restore", "peek_effect"] {
+        if !calls.contains(name) {
+            report.add(sim, 1, format!("決定的シミュレーションが {name} を呼んでいない"));
         }
     }
     for variant in &variants {

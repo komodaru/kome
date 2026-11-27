@@ -9,12 +9,12 @@ use crate::mem::Backing;
 use crate::object::Object;
 use crate::process::Process;
 use crate::sched::WorkerId;
-use crate::store::{List, Queue};
+use crate::store::{List, Queue, TryClone, plain_try_clone};
 use crate::thread::Thread;
 use crate::time::Instant;
 use crate::timer::Timer;
 
-/// 実行インスタンスの識別。復元した状態は、復元前とは別の値を持たなければならない。
+/// 実行インスタンスの識別。復元した状態は、復元前とは別の値を持つ ([`Snapshot::restore`])。
 ///
 /// 実行権と完了通知はこの値を持ち、別のインスタンスへ渡すと [`Error::Foreign`] になる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,11 +105,21 @@ pub(crate) struct DueEntry {
     pub(crate) what: Due,
 }
 
+plain_try_clone!(Lent, DueEntry);
+
 /// 共通カーネルの制御状態。
 ///
 /// 一つの実行主体が `&mut` で更新する。同じ初期状態と同じ入力列から、同じ状態と
 /// 同じ [`Effect`] 列を得る。
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// 複製できない。同じ実行インスタンスの状態が二つあると、一つの実行権を両方が受け取れて
+/// しまう。状態を残すには [`Kernel::snapshot`] で写しを取り、別の実行インスタンスとして
+/// [`Snapshot::restore`] で復元する。
+///
+/// ```compile_fail
+/// fn twice(kernel: &kome::Kernel) -> kome::Kernel { kernel.clone() }
+/// ```
+#[derive(Debug, PartialEq, Eq)]
 pub struct Kernel {
     pub(crate) instance: InstanceId,
     pub(crate) limits: Limits,
@@ -188,6 +198,54 @@ impl Kernel {
         }
     }
 
+    /// 状態の写しを取る。確保に失敗したら `Exhausted(HostMemory)` を返す。
+    pub fn snapshot(&self) -> Result<Snapshot, Error> {
+        Ok(Snapshot { state: self.duplicate(self.instance)? })
+    }
+
+    fn duplicate(&self, instance: InstanceId) -> Result<Kernel, Error> {
+        let Kernel {
+            instance: _,
+            limits,
+            now,
+            seq,
+            processes,
+            threads,
+            objects,
+            backings,
+            timers,
+            ios,
+            ready,
+            running,
+            due,
+            effects,
+            backing_bytes,
+        } = self;
+        Ok(Kernel {
+            instance,
+            limits: *limits,
+            now: *now,
+            seq: *seq,
+            processes: processes.try_clone()?,
+            threads: threads.try_clone()?,
+            objects: objects.try_clone()?,
+            backings: backings.try_clone()?,
+            timers: timers.try_clone()?,
+            ios: ios.try_clone()?,
+            ready: ready.try_clone()?,
+            running: running.try_clone()?,
+            due: due.try_clone()?,
+            effects: effects.try_clone()?,
+            backing_bytes: *backing_bytes,
+        })
+    }
+
+    /// 取り出されていない `Effect` の `at` 番目 (0 が次に取り出すもの) を、取り出さずに見る。
+    #[must_use]
+    pub fn peek_effect(&self, at: usize) -> Option<Effect> {
+        self.effects.peek(at)
+    }
+
     /// 外へ求める処理を、出した順に一つ取り出す。
     pub fn poll_effect(&mut self) -> Option<Effect> {
         self.effects.poll()
@@ -204,5 +262,58 @@ impl Kernel {
         let seq = self.seq;
         self.seq = self.seq.saturating_add(1);
         seq
+    }
+}
+
+/// ある時点の [`Kernel`] の写し。比べることと、別の実行インスタンスとして復元することだけができる。
+///
+/// 写しそのものは操作を受け付けない。下の二つは `Kernel` か `Snapshot` かだけが違う。
+///
+/// ```
+/// fn step(kernel: &mut kome::Kernel) -> Option<kome::Effect> { kernel.poll_effect() }
+/// ```
+///
+/// ```compile_fail
+/// fn step(kernel: &mut kome::Snapshot) -> Option<kome::Effect> { kernel.poll_effect() }
+/// ```
+#[derive(Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    state: Kernel,
+}
+
+impl Snapshot {
+    /// 写しを取った実行インスタンス。
+    #[must_use]
+    pub const fn instance(&self) -> InstanceId {
+        self.state.instance
+    }
+
+    /// 写しを、実行インスタンス `instance` の状態として復元する。
+    ///
+    /// 復元した状態は、写しを取った実行インスタンスの実行権と完了通知を
+    /// [`Error::Foreign`] で拒否する。そのため、外に貸しや依頼が残っている写しは復元できない:
+    ///
+    /// - `instance` が写しと同じなら `Refused(SameInstance)`。
+    /// - 実行権を貸したままなら `Refused(PermitsLent)`。
+    /// - 発行済みでホストの応答を待つ I/O があれば `Refused(IoInFlight)`。
+    ///
+    /// 取り出されていない [`Effect`] は復元した状態に残り、復元先のホストが取り出す。
+    pub fn restore(&self, instance: InstanceId) -> Result<Kernel, Error> {
+        if instance == self.state.instance {
+            return Err(Error::Refused(Refusal::SameInstance));
+        }
+        if !self.state.running.is_empty() {
+            return Err(Error::Refused(Refusal::PermitsLent));
+        }
+        if self.state.ios.iter().any(|(_, io)| io.state.awaits_host()) {
+            return Err(Error::Refused(Refusal::IoInFlight));
+        }
+        self.state.duplicate(instance)
+    }
+}
+
+impl PartialEq<Snapshot> for Kernel {
+    fn eq(&self, other: &Snapshot) -> bool {
+        *self == other.state
     }
 }

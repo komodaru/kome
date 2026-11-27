@@ -280,7 +280,7 @@ fn shortage_is_reported_before_the_request_is_accepted() {
     let mut rt = Runtime::new(Limits::DEFAULT.with_ios(1), delayed(10));
     rt.run_to_call();
     let io = rt.start_read(64);
-    let before = rt.k.clone();
+    let before = rt.k.snapshot().unwrap();
     assert_eq!(rt.k.prepare_io(rt.process, IoLinks::NONE), Err(Error::Exhausted(Resource::Ios)));
     assert_eq!(rt.k, before, "受理しなかった要求が状態を変えた");
     assert_eq!(rt.wait_done(Deadline::Never), WaitStart::Blocked);

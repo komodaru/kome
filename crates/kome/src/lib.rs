@@ -17,6 +17,9 @@
 //! - **確保の失敗も返す**: 表はすべて [`Limits`] で上限を持ち、確保は失敗を返せる
 //!   経路だけを使う。ホストのメモリ不足は `Exhausted(Resource::HostMemory)` になる。
 //!   解放・終了・起床の経路は確保しない。
+//! - **状態は一つ**: [`Kernel`] は複製できない。[`Kernel::snapshot`] の写しは、実行権を
+//!   貸しておらず、応答待ちの I/O も無いときに限り、別の実行インスタンスとして復元できる
+//!   ([`Snapshot::restore`])。復元前の実行権と完了通知は [`Error::Foreign`] になる。
 //! - **決定的**: 同じ初期状態と同じ入力列から同じ状態と同じ `Effect` 列を得る。
 //!   走査順は ID のスロット順か登録順で、ハッシュ表は使わない。
 //!
@@ -55,7 +58,7 @@ pub use error::{Error, Invariant, Refusal, Resource};
 pub use id::{BackingId, Id, IoId, Kind, ObjectId, ProcessId, Tag, ThreadId, TimerId, kind};
 pub use input::{Input, Reply};
 pub use io::{CancelReply, HostError, IoLinks, IoOutcome, IoPhase, IoSettled};
-pub use kernel::{Census, InstanceId, Kernel};
+pub use kernel::{Census, InstanceId, Kernel, Snapshot};
 pub use limits::Limits;
 pub use mem::{MapGen, MapSource, MappingInfo, MemFault, MemFaultKind, Span};
 pub use object::{SignalMode, SignalOp, SignalSpec};

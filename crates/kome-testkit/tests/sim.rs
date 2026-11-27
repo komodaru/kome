@@ -69,12 +69,18 @@ fn long_runs_hold_every_property() {
 #[test]
 fn the_generator_reaches_every_effect() {
     let mut seen = BTreeSet::new();
-    let (mut accepted, mut refused) = (0usize, 0usize);
+    let (mut accepted, mut refused, mut restores, mut after_restore) = (0usize, 0usize, 0u64, 0usize);
     for seed in 0..200 {
         let summary = drive(&noise(seed, 3000)).unwrap();
         seen.extend(summary.effects.iter().map(name));
         accepted += summary.accepted;
         refused += summary.refused;
+        restores += summary.restores;
+        if summary.restores > 0 {
+            // 復元した状態が動き続けていること: 乗り換えた後の状態も資源を持っている。
+            after_restore += usize::try_from(summary.kernel.census().threads()).unwrap();
+            assert_eq!(summary.kernel.instance().get(), 99 + summary.restores);
+        }
     }
     let all = [
         "Interrupt",
@@ -88,6 +94,7 @@ fn the_generator_reaches_every_effect() {
         "IoCancel",
     ];
     assert_eq!(seen, BTreeSet::from(all));
+    assert!(restores > 200 && after_restore > 0, "復元 {restores} 回: 写しからの復元にほとんど到達していない");
     assert!(accepted * 2 > refused, "受理 {accepted}、拒否 {refused}: 操作列が拒否ばかりになっている");
 }
 

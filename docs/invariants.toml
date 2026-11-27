@@ -18,11 +18,12 @@ caught = "crates/kome/src/tests.rs::audit_detects_two_permits_for_one_thread"
 tests = [
     "crates/kome/src/tests.rs::a_worker_holds_one_permit_and_a_thread_is_lent_once",
     "crates/kome/src/tests.rs::a_stale_or_foreign_permit_changes_nothing",
+    "crates/kome/src/tests.rs::a_snapshot_is_restored_only_as_another_instance_with_nothing_lent",
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
 ]
 proofs = []
 models = []
-scope = "実行権は複製できない値 (RunPermit) で、返却のときにインスタンスと実行の世代を照合する。worker が実行権を返さずに実行を続けないことは、実行統括 (kome の外) が守る。"
+scope = "実行権は複製できない値 (RunPermit) で、返却のときにインスタンスと実行の世代を照合する。Kernel も複製できず、写し (Snapshot) は実行権を貸していないときに別の実行インスタンスとしてだけ復元できる。worker が実行権を返さずに実行を続けないことは、実行統括 (kome の外) が守る。"
 
 [[invariant]]
 id = "RUN-2"

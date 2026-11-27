@@ -13,7 +13,7 @@ use crate::io::IoOutcome;
 use crate::kernel::InstanceId;
 use crate::process::ExitCode;
 use crate::sched::{RunGen, WorkerId};
-use crate::store::Queue;
+use crate::store::{Queue, TryClone, plain_try_clone};
 use crate::wait::WaitOutcome;
 
 /// kome が外へ求める処理、および外が知るべき確定事項。
@@ -117,8 +117,17 @@ pub enum CompletionKind {
     },
 }
 
+plain_try_clone!(Effect);
+
+impl TryClone for Effects {
+    fn try_clone(&self) -> Result<Effects, Error> {
+        let Effects { queue, promised, limit } = self;
+        Ok(Effects { queue: queue.try_clone()?, promised: *promised, limit: *limit })
+    }
+}
+
 /// `Effect` のキューと予約。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Effects {
     queue: Queue<Effect>,
     /// まだ出していないが、出すことを約束した `Effect` の数。
@@ -165,6 +174,10 @@ impl Effects {
     pub(crate) fn emit(&mut self, effect: Effect) -> Result<(), Error> {
         self.forgo(1)?;
         self.queue.push_back_within(effect).map_err(|_| Error::Broken(Invariant::EffectsKept))
+    }
+
+    pub(crate) fn peek(&self, at: usize) -> Option<Effect> {
+        self.queue.get(at).copied()
     }
 
     pub(crate) fn poll(&mut self) -> Option<Effect> {

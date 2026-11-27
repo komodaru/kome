@@ -14,7 +14,7 @@ use crate::error::{Error, Invariant, Refusal, Resource};
 use crate::id::{ObjectId, Tag, ThreadId};
 use crate::kernel::{Due, Kernel};
 use crate::object::SignalMode;
-use crate::store::List;
+use crate::store::{List, TryClone};
 use crate::thread::Run;
 use crate::time::{Deadline, Instant};
 
@@ -61,7 +61,14 @@ pub enum WaitStart {
     Blocked,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl TryClone for Wait {
+    fn try_clone(&self) -> Result<Wait, Error> {
+        let Wait { targets, mode, due, interruptible } = self;
+        Ok(Wait { targets: targets.try_clone()?, mode: *mode, due: *due, interruptible: *interruptible })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Wait {
     pub(crate) targets: List<ObjectId>,
     pub(crate) mode: WaitMode,

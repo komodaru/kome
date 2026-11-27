@@ -10,8 +10,29 @@ use alloc::vec::Vec;
 
 use crate::error::{Error, Invariant, Resource};
 
+/// 確保の失敗を返す複製。確保済みの容量も写す (写しでも、解放・終了・起床の経路は確保しない)。
+///
+/// 入れ物は `Clone` を実装しない。入れ物を持つ型は、この trait でだけ複製できる。
+pub(crate) trait TryClone: Sized {
+    fn try_clone(&self) -> Result<Self, Error>;
+}
+
+/// 入れ物を持たない型の複製は、値の写しである。
+macro_rules! plain_try_clone {
+    ($($type:ty),* $(,)?) => {$(
+        impl $crate::store::TryClone for $type {
+            fn try_clone(&self) -> Result<Self, $crate::error::Error> {
+                Ok(*self)
+            }
+        }
+    )*};
+}
+pub(crate) use plain_try_clone;
+
+plain_try_clone!(u32);
+
 /// 順序を持つ列。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct List<T> {
     items: Vec<T>,
 }
@@ -106,8 +127,19 @@ impl<T> List<T> {
     }
 }
 
+impl<T: TryClone> TryClone for List<T> {
+    fn try_clone(&self) -> Result<List<T>, Error> {
+        let mut copy = List::new();
+        copy.reserve(self.items.capacity())?;
+        for item in &self.items {
+            copy.push_within(item.try_clone()?).map_err(|_| Error::Exhausted(Resource::HostMemory))?;
+        }
+        Ok(copy)
+    }
+}
+
 /// 先入れ先出しの列。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Queue<T> {
     items: VecDeque<T>,
 }
@@ -156,6 +188,17 @@ impl<T> Queue<T> {
 
     pub(crate) fn position(&self, found: impl FnMut(&T) -> bool) -> Option<usize> {
         self.items.iter().position(found)
+    }
+}
+
+impl<T: TryClone> TryClone for Queue<T> {
+    fn try_clone(&self) -> Result<Queue<T>, Error> {
+        let mut copy = Queue::new();
+        copy.reserve_total(self.items.capacity())?;
+        for item in &self.items {
+            copy.push_back_within(item.try_clone()?).map_err(|_| Error::Exhausted(Resource::HostMemory))?;
+        }
+        Ok(copy)
     }
 }
 

@@ -60,6 +60,8 @@ pub struct Summary {
     pub effects: Vec<Effect>,
     /// 最後の状態。
     pub kernel: Kernel,
+    /// 写しから別の実行インスタンスとして復元し、そちらへ乗り換えた回数。
+    pub restores: u64,
 }
 
 struct Reader<'a> {
@@ -157,6 +159,8 @@ struct Sim {
     effects: Vec<Effect>,
     accepted: usize,
     refused: usize,
+    /// 復元した回数。復元のたびに新しい実行インスタンスの識別を作る。
+    restores: u64,
 }
 
 fn fresh<T: Ord + Copy + Debug>(gone: &BTreeSet<T>, id: T) -> Result<(), String> {
@@ -204,6 +208,7 @@ impl Sim {
             effects: Vec::new(),
             accepted: 0,
             refused: 0,
+            restores: 0,
         })
     }
 
@@ -325,13 +330,11 @@ impl Sim {
 
     /// 操作の前に `seen` 個あったキューの、それより後ろを監視へ渡す。キューは取り出さない。
     fn observe(&mut self, seen: usize) -> Result<(), String> {
-        let mut peek = self.k.clone();
-        for _ in 0..seen {
-            peek.poll_effect();
-        }
-        while let Some(effect) = peek.poll_effect() {
+        let mut at = seen;
+        while let Some(effect) = self.k.peek_effect(at) {
             self.on_effect(effect)?;
             self.effects.push(effect);
+            at = at.saturating_add(1);
         }
         Ok(())
     }
@@ -806,13 +809,44 @@ impl Sim {
                     Err(error) => Outcome::Refused(error),
                 }
             }
+            51 => {
+                // 写しを取り、別の実行インスタンスとして復元して、以後はそちらを動かす。
+                if r.below(4) != 0 {
+                    return Ok(Outcome::Skipped);
+                }
+                let snapshot = self.k.snapshot().map_err(|error| format!("写しを取れない: {error:?}"))?;
+                if self.k != snapshot {
+                    return Err("写しが元の状態と違う".to_owned());
+                }
+                if snapshot.restore(self.k.instance()).err() != Some(Error::Refused(Refusal::SameInstance)) {
+                    return Err("同じ実行インスタンスとして復元できた".to_owned());
+                }
+                let quiet = self.held.is_empty() && self.in_flight.is_empty();
+                let next = InstanceId::new(self.restores.saturating_add(100));
+                match snapshot.restore(next) {
+                    Ok(restored) if quiet => {
+                        if restored.instance() != next || restored.census() != self.k.census() {
+                            return Err("復元した状態が写しと違う".to_owned());
+                        }
+                        self.k = restored;
+                        self.restores = self.restores.saturating_add(1);
+                        Outcome::Accepted
+                    }
+                    Ok(_) => return Err("実行権か I/O が外に残っている写しを復元できた".to_owned()),
+                    Err(Error::Refused(Refusal::PermitsLent)) if !self.held.is_empty() => Outcome::Skipped,
+                    Err(Error::Refused(Refusal::IoInFlight)) if self.held.is_empty() && !self.in_flight.is_empty() => {
+                        Outcome::Skipped
+                    }
+                    Err(error) => return Err(format!("復元の拒否が状況と合わない: {error:?}")),
+                }
+            }
             _ => Outcome::Skipped,
         })
     }
 
     fn step(&mut self, r: &mut Reader<'_>) -> Result<(), String> {
         let code = r.byte();
-        let before = self.k.clone();
+        let before = self.k.snapshot().map_err(|error| format!("写しを取れない: {error:?}"))?;
         let seen = self.k.pending_effects();
         match self.op(code & 0x3f, r)? {
             Outcome::Accepted => self.accepted = self.accepted.saturating_add(1),
@@ -847,5 +881,5 @@ pub fn drive(bytes: &[u8]) -> Result<Summary, Failure> {
         sim.step(&mut reader).map_err(|message| Failure { step: steps, message })?;
         steps = steps.saturating_add(1);
     }
-    Ok(Summary { steps, accepted: sim.accepted, refused: sim.refused, effects: sim.effects, kernel: sim.k })
+    Ok(Summary { steps, accepted: sim.accepted, refused: sim.refused, effects: sim.effects, kernel: sim.k, restores: sim.restores })
 }

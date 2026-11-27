@@ -191,24 +191,126 @@ fn a_stale_or_foreign_permit_changes_nothing() {
     let mut k = kernel();
     let (p, _) = process(&mut k);
     let (_t, _) = thread(&mut k, p);
-    let first = ok!(k, k.grant(W0)).unwrap();
-    // 同じ貸し出しを覚えている別の状態 (復元前の状態に相当)。
-    let mut twin = k.clone();
+    // 同じ識別を名乗る別の状態 (識別を一意に選ぶ約束を、呼び出し側が破った場合)。
+    let mut twin = kernel();
+    assert_eq!(twin.instance(), k.instance());
+    let (tp, _) = process(&mut twin);
+    let _ = thread(&mut twin, tp);
+    let first = ok!(twin, twin.grant(W0)).unwrap();
+    assert_eq!(ok!(twin, twin.relinquish(first, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+    let second = ok!(twin, twin.grant(W0)).unwrap();
+    // k が貸していないときに届いた実行権。
+    let before = k.snapshot().unwrap();
+    let idle = ok!(twin, twin.relinquish(second, Stop::Preempted, Budget::new(1)));
+    assert_eq!(idle, ThreadFate::Ready);
+    let third = ok!(twin, twin.grant(W0)).unwrap();
+    assert_eq!(k.relinquish(third, Stop::Trapped, Budget::new(1)), Err(Error::Refused(Refusal::StalePermit)));
+    assert_eq!(k, before);
+    // k は 1 回目の実行を貸しているので、4 回目の実行の実行権は古い。
+    let mine = ok!(k, k.grant(W0)).unwrap();
+    let fourth = {
+        let again = ok!(twin, twin.grant(W1));
+        assert_eq!(again, None, "実行中のスレッドをもう一度貸した");
+        let mut late = kernel();
+        let (lp, _) = process(&mut late);
+        let _ = thread(&mut late, lp);
+        for _ in 0..3 {
+            let permit = ok!(late, late.grant(W0)).unwrap();
+            assert_eq!(ok!(late, late.relinquish(permit, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
+        }
+        ok!(late, late.grant(W0)).unwrap()
+    };
+    let before = k.snapshot().unwrap();
+    assert_eq!(k.relinquish(fourth, Stop::Trapped, Budget::new(1)), Err(Error::Refused(Refusal::StalePermit)));
+    assert_eq!(k, before);
+    // 別の worker が同じ回の実行権を名乗っても受け取らない。
+    let other_worker = {
+        let mut late = kernel();
+        let (lp, _) = process(&mut late);
+        let _ = thread(&mut late, lp);
+        ok!(late, late.grant(W1)).unwrap()
+    };
+    assert_eq!(k.relinquish(other_worker, Stop::Trapped, Budget::new(1)), Err(Error::Refused(Refusal::StalePermit)));
+    assert_eq!(k, before);
     let mut other = Kernel::new(InstanceId::new(2), Limits::DEFAULT).unwrap();
-    assert_eq!(ok!(k, k.relinquish(first, Stop::Preempted, Budget::new(1))), ThreadFate::Ready);
-    let second = ok!(k, k.grant(W0)).unwrap();
-    let before = twin.clone();
-    // twin は 1 回目の実行を貸したままなので、2 回目の実行権は古い。
-    assert_eq!(twin.relinquish(second, Stop::Trapped, Budget::new(1)), Err(Error::Refused(Refusal::StalePermit)));
-    assert_eq!(twin, before);
-    let third = twin.grant(W1);
-    assert_eq!(third, Ok(None));
     let (op, _) = process(&mut other);
     let _ = thread(&mut other, op);
     let foreign = other.grant(W0).unwrap().unwrap();
-    let before = k.clone();
     assert_eq!(k.relinquish(foreign, Stop::Trapped, Budget::new(1)), Err(Error::Foreign));
     assert_eq!(k, before);
+    assert_eq!(ok!(k, k.relinquish(mine, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+}
+
+#[test]
+fn a_snapshot_is_restored_only_as_another_instance_with_nothing_lent() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    let quiet = k.snapshot().unwrap();
+    assert_eq!(quiet.instance(), k.instance());
+    assert_eq!(quiet.restore(k.instance()).err(), Some(Error::Refused(Refusal::SameInstance)));
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    let lent = k.snapshot().unwrap();
+    assert_eq!(lent.restore(InstanceId::new(7)).err(), Some(Error::Refused(Refusal::PermitsLent)));
+    // 復元した状態は、元の実行インスタンスの実行権を受け取らない。
+    let mut restored = quiet.restore(InstanceId::new(7)).unwrap();
+    assert_eq!(restored.instance(), InstanceId::new(7));
+    let before = restored.snapshot().unwrap();
+    assert_eq!(restored.relinquish(permit, Stop::Trapped, Budget::new(1)), Err(Error::Foreign));
+    assert_eq!(restored, before);
+    // 発行済みの I/O があると復元できない。完了通知は元の実行インスタンス宛てだからである。
+    let own = ok!(restored, restored.grant(W0)).unwrap();
+    assert_eq!(own.thread(), t);
+    assert_eq!(ok!(restored, restored.relinquish(own, Stop::Trapped, Budget::new(1))), ThreadFate::Servicing);
+    let io = ok!(restored, restored.prepare_io(p, IoLinks::NONE));
+    let prepared = restored.snapshot().unwrap();
+    assert!(prepared.restore(InstanceId::new(8)).is_ok());
+    ok!(restored, restored.issue_io(io));
+    let issued = restored.snapshot().unwrap();
+    assert_eq!(issued.restore(InstanceId::new(8)).err(), Some(Error::Refused(Refusal::IoInFlight)));
+    ok!(restored, restored.cancel_io(io));
+    let cancelling = restored.snapshot().unwrap();
+    assert_eq!(cancelling.restore(InstanceId::new(8)).err(), Some(Error::Refused(Refusal::IoInFlight)));
+    let done = Completion::new(restored.instance(), CompletionKind::Io { io, outcome: IoOutcome::Cancelled { transferred: 0 } });
+    ok!(restored, restored.complete(done));
+    let settled = restored.snapshot().unwrap();
+    let mut third = settled.restore(InstanceId::new(8)).unwrap();
+    assert_eq!(third.complete(done), Err(Error::Foreign));
+    assert!(third.audit().is_ok());
+}
+
+#[test]
+fn a_restored_state_behaves_like_the_original() {
+    // 同じ操作を、元の状態と復元した状態に与える。返答も Effect も状態も同じになる
+    // (確保済みの容量も写るので、復元した状態でも実行権の貸し出しと Effect の発行が通る)。
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (_t, _) = thread(&mut k, p);
+    let object = ok!(k, k.create_object(p, SignalSpec::new(SignalMode::Keep, 0, 1)));
+    let snapshot = k.snapshot().unwrap();
+    let mut restored = snapshot.restore(InstanceId::new(9)).unwrap();
+    for kernel in [&mut k, &mut restored] {
+        let permit = kernel.grant(W0).unwrap().unwrap();
+        assert_eq!(kernel.relinquish(permit, Stop::Trapped, Budget::new(5)), Ok(ThreadFate::Servicing));
+        let (q, _) = process(kernel);
+        let _ = thread(kernel, q);
+        assert!(kernel.signal(object, SignalOp::Set(1)).is_ok());
+        assert!(kernel.exit_process(p, ExitCode::new(3)).is_ok());
+        assert!(kernel.audit().is_ok());
+    }
+    assert_eq!(k.census(), restored.census());
+    assert_eq!(k.pending_effects(), restored.pending_effects());
+    assert!(k.pending_effects() > 0);
+    for at in 0..k.pending_effects() {
+        assert_eq!(k.peek_effect(at), restored.peek_effect(at));
+    }
+    assert_eq!(k.peek_effect(k.pending_effects()), None);
+    while let Some(effect) = k.poll_effect() {
+        assert_eq!(restored.poll_effect(), Some(effect));
+    }
+    // 実行インスタンスの識別だけが違う。
+    assert_ne!(k, restored);
+    assert_eq!(restored.snapshot().unwrap().restore(k.instance()).unwrap(), k);
 }
 
 #[test]
@@ -339,7 +441,7 @@ fn wait_validates_before_changing_anything() {
         Err(Error::Refused(Refusal::NotServicing))
     );
     assert_eq!(trap(&mut k, W0), t);
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     let refused = [
         (vec![a, a], Error::Refused(Refusal::DuplicateTarget)),
         (vec![a, b, c], Error::Exhausted(Resource::WaitTargets)),
@@ -570,17 +672,17 @@ fn a_second_or_late_or_foreign_completion_changes_nothing() {
     let mut k = kernel();
     let (_p, _t, _done, io) = issued_io(&mut k);
     let foreign = Completion::new(InstanceId::new(99), CompletionKind::Io { io, outcome: DONE });
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     assert_eq!(k.complete(foreign), Err(Error::Foreign));
     assert_eq!(k, before);
     ok!(k, k.complete(completion(&k, io, DONE)));
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     let again = completion(&k, io, IoOutcome::Failed { error: HostError::new(5), transferred: 0 });
     assert_eq!(k.complete(again), Err(Error::Refused(Refusal::IoSettled)), "終端済みの I/O が再度終端した");
     assert_eq!(k, before);
     assert_eq!(k.io_outcome(io), Ok(Some(DONE)));
     ok!(k, k.release_io(io));
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     assert_eq!(k.complete(completion(&k, io, DONE)), Err(Error::Stale(Tag::Io)));
     assert_eq!(k, before);
 }
@@ -661,7 +763,7 @@ fn a_full_effect_queue_refuses_before_accepting() {
     let (p, _) = process(&mut k);
     let (t, _) = thread(&mut k, p);
     let io = ok!(k, k.prepare_io(p, IoLinks::NONE));
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     assert_eq!(k.prepare_io(p, IoLinks::NONE), Err(Error::Exhausted(Resource::Effects)));
     assert_eq!(k.create_object(p, SignalSpec::new(SignalMode::Keep, 0, 1)), Err(Error::Exhausted(Resource::Effects)));
     assert_eq!(k.grant(W0), Err(Error::Exhausted(Resource::Effects)), "中断の席が無いのに実行権を貸した");
@@ -717,7 +819,7 @@ fn map_refuses_bad_placements_without_changing_state() {
     let (p, _) = process(&mut k);
     let b = ok!(k, k.create_backing(p, 2 * PAGE));
     ok!(k, k.map(p, range(0x2000, 2 * PAGE), backed(b, 0), Prot::READ));
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     let rw = Prot::READ_WRITE;
     let refused = [
         (range(0x3000, PAGE), MapSource::Reserved, Refusal::Overlap),
@@ -757,7 +859,7 @@ fn unmap_splits_and_keeps_offsets() {
     assert_eq!(ok!(k, k.unmap(p, range(0x11000, 4 * PAGE))), 2 * PAGE);
     assert_eq!(read(&k, p, 0x10000, 0x10000).unwrap().bytes(), PAGE);
     assert_eq!(read(&k, p, 0x15000, 1).unwrap().offset().get(), 5 * PAGE);
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     assert_eq!(k.unmap(p, range(0x40000, PAGE)), Ok(0));
     assert_eq!(k, before, "何も外さない unmap が状態を変えた");
     assert_eq!(ok!(k, k.unmap(p, range(0, 0x1_0000_0000))), 4 * PAGE);
@@ -798,7 +900,7 @@ fn protect_needs_full_coverage_and_splits_at_both_ends() {
     ok!(k, k.map(p, range(0x10000, 4 * PAGE), backed(b, 0), Prot::READ_WRITE));
     ok!(k, k.map(p, range(0x14000, PAGE), backed(b, 4 * PAGE), Prot::READ_WRITE));
     ok!(k, k.map(p, range(0x16000, PAGE), MapSource::Reserved, Prot::NONE));
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     assert_eq!(k.protect(p, range(0x14000, 2 * PAGE), Prot::READ), Err(Error::Refused(Refusal::NotMapped)));
     assert_eq!(k.protect(p, range(0xf000, 2 * PAGE), Prot::READ), Err(Error::Refused(Refusal::NotMapped)));
     assert_eq!(k.protect(p, range(0x16000, PAGE), Prot::READ), Err(Error::Refused(Refusal::NotBacked)));
@@ -916,7 +1018,7 @@ fn limits_are_refusals() {
     let (_t, _) = thread(&mut k, p);
     assert_eq!(k.create_thread(p, Start::Ready), Err(Error::Exhausted(Resource::Threads)));
     let e = event(&mut k, p);
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     assert_eq!(k.create_object(p, SignalSpec::new(SignalMode::Keep, 0, 1)), Err(Error::Exhausted(Resource::Holdings)));
     let _timer = ok!(k, k.create_timer(p, e));
     assert_eq!(k.create_timer(p, e), Err(Error::Exhausted(Resource::Timers)));
@@ -1603,7 +1705,7 @@ fn one_object_as_both_target_and_notify_needs_two_pins() {
     let (p, _) = process(&mut k);
     let object = event(&mut k, p);
     k.objects.get_mut(object).unwrap().pins = u32::MAX - 1;
-    let before = k.clone();
+    let before = k.snapshot().unwrap();
     let links = IoLinks::NONE.with_target(object).with_notify(object);
     assert_eq!(k.prepare_io(p, links), Err(Error::Exhausted(Resource::Pins)));
     assert!(k == before, "断った操作が状態を変えた");

@@ -12,6 +12,7 @@ use crate::error::{Error, Invariant, Refusal};
 use crate::id::{ObjectId, ProcessId, Tag, TimerId};
 use crate::kernel::{Due, DueEntry, Kernel};
 use crate::process::Life;
+use crate::store::plain_try_clone;
 use crate::time::{Duration, Instant};
 use crate::wait::WaitOutcome;
 
@@ -21,6 +22,8 @@ pub(crate) struct Armed {
     pub(crate) seq: u64,
     pub(crate) period: Option<Duration>,
 }
+
+plain_try_clone!(Timer);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Timer {

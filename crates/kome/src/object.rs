@@ -13,7 +13,7 @@ use crate::error::{Error, Invariant, Refusal, Resource};
 use crate::id::{ObjectId, ProcessId, Tag, ThreadId};
 use crate::kernel::Kernel;
 use crate::process::Life;
-use crate::store::List;
+use crate::store::{List, TryClone};
 
 /// 待機が成立したときの扱い。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +49,21 @@ pub enum SignalOp {
     Set(u64),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl TryClone for Object {
+    fn try_clone(&self) -> Result<Object, Error> {
+        let Object { mode, count, max, handles, pins, waiters } = self;
+        Ok(Object {
+            mode: *mode,
+            count: *count,
+            max: *max,
+            handles: *handles,
+            pins: *pins,
+            waiters: waiters.try_clone()?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Object {
     pub(crate) mode: SignalMode,
     pub(crate) count: u64,

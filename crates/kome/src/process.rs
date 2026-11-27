@@ -14,7 +14,7 @@ use crate::id::{Id, Kind, ObjectId, ProcessId, Tag, ThreadId, kind};
 use crate::kernel::Kernel;
 use crate::mem::Space;
 use crate::object::{Object, SignalMode, SignalSpec};
-use crate::store::List;
+use crate::store::{List, TryClone};
 use crate::thread::Run;
 
 /// 終了コード。意味は Personality が決める。
@@ -64,8 +64,20 @@ struct Held<K: Kind> {
     count: u32,
 }
 
+impl<K: Kind> TryClone for Held<K> {
+    fn try_clone(&self) -> Result<Held<K>, Error> {
+        Ok(Held { id: self.id, count: self.count })
+    }
+}
+
+impl<K: Kind> TryClone for Holdings<K> {
+    fn try_clone(&self) -> Result<Holdings<K>, Error> {
+        Ok(Holdings { list: self.list.try_clone()? })
+    }
+}
+
 /// 一つのプロセスが持つ参照。ID の昇順。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Holdings<K: Kind> {
     list: List<Held<K>>,
 }
@@ -152,7 +164,23 @@ impl<K: Kind> Holdings<K> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl TryClone for Process {
+    fn try_clone(&self) -> Result<Process, Error> {
+        let Process { life, exit_signal, threads, objects, backings, space, ios, stale_runners } = self;
+        Ok(Process {
+            life: *life,
+            exit_signal: *exit_signal,
+            threads: threads.try_clone()?,
+            objects: objects.try_clone()?,
+            backings: backings.try_clone()?,
+            space: space.try_clone()?,
+            ios: *ios,
+            stale_runners: *stale_runners,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Process {
     pub(crate) life: Life,
     pub(crate) exit_signal: ObjectId,
@@ -299,7 +327,7 @@ mod tests {
         held.add(a, 8).unwrap();
         held.add(b, 8).unwrap();
         assert!(!held.is_empty() && held.well_formed());
-        let mut zero = held.clone();
+        let mut zero = held.try_clone().unwrap();
         zero.corrupt_first_count(0);
         assert!(!zero.well_formed());
         // 同じ ID が二度並ぶ (昇順は「より小さい」でなければならない)。

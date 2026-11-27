@@ -31,7 +31,7 @@ use crate::error::{Error, Invariant, Refusal, Resource};
 use crate::id::{BackingId, ProcessId, Tag};
 use crate::kernel::Kernel;
 use crate::process::Life;
-use crate::store::List;
+use crate::store::{List, TryClone, plain_try_clone};
 use crate::thread::Run;
 
 /// アドレス空間の世代。マッピングが変わるたびに進む。
@@ -178,7 +178,22 @@ pub enum MemFaultKind {
     Denied,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+plain_try_clone!(Mapping, Backing);
+
+impl TryClone for Space {
+    fn try_clone(&self) -> Result<Space, Error> {
+        let Space { width, page, maps, generation, limbo } = self;
+        Ok(Space {
+            width: *width,
+            page: *page,
+            maps: maps.try_clone()?,
+            generation: *generation,
+            limbo: limbo.try_clone()?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Space {
     pub(crate) width: AddrWidth,
     pub(crate) page: PageSize,

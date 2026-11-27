@@ -1,4 +1,5 @@
 # compile_fail 試験の数 (ファイルごと)。kome-lint の compile-fail-kept が照合する。
 crates/kome/src/addr.rs	2
 crates/kome/src/id.rs	2
+crates/kome/src/kernel.rs	2
 crates/kome/src/sched.rs	3

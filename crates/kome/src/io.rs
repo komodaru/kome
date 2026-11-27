@@ -21,6 +21,7 @@ use crate::error::{Error, Invariant, Refusal};
 use crate::id::{IoId, ObjectId, ProcessId, Tag};
 use crate::kernel::Kernel;
 use crate::process::Life;
+use crate::store::plain_try_clone;
 
 /// ホストが報告する失敗の番号。意味はホスト実装とサービスの間で決める。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +95,14 @@ impl IoState {
             IoState::CancelRequested => IoPhase::CancelRequested,
             IoState::Settled(_) => IoPhase::Settled,
             IoState::Published(_) => IoPhase::Published,
+        }
+    }
+
+    /// ホストの応答 (完了通知) を待っているか。
+    pub(crate) const fn awaits_host(self) -> bool {
+        match self {
+            IoState::Issued | IoState::CancelRequested => true,
+            IoState::Prepared | IoState::Settled(_) | IoState::Published(_) => false,
         }
     }
 
@@ -194,6 +203,8 @@ impl IoLinks {
         self
     }
 }
+
+plain_try_clone!(Io);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Io {

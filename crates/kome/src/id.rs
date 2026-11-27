@@ -28,7 +28,7 @@ use core::marker::PhantomData;
 use core::num::NonZeroU32;
 
 use crate::error::{Error, Resource};
-use crate::store::List;
+use crate::store::{List, TryClone};
 
 mod sealed {
     pub trait Sealed {}
@@ -154,7 +154,7 @@ impl<K: Kind> fmt::Debug for Id<K> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum Entry<T> {
     Live(T),
     Free,
@@ -162,14 +162,45 @@ enum Entry<T> {
     Retired,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct Slot<T> {
     generation: NonZeroU32,
     cell: Entry<T>,
 }
 
+impl<T: TryClone> TryClone for Slot<T> {
+    fn try_clone(&self) -> Result<Slot<T>, Error> {
+        let cell = match &self.cell {
+            Entry::Live(value) => Entry::Live(value.try_clone()?),
+            Entry::Free => Entry::Free,
+            Entry::Retired => Entry::Retired,
+        };
+        Ok(Slot { generation: self.generation, cell })
+    }
+}
+
+impl<K: Kind> TryClone for Id<K> {
+    fn try_clone(&self) -> Result<Id<K>, Error> {
+        Ok(*self)
+    }
+}
+
+impl<K: Kind, T: TryClone> TryClone for Arena<K, T> {
+    fn try_clone(&self) -> Result<Arena<K, T>, Error> {
+        let Arena { slots, free, live, limit, first_generation, kind } = self;
+        Ok(Arena {
+            slots: slots.try_clone()?,
+            free: free.try_clone()?,
+            live: *live,
+            limit: *limit,
+            first_generation: *first_generation,
+            kind: *kind,
+        })
+    }
+}
+
 /// 世代を持つ表。
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Arena<K: Kind, T> {
     slots: List<Slot<T>>,
     /// 再利用できるスロット。後入れ先出し。容量は常に `slots` の長さ以上を確保してある。

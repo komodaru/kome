@@ -16,6 +16,7 @@ use crate::kernel::Kernel;
 use crate::object::{Object, SignalMode, SignalSpec};
 use crate::process::{ExitCode, Life};
 use crate::sched::WorkerId;
+use crate::store::TryClone;
 use crate::wait::Wait;
 
 /// 作った直後のスレッドの状態。
@@ -27,7 +28,35 @@ pub enum Start {
     Suspended,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl TryClone for Run {
+    fn try_clone(&self) -> Result<Run, Error> {
+        Ok(match self {
+            Run::Ready => Run::Ready,
+            Run::Running { worker, stale, interrupted } => {
+                Run::Running { worker: *worker, stale: *stale, interrupted: *interrupted }
+            }
+            Run::Servicing => Run::Servicing,
+            Run::Blocked(wait) => Run::Blocked(wait.try_clone()?),
+        })
+    }
+}
+
+impl TryClone for Thread {
+    fn try_clone(&self) -> Result<Thread, Error> {
+        let Thread { process, exit_signal, run, suspend, kill, run_gen, executed } = self;
+        Ok(Thread {
+            process: *process,
+            exit_signal: *exit_signal,
+            run: run.try_clone()?,
+            suspend: *suspend,
+            kill: *kill,
+            run_gen: *run_gen,
+            executed: *executed,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Run {
     /// 実行権を待っている。
     Ready,
@@ -61,7 +90,7 @@ pub enum ThreadPhase {
 /// スレッドが作られたときに返すもの: スレッドと、終了時に数が 1 になる資源。
 pub type ThreadCreated = (ThreadId, ObjectId);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Thread {
     pub(crate) process: ProcessId,
     pub(crate) exit_signal: ObjectId,
