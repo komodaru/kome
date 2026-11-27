@@ -161,6 +161,17 @@ fn the_generator_reaches_every_quota() {
     assert_eq!(reached, BTreeSet::from(["quota:threads", "quota:ios", "quota:mapped"]));
 }
 
+/// ゲストのアドレスでの読み書きが空回りしていないこと: 書き込み、読み出し、ページの境界をまたぐ
+/// 読み出し、先頭での失敗、範囲の途中での失敗に到達する。
+#[test]
+fn the_generator_reaches_every_guest_access() {
+    let mut reached = BTreeSet::new();
+    for seed in 0..200 {
+        reached.extend(drive(&noise(seed, 3000)).unwrap().reached.into_iter().filter(|tag| tag.starts_with("mem:")));
+    }
+    assert_eq!(reached, BTreeSet::from(["mem:written", "mem:read", "mem:read-across", "mem:fault", "mem:fault-inside"]));
+}
+
 #[test]
 fn a_failure_reports_the_step() {
     // 空の入力は何もしない。

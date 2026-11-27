@@ -3433,3 +3433,154 @@ fn a_quota_bounds_one_process_and_leaves_the_others_alone() {
     let copy = k.snapshot().unwrap().restore(InstanceId::new(2)).unwrap();
     assert_eq!(copy.quota(p), Ok(quota.with_threads(1).with_mapped_bytes(0)));
 }
+
+/// 実体ごとのバイト列を持つ、試験用の内容の置き場。確保していない実体と範囲の外は失敗にする。
+/// ページの大きさ (添字の型)。
+const SIZE: usize = 0x1000;
+
+#[derive(Default)]
+struct Bytes(alloc::collections::BTreeMap<BackingId, Vec<u8>>);
+
+impl Bytes {
+    fn part(&self, backing: BackingId, offset: BackingOffset, len: usize) -> Option<core::ops::Range<usize>> {
+        let start = usize::try_from(offset.get()).ok()?;
+        let end = start.checked_add(len)?;
+        (end <= self.0.get(&backing)?.len()).then_some(start..end)
+    }
+}
+
+impl Contents for Bytes {
+    fn read(&self, backing: BackingId, offset: BackingOffset, out: &mut [u8]) -> Result<(), HostError> {
+        let part = self.part(backing, offset, out.len()).ok_or(HostError::new(1))?;
+        out.copy_from_slice(&self.0[&backing][part]);
+        Ok(())
+    }
+
+    fn write(&mut self, backing: BackingId, offset: BackingOffset, data: &[u8]) -> Result<(), HostError> {
+        let part = self.part(backing, offset, data.len()).ok_or(HostError::new(2))?;
+        self.0.get_mut(&backing).ok_or(HostError::new(2))?[part].copy_from_slice(data);
+        Ok(())
+    }
+}
+
+/// 知らされた変更と、捨てるよう言われたコードの範囲を覚える。
+#[derive(Default)]
+struct Seen {
+    changes: Vec<(ProcessId, MapGen, MapChange)>,
+    dropped: Vec<(ProcessId, GuestRange)>,
+    gone: Vec<ProcessId>,
+}
+
+impl SpaceObserver for Seen {
+    fn changed(&mut self, process: ProcessId, generation: MapGen, change: MapChange) {
+        self.changes.push((process, generation, change));
+    }
+
+    fn cleared(&mut self, process: ProcessId) {
+        self.gone.push(process);
+    }
+}
+
+impl CodeCache for Seen {
+    fn invalidate(&mut self, process: ProcessId, range: GuestRange) {
+        self.dropped.push((process, range));
+    }
+
+    fn forget(&mut self, process: ProcessId) {
+        self.gone.push(process);
+    }
+}
+
+#[test]
+fn guest_access_crosses_mappings_and_fails_as_a_whole() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let a = ok!(k, k.create_backing(p, 2 * PAGE));
+    let b = ok!(k, k.create_backing(p, PAGE));
+    let mut bytes = Bytes::default();
+    bytes.0.insert(a, vec![0; 2 * SIZE]);
+    bytes.0.insert(b, vec![0; SIZE]);
+    // 0x1000 は a の 2 ページ目、0x2000 は b、0x3000 は読むだけ、0x4000 は予約だけ。
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(a, PAGE), Prot::READ_WRITE));
+    ok!(k, k.map(p, range(0x2000, PAGE), backed(b, 0), Prot::READ_WRITE));
+    ok!(k, k.map(p, range(0x3000, PAGE), backed(a, 0), Prot::READ));
+    ok!(k, k.map(p, range(0x4000, PAGE), MapSource::Reserved, Prot::NONE));
+    // 境界をまたぐ書き込みは、それぞれの実体の正しい位置へ届く。
+    assert_eq!(guest_write(&k, &mut bytes, p, GuestAddr::new(0x1ffe), b"wxyz"), Ok(()));
+    assert_eq!((&bytes.0[&a][2 * SIZE - 2..], &bytes.0[&b][..2]), (&b"wx"[..], &b"yz"[..]));
+    let mut out = [0u8; 4];
+    assert_eq!(guest_read(&k, &bytes, p, GuestAddr::new(0x1ffe), &mut out), Ok(()));
+    assert_eq!(&out, b"wxyz");
+    // 途中で書けなくなる範囲は、何も書かずに、最初に失敗したアドレスを返す。
+    let denied = MemFault::new(GuestAddr::new(0x3000), MemFaultKind::Denied);
+    assert_eq!(guest_write(&k, &mut bytes, p, GuestAddr::new(0x2ffe), b"1234"), Err(AccessError::Fault(denied)));
+    assert_eq!(&bytes.0[&b][SIZE - 2..], &[0, 0]);
+    // 読むのは 0x3000 までできて、予約だけの 0x4000 で失敗する。出力には触れない。
+    let mut out = [7u8; 4];
+    let reserved = MemFault::new(GuestAddr::new(0x4000), MemFaultKind::Reserved);
+    assert_eq!(guest_read(&k, &bytes, p, GuestAddr::new(0x3ffe), &mut out), Err(AccessError::Fault(reserved)));
+    assert_eq!(out, [7; 4]);
+    // 長さ 0 は何もしない。アドレスの端を越える範囲は、マッピングが無い失敗になる。
+    assert_eq!(guest_read(&k, &bytes, p, GuestAddr::new(0x9000), &mut []), Ok(()));
+    let edge = MemFault::new(GuestAddr::new(u64::MAX), MemFaultKind::Unmapped);
+    assert_eq!(guest_read(&k, &bytes, p, GuestAddr::new(u64::MAX), &mut out), Err(AccessError::Fault(edge)));
+    // 古い ID と、内容を持たない実体は、ゲストの失敗とは別の失敗である。
+    let (q, _) = process(&mut k);
+    ok!(k, k.exit_process(q, ExitCode::new(0)));
+    assert_eq!(guest_read(&k, &bytes, q, GuestAddr::new(0x1000), &mut out), Err(AccessError::Kernel(Error::Stale(Tag::Process))));
+    bytes.0.remove(&b);
+    assert_eq!(guest_read(&k, &bytes, p, GuestAddr::new(0x2000), &mut out), Err(AccessError::Host(HostError::new(1))));
+}
+
+#[test]
+fn every_accepted_space_change_is_told_once_and_drops_the_code_it_must() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let b = ok!(k, k.create_backing(p, 2 * PAGE));
+    let mut seen = Seen::default();
+    let mut code = CodeWatch::new(Seen::default());
+    let exec = Prot::new(true, false, true);
+    let both = range(0x1000, 2 * PAGE);
+    let first = ok!(k, map_observed(&mut k, &mut (&mut seen, &mut code), p, both, backed(b, 0), exec));
+    // 予約だけのマッピングは、求めた権限に関係なく権限なしと知らされる。
+    let hole = range(0x8000, PAGE);
+    let second = ok!(k, map_observed(&mut k, &mut (&mut seen, &mut code), p, hole, MapSource::Reserved, Prot::READ));
+    // 拒否された変更と、何も変えない変更は知らされない。
+    assert_eq!(map_observed(&mut k, &mut (&mut seen, &mut code), p, both, backed(b, 0), exec), Err(Error::Refused(Refusal::Overlap)));
+    assert_eq!(ok!(k, protect_observed(&mut k, &mut (&mut seen, &mut code), p, both, exec)), first.max(second));
+    assert_eq!(ok!(k, unmap_observed(&mut k, &mut (&mut seen, &mut code), p, range(0x20000, PAGE))), 0);
+    let writable = Prot::READ_WRITE;
+    let page = range(0x2000, PAGE);
+    let third = ok!(k, protect_observed(&mut k, &mut (&mut seen, &mut code), p, page, writable));
+    assert_eq!(ok!(k, unmap_observed(&mut k, &mut (&mut seen, &mut code), p, range(0x1000, PAGE))), PAGE);
+    let fourth = k.map_generation(p).unwrap();
+    assert_eq!(
+        seen.changes,
+        vec![
+            (p, first, MapChange::Mapped { range: both, source: backed(b, 0), prot: exec }),
+            (p, second, MapChange::Mapped { range: hole, source: MapSource::Reserved, prot: Prot::NONE }),
+            (p, third, MapChange::Protected { range: page, prot: writable }),
+            (p, fourth, MapChange::Unmapped { range: range(0x1000, PAGE) }),
+        ]
+    );
+    assert!(first < second && second < third && third < fourth);
+    // コードを捨てるのは、権限を変えた範囲と外した範囲。置いただけの範囲は捨てない。
+    assert_eq!(code.cache().dropped, vec![(p, page), (p, range(0x1000, PAGE))]);
+    // 実行できる範囲に重なる書き込みは、書いた範囲のコードを捨てさせる。実行できない範囲への書き込みは捨てない。
+    let mut bytes = Bytes::default();
+    bytes.0.insert(b, vec![0; 2 * SIZE]);
+    let rwx = Prot::new(true, true, true);
+    ok!(k, k.map(p, range(0x3000, PAGE), backed(b, 0), rwx));
+    code.cache().dropped.clear();
+    assert_eq!(guest_write_watched(&k, &mut bytes, code.cache(), p, GuestAddr::new(0x2010), b"data"), Ok(()));
+    assert_eq!(code.cache().dropped, vec![]);
+    assert_eq!(guest_write_watched(&k, &mut bytes, code.cache(), p, GuestAddr::new(0x2ffe), b"code"), Ok(()));
+    assert_eq!(code.cache().dropped, vec![(p, range(0x2ffe, 4))]);
+    // 書けなかった書き込みは、何も捨てない。
+    let fault = guest_write_watched(&k, &mut bytes, code.cache(), p, GuestAddr::new(0x3ffe), b"over");
+    assert!(matches!(fault, Err(AccessError::Fault(_))));
+    assert_eq!(code.cache().dropped.len(), 1);
+    // プロセスのアドレス空間が無くなったことは、ホストが両方へ伝える。
+    (&mut seen, &mut code).cleared(p);
+    assert_eq!((seen.gone, &code.cache().gone), (vec![p], &vec![p]));
+}

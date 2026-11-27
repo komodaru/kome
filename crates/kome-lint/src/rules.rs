@@ -22,6 +22,7 @@ const PAGES_RS: &str = "crates/kome-testkit/src/pages.rs";
 const PIPES_RS: &str = "crates/kome-testkit/src/pipes.rs";
 const IPC_RS: &str = "crates/kome/src/ipc.rs";
 const OBJECT_RS: &str = "crates/kome/src/object.rs";
+const BACKEND_RS: &str = "crates/kome/src/backend.rs";
 const SCHED_RS: &str = "crates/kome/src/sched.rs";
 const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
@@ -287,6 +288,25 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("total <= owner.quota.mapped_bytes()", "total <= u64::MAX")),
             |repo| repo.edit("crates/kome/src/process.rs", |text| text.replace("self.limits.holdings().min(quota)", "self.limits.holdings()")),
             |repo| repo.edit(SIM_RS, |text| text.replace("Ok(()) if after > quota => Err(", "Ok(()) if false => Err(")),
+        ],
+    },
+    Rule {
+        id: "backend-boundary",
+        about: "backend との境界は公開の問い合わせだけで書き、決定的シミュレーションは通知とアクセスの結果をモデルと比べる",
+        check: backend_boundary,
+        breaks: &[
+            |repo| repo.append(BACKEND_RS, "fn peek(kernel: &Kernel) -> u64 { kernel.backing_bytes }"),
+            |repo| repo.edit(BACKEND_RS, |text| text.replace("            MapChange::Unmapped { .. } | MapChange::Protected { .. } => true,", "            MapChange::Unmapped { .. } | MapChange::Protected { .. } => false,")),
+            |repo| repo.edit(BACKEND_RS, |text| text.replace("    walk(kernel, process, addr, data.len(), Access::Write, |_, _, _| Ok(()))?;\n", "")),
+            |repo| repo.edit(BACKEND_RS, |text| text.replace("    if bytes != 0 {\n        observer.changed(", "    if false {\n        observer.changed(")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("let result = map_observed(&mut self.k, &mut self.shadow, process, range, map_source, prot);", "let result = self.k.map(process, range, map_source, prot);")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("match unmap_observed(&mut self.k, &mut self.shadow, process, range) {", "match self.k.unmap(process, range) {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("match protect_observed(&mut self.k, &mut self.shadow, process, range, prot) {", "match self.k.protect(process, range, prot) {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("        if seen != *model {", "        if false {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("                        self.check_shadow(process)?;\n", "")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("if fault.addr() == GuestAddr::new(addr) && fault.kind() == kind =>", "if fault.kind() == kind =>")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("} else if read.get(at).copied() != Some(self.content.byte(*backing, *offset)) {", "} else if false {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("kome::SpaceObserver::cleared(&mut self.shadow, process);", "")),
         ],
     },
     Rule {
@@ -1335,6 +1355,54 @@ fn independent_model(repo: &Repo, report: &mut Report) {
         if !repo.text(SIM_RS).contains(needed) {
             report.add(SIM_RS, 1, format!("決定的シミュレーションが、権限の変更の後に項目がまとまったことをモデルと比べていない (`{needed}`)"));
         }
+    }
+}
+
+fn backend_boundary(repo: &Repo, report: &mut Report) {
+    let backend = repo.text(BACKEND_RS);
+    // 境界は、ホストが呼べる公開の操作と問い合わせだけで書く。状態の中身には触れない。
+    let allowed = ["translate", "next_mapping", "map_generation", "map", "unmap", "protect"];
+    for (at, line) in backend.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for (place, _) in line.match_indices("kernel.") {
+            let name: String = line.get(place.saturating_add(7)..).unwrap_or("").chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            let called = line.get(place.saturating_add(7).saturating_add(name.len())..).is_some_and(|rest| rest.starts_with('('));
+            if !called || !allowed.contains(&name.as_str()) {
+                report.add(BACKEND_RS, at.saturating_add(1), format!("境界が Kernel の `{name}` に触れている。使えるのは {allowed:?} の呼び出しだけ"));
+            }
+        }
+    }
+    let kept = [
+        ("            MapChange::Unmapped { .. } | MapChange::Protected { .. } => true,", "外す変更と権限の変更で、コードを捨てる"),
+        ("    walk(kernel, process, addr, data.len(), Access::Write, |_, _, _| Ok(()))?;\n", "書き込みは、範囲の全体が書けることを先に確かめる"),
+        ("    walk(kernel, process, addr, out.len(), Access::Read, |_, _, _| Ok(()))?;\n", "読み出しは、範囲の全体が読めることを先に確かめる"),
+        ("    if bytes != 0 {\n        observer.changed(", "外したものがあるときだけ知らせる"),
+        ("    if generation != before {\n        observer.changed(", "権限が変わったときだけ知らせる"),
+    ];
+    for (needed, what) in kept {
+        if !backend.contains(needed) {
+            report.add(BACKEND_RS, 1, format!("backend との境界の約束が崩れている: {what}"));
+        }
+    }
+    let sim = repo.text(SIM_RS);
+    let compared = [
+        ("let result = map_observed(&mut self.k, &mut self.shadow, process, range, map_source, prot);", "map を通知つきで呼ぶ"),
+        ("match unmap_observed(&mut self.k, &mut self.shadow, process, range) {", "unmap を通知つきで呼ぶ"),
+        ("match protect_observed(&mut self.k, &mut self.shadow, process, range, prot) {", "protect を通知つきで呼ぶ"),
+        ("        if seen != *model {", "通知から組み立てたアドレス空間をモデルと比べる"),
+        ("if fault.addr() == GuestAddr::new(addr) && fault.kind() == kind =>", "アクセスの失敗の位置と種類をモデルと比べる"),
+        ("} else if read.get(at).copied() != Some(self.content.byte(*backing, *offset)) {", "読んだ内容をモデルと比べる"),
+        ("kome::SpaceObserver::cleared(&mut self.shadow, process);", "プロセスの終了を通知の受け取り手へ伝える"),
+    ];
+    for (needed, what) in compared {
+        if !sim.contains(needed) {
+            report.add(SIM_RS, 1, format!("決定的シミュレーションが backend との境界を確かめていない: {what} (`{needed}`)"));
+        }
+    }
+    if sim.matches("                        self.check_shadow(process)?;\n").count() != 3 {
+        report.add(SIM_RS, 1, "決定的シミュレーションが、アドレス空間を変える三つの操作の全てで通知の結果を確かめていない");
     }
 }
 

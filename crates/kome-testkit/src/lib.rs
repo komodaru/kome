@@ -15,12 +15,15 @@
 //!   止まるまで貸さない、消費する資源の数は増減の合計と一致する。
 //! - 独立したモデル ([`pages`]) とメモリの見え方が一致する。
 //! - 独立したモデル ([`pipes`]) と通信路の中身、読める・書けるの通知が一致する。
+//! - 通知だけから組み立てたアドレス空間 ([`shadow`]) がモデルと一致し、ゲストのアドレスでの
+//!   読み書きの結果がモデルと一致する。
 //!
 //! [`host`] は、I/O の内容とメモリの内容を持つ制御可能なホストである。
 
 pub mod host;
 pub mod pages;
 pub mod pipes;
+pub mod shadow;
 pub mod sim;
 
 pub use sim::{Failure, Probe, Summary, drive, drive_probed};

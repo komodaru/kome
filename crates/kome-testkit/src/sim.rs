@@ -5,15 +5,16 @@ use std::fmt::Debug;
 use std::num::NonZeroU32;
 
 use kome::{
-    Access, AddrWidth, BackingId, BackingOffset, Budget, CancelReply, ChannelId, ChannelSpec, Completion, CompletionKind,
+    Access, AccessError, AddrWidth, BackingId, BackingOffset, Budget, CancelReply, ChannelId, ChannelSpec, Completion, CompletionKind,
     Deadline, Duration, Effect, End, Error, ExitCode, GuestAddr, GuestRange, HostError, InstanceId, Instant, Interruptible, IoId, IoLinks,
     IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFault, MemFaultKind, NotRelinquished, ObjectId, PageSize, Parcel, Period, Priority, ProcessId, ProcessPhase, Prot, Quota,
     Received, Refusal, Resource, RunPermit, Sent, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, ThreadFate, TimerId, WaitMode, WaitOutcome,
-    WaitStart, WorkerId,
+    WaitStart, WorkerId, guest_read, guest_write, map_observed, protect_observed, unmap_observed,
 };
 
 use crate::pages::{Expect, Pages, Perm, Touch};
 use crate::pipes::{Got, Pipe, Put, Shape};
+use crate::shadow::{Shadow, Store};
 
 /// シミュレーションのページの大きさ。
 pub const PAGE: u64 = 0x1000;
@@ -196,6 +197,12 @@ struct Sim {
     gone_objects: BTreeSet<ObjectId>,
     gone_backings: BTreeSet<BackingId>,
     spaces: BTreeMap<ProcessId, Pages>,
+    /// 通知だけから組み立てたアドレス空間。
+    shadow: Shadow,
+    /// ゲストのアドレスでの読み書きが使う、実体の内容。
+    store: Store,
+    /// モデルのページから自分で引いて書いた、あるはずの内容。
+    content: Store,
     effects: Vec<Effect>,
     accepted: usize,
     refused: usize,
@@ -262,6 +269,9 @@ impl Sim {
             gone_objects: BTreeSet::new(),
             gone_backings: BTreeSet::new(),
             spaces: BTreeMap::new(),
+            shadow: Shadow::new(PAGE),
+            store: Store::default(),
+            content: Store::default(),
             effects: Vec::new(),
             accepted: 0,
             refused: 0,
@@ -338,6 +348,7 @@ impl Sim {
             Effect::ProcessExited { process, .. } => {
                 // 通信路の端は、observe が先に外している。
                 self.spaces.remove(&process);
+                kome::SpaceObserver::cleared(&mut self.shadow, process);
                 let phase = self.k.process_phase(process);
                 if !matches!(phase, Ok(ProcessPhase::Draining) | Err(Error::Stale(Tag::Process))) {
                     return Err(format!("PROC-1: 終了を通知したプロセスが {phase:?}"));
@@ -574,6 +585,36 @@ impl Sim {
             }
         }
         Ok(())
+    }
+
+    /// 通知だけから組み立てたアドレス空間が、モデルと同じか。世代も、最後に知らされたものが今の世代か。
+    fn check_shadow(&self, process: ProcessId) -> Result<(), String> {
+        let Some(model) = self.spaces.get(&process) else { return Ok(()) };
+        let seen = self.shadow.space(process).cloned().unwrap_or_default();
+        if seen != *model {
+            return Err(format!("MEM-2: 通知から組み立てた {process:?} のアドレス空間が、モデルと違う"));
+        }
+        let told = self.shadow.generation(process);
+        if told.is_some() && told != self.k.map_generation(process).ok() {
+            return Err(format!("MEM-3: 最後に知らされた世代 {told:?} が、{process:?} の今の世代と違う"));
+        }
+        Ok(())
+    }
+
+    /// モデルのページから引いた、`len` バイトの行き先。届かない位置があれば、最初のものの種類。
+    fn reach(&self, process: ProcessId, start: u64, len: u64, touch: Touch) -> Result<Vec<(BackingId, u64)>, (u64, MemFaultKind)> {
+        let model = self.spaces.get(&process);
+        let mut places = Vec::new();
+        for addr in start..start.saturating_add(len) {
+            let expected = model.map_or(Expect::Unmapped, |model| model.expect(addr / PAGE, addr % PAGE, touch));
+            match expected {
+                Expect::Reaches(backing, offset) => places.push((backing, offset)),
+                Expect::Unmapped => return Err((addr, MemFaultKind::Unmapped)),
+                Expect::Reserved => return Err((addr, MemFaultKind::Reserved)),
+                Expect::Denied => return Err((addr, MemFaultKind::Denied)),
+            }
+        }
+        Ok(places)
     }
 
     /// 権限を変えた範囲とその両隣に、一つにまとめられる項目が分かれたまま残っていないか。
@@ -1012,7 +1053,54 @@ impl Sim {
                 };
                 done(self.quiet(|k| k.release_backing(process, backing)))
             }
-            41..=44 => {
+            44 => {
+                // ゲストのアドレスでの読み書き。ページの境界をまたぎやすい位置を選ぶ。
+                let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
+                let start = r.below(PAGES).saturating_add(1).saturating_mul(PAGE).saturating_sub(r.below(4));
+                let len = r.below(7);
+                let size = usize::try_from(len).map_err(|e| e.to_string())?;
+                let writing = r.flag();
+                let data: Vec<u8> = (0..size).map(|_| r.byte() | 1).collect();
+                let mut read = vec![0u8; size];
+                let expected = self.reach(process, start, len, if writing { Touch::Write } else { Touch::Read });
+                let before = self.store.clone();
+                let result = if writing {
+                    guest_write(&self.k, &mut self.store, process, GuestAddr::new(start), &data)
+                } else {
+                    guest_read(&self.k, &self.store, process, GuestAddr::new(start), &mut read)
+                };
+                match (result, expected) {
+                    (Ok(()), Ok(places)) => {
+                        for (at, (backing, offset)) in places.iter().enumerate() {
+                            if writing {
+                                self.content.set(*backing, *offset, data.get(at).copied().ok_or("書くバイト")?);
+                            } else if read.get(at).copied() != Some(self.content.byte(*backing, *offset)) {
+                                return Err(format!("MEM-2: {start:#x} から読んだ {read:?} の {at} 番目が、モデルの内容と違う"));
+                            }
+                        }
+                        if self.store != self.content {
+                            return Err(format!("MEM-2: {start:#x} への書き込みの後、実体の内容がモデルと違う"));
+                        }
+                        let across = len != 0 && start / PAGE != start.saturating_add(len).saturating_sub(1) / PAGE;
+                        self.reached.insert(match (writing, across) {
+                            (true, _) => "mem:written",
+                            (false, false) => "mem:read",
+                            (false, true) => "mem:read-across",
+                        });
+                        Outcome::Accepted
+                    }
+                    (Err(AccessError::Fault(fault)), Err((addr, kind))) if fault.addr() == GuestAddr::new(addr) && fault.kind() == kind => {
+                        if self.store != before {
+                            return Err(format!("MEM-2: 失敗した {start:#x} へのアクセスが内容を変えた"));
+                        }
+                        self.reached.insert(if addr == start { "mem:fault" } else { "mem:fault-inside" });
+                        Outcome::Accepted
+                    }
+                    (Err(AccessError::Kernel(error)), _) => Outcome::Refused(error),
+                    (result, expected) => return Err(format!("MEM-2: {start:#x} から {len} バイトのアクセスが {result:?}、モデルは {expected:?}")),
+                }
+            }
+            41..=43 => {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
                 let (first, count) = (r.below(PAGES), r.below(4).saturating_add(1));
                 let source = if r.below(3) == 0 { None } else { r.prefer(&self.backings, |backing| self.k.backing_len(*backing).is_ok()).map(|b| (b, r.below(3).saturating_mul(PAGE))) };
@@ -1024,7 +1112,7 @@ impl Sim {
                 };
                 let range = pages(first, count).ok_or("範囲")?;
                 let overlap = self.spaces.get(&process).is_some_and(|space| space.any(first, count));
-                let result = self.k.map(process, range, map_source, prot);
+                let result = map_observed(&mut self.k, &mut self.shadow, process, range, map_source, prot);
                 if source.is_some() {
                     let used = self.spaces.get(&process).map_or(0, Pages::backed_pages);
                     let after = used.saturating_add(count).saturating_mul(PAGE);
@@ -1039,6 +1127,7 @@ impl Sim {
                         let space = self.spaces.get_mut(&process).ok_or("モデルに無いプロセスへのマッピングを受理した")?;
                         space.map(first, count, source, if source.is_some() { perm } else { Perm::NONE }, PAGE);
                         self.check_space(process)?;
+                        self.check_shadow(process)?;
                         Outcome::Accepted
                     }
                     Err(error) => Outcome::Refused(error),
@@ -1048,7 +1137,7 @@ impl Sim {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
                 let (first, count) = (r.below(PAGES), r.below(6).saturating_add(1));
                 let range = pages(first, count).ok_or("範囲")?;
-                match self.k.unmap(process, range) {
+                match unmap_observed(&mut self.k, &mut self.shadow, process, range) {
                     Ok(bytes) => {
                         let space = self.spaces.get_mut(&process).ok_or("モデルに無いプロセスの unmap を受理した")?;
                         let (removed, backed) = space.unmap(first, count);
@@ -1061,6 +1150,7 @@ impl Sim {
                             }
                         }
                         self.check_space(process)?;
+                        self.check_shadow(process)?;
                         Outcome::Accepted
                     }
                     Err(error) => Outcome::Refused(error),
@@ -1075,7 +1165,7 @@ impl Sim {
                 let coverable = self.spaces.get(&process).is_some_and(|space| space.all_backed(first, count));
                 let before = self.k.map_generation(process);
                 let pending = self.k.pending_effects();
-                match self.k.protect(process, range, prot) {
+                match protect_observed(&mut self.k, &mut self.shadow, process, range, prot) {
                     Ok(_) if !coverable => {
                         return Err(format!("実体の無い部分を含む範囲の権限変更を受理した: {range:?}"));
                     }
@@ -1102,6 +1192,7 @@ impl Sim {
                             }
                         }
                         self.check_space(process)?;
+                        self.check_shadow(process)?;
                         Outcome::Accepted
                     }
                     Err(error) => Outcome::Refused(error),

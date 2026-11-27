@@ -30,6 +30,7 @@ extern crate alloc;
 
 mod addr;
 mod audit;
+mod backend;
 mod effect;
 mod error;
 mod exec;
@@ -55,6 +56,10 @@ mod wait;
 
 pub use addr::{Access, AddrWidth, BackingOffset, GuestAddr, GuestRange, PageSize, Prot};
 pub use audit::Violation;
+pub use backend::{
+    AccessError, CodeCache, CodeWatch, Contents, MapChange, SpaceObserver, guest_read, guest_write, guest_write_watched,
+    map_observed, protect_observed, unmap_observed,
+};
 pub use effect::{Completion, CompletionKind, Effect};
 pub use error::{Error, Invariant, Refusal, Resource};
 pub use exec::{Contexts, Executor, Loaded, Ran, Stopped, run_once, run_permit};
