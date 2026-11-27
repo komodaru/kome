@@ -4,6 +4,7 @@ use crate::effect::{Effect, Effects};
 use crate::error::{Error, Refusal};
 use crate::id::{Arena, Lineage, ThreadId, TimerId, kind};
 use crate::io::Io;
+use crate::ipc::Channel;
 use crate::limits::Limits;
 use crate::mem::Backing;
 use crate::object::Object;
@@ -43,6 +44,7 @@ pub struct Census {
     backings: u32,
     timers: u32,
     ios: u32,
+    channels: u32,
 }
 
 impl Census {
@@ -80,6 +82,12 @@ impl Census {
     #[must_use]
     pub const fn ios(&self) -> u32 {
         self.ios
+    }
+
+    /// 通信路の数。
+    #[must_use]
+    pub const fn channels(&self) -> u32 {
+        self.channels
     }
 }
 
@@ -133,12 +141,15 @@ pub struct Kernel {
     pub(crate) backings: Arena<kind::Backing, Backing>,
     pub(crate) timers: Arena<kind::Timer, Timer>,
     pub(crate) ios: Arena<kind::Io, Io>,
+    pub(crate) channels: Arena<kind::Channel, Channel>,
     /// 実行可能なスレッド。先入れ先出し。
     pub(crate) ready: Queue<ThreadId>,
     pub(crate) running: List<Lent>,
     pub(crate) due: List<DueEntry>,
     pub(crate) effects: Effects,
     pub(crate) backing_bytes: u64,
+    /// 通信路が持てるバイト数の合計。
+    pub(crate) channel_bytes: u64,
 }
 
 impl Kernel {
@@ -160,11 +171,13 @@ impl Kernel {
             backings: Arena::new(instance, limits.backings()),
             timers: Arena::new(instance, limits.timers()),
             ios: Arena::new(instance, limits.ios()),
+            channels: Arena::new(instance, limits.channels()),
             ready: Queue::new(),
             running,
             due: List::new(),
             effects: Effects::new(limits.effects())?,
             backing_bytes: 0,
+            channel_bytes: 0,
         })
     }
 
@@ -196,6 +209,7 @@ impl Kernel {
             backings: self.backings.len(),
             timers: self.timers.len(),
             ios: self.ios.len(),
+            channels: self.channels.len(),
         }
     }
 
@@ -218,11 +232,13 @@ impl Kernel {
             backings,
             timers,
             ios,
+            channels,
             ready,
             running,
             due,
             effects,
             backing_bytes,
+            channel_bytes,
         } = self;
         let mut copy = Kernel {
             lineage,
@@ -235,11 +251,13 @@ impl Kernel {
             backings: backings.try_clone()?,
             timers: timers.try_clone()?,
             ios: ios.try_clone()?,
+            channels: channels.try_clone()?,
             ready: ready.try_clone()?,
             running: running.try_clone()?,
             due: due.try_clone()?,
             effects: effects.try_clone()?,
             backing_bytes: *backing_bytes,
+            channel_bytes: *channel_bytes,
         };
         copy.processes.reissue(instance);
         copy.threads.reissue(instance);
@@ -247,6 +265,7 @@ impl Kernel {
         copy.backings.reissue(instance);
         copy.timers.reissue(instance);
         copy.ios.reissue(instance);
+        copy.channels.reissue(instance);
         Ok(copy)
     }
 

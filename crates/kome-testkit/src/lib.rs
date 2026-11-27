@@ -14,11 +14,13 @@
 //!   回収した ID は再び現れない、使用中の実体は解放しない、権限を減らした後は古い実行が
 //!   止まるまで貸さない、消費する資源の数は増減の合計と一致する。
 //! - 独立したモデル ([`pages`]) とメモリの見え方が一致する。
+//! - 独立したモデル ([`pipes`]) と通信路の中身、読める・書けるの通知が一致する。
 //!
 //! [`host`] は、I/O の内容とメモリの内容を持つ制御可能なホストである。
 
 pub mod host;
 pub mod pages;
+pub mod pipes;
 pub mod sim;
 
 pub use sim::{Failure, Probe, Summary, drive, drive_probed};

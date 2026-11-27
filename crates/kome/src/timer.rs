@@ -73,7 +73,7 @@ impl Kernel {
         if owner.life != Life::Alive {
             return Err(Error::Refused(Refusal::ProcessExiting));
         }
-        self.can_pin(object, 1)?;
+        self.can_notify(object, 1)?;
         self.timers.reserve()?;
         let timer = self.timers.insert(Timer { process, object, armed: None })?;
         self.pin(object)?;

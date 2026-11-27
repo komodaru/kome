@@ -103,6 +103,34 @@ tested = "待機を起こすのが公開の後であること、進行中に解�
 scope = "一つの要求の進行。ホストが完了を重複して送ること、取消の後に正常完了が届くことを含む。転送の内容とバッファは Personality と Host が持つ。"
 
 [[invariant]]
+id = "IPC-1"
+variant = "ChannelKept"
+statement = "通信路の中身は容量に収まり、端の保持数・運ばれている資源の保持・読める書けるの通知は中身と一致する。"
+owner = "crates/kome/src/ipc.rs"
+audit = "audit_channels"
+caught = "crates/kome/src/tests.rs::audit_detects_a_channel_out_of_step"
+tests = [
+    "crates/kome/src/tests.rs::messages_keep_their_boundaries_and_order",
+    "crates/kome/src/tests.rs::a_stream_takes_what_fits_and_has_no_boundaries",
+    "crates/kome/src/tests.rs::readers_and_writers_wait_on_the_channel",
+    "crates/kome/src/tests.rs::a_closed_end_is_seen_by_the_other_side",
+    "crates/kome/src/tests.rs::a_channel_without_receivers_drops_its_content",
+    "crates/kome/src/tests.rs::a_message_carries_a_hold_from_sender_to_receiver",
+    "crates/kome/src/tests.rs::a_carried_backing_is_released_when_nobody_can_receive_it",
+    "crates/kome/src/tests.rs::process_exit_closes_its_ends",
+    "crates/kome/src/tests.rs::channels_are_bounded_by_the_limits",
+    "crates/kome/src/tests.rs::a_restored_state_carries_the_channel_content",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+    "crates/kome-testkit/tests/sim.rs::the_generator_reaches_every_channel_outcome",
+]
+proofs = [
+    "an_admitted_send_fits_the_channel",
+]
+models = []
+proved = "送信を受け付けるかどうかの判定 (ChannelSpec::admit) について、形・長さ・中身の量の全ての値。前提: 前の状態は audit が確かめる範囲にある。示すのは、メッセージを受け付けるのは長さが上限以下で数が上限より少ないときだけであること、流れは受け付けた後も容量に収まること、受け付けないのは空きが無いときだけであること。メッセージの列の中身が容量 (数 × 長さの上限) に収まることは、この二つから従うが、掛け算は証明の中で計算していない。バイト列の出し入れ、端の保持、通知、資源の受け渡しは示していない。その部分は試験と、独立したモデルと比べる決定的シミュレーションが見る。"
+scope = "一つの Kernel の中の通信路。送信と受信はスレッドを止めない (待つのは通知の資源への wait)。名前、接続、メッセージの書式は Personality が持つ。"
+
+[[invariant]]
 id = "WAIT-1"
 variant = "WaitOnce"
 statement = "待機結果は一つだけ確定する (待機の登録は対象・期限と一対一に対応する)。"

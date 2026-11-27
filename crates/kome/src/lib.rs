@@ -35,6 +35,7 @@ mod error;
 mod id;
 mod input;
 mod io;
+mod ipc;
 mod kernel;
 mod limits;
 mod mem;
@@ -55,8 +56,9 @@ pub use addr::{Access, AddrWidth, BackingOffset, GuestAddr, GuestRange, PageSize
 pub use audit::Violation;
 pub use effect::{Completion, CompletionKind, Effect};
 pub use error::{Error, Invariant, Refusal, Resource};
-pub use id::{BackingId, Id, IoId, Kind, ObjectId, ProcessId, Tag, ThreadId, TimerId, kind};
+pub use id::{BackingId, ChannelId, Id, IoId, Kind, ObjectId, ProcessId, Tag, ThreadId, TimerId, kind};
 pub use input::{Input, Reply};
+pub use ipc::{ChannelCreated, ChannelSpec, End, Parcel, Received, Sent};
 pub use io::{CancelReply, HostError, IoLinks, IoOutcome, IoPhase, IoSettled};
 pub use kernel::{Census, InstanceId, Kernel, Snapshot};
 pub use limits::Limits;

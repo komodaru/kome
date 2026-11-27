@@ -98,6 +98,34 @@ fn the_generator_reaches_every_effect() {
     assert!(accepted * 2 > refused, "受理 {accepted}、拒否 {refused}: 操作列が拒否ばかりになっている");
 }
 
+/// 通信路の操作が空回りしていないこと: 送信と受信のすべての種類の結果、資源の受け渡し、
+/// 中身ごとの破棄、回収に到達する。
+#[test]
+fn the_generator_reaches_every_channel_outcome() {
+    let mut reached = BTreeSet::new();
+    for seed in 0..200 {
+        reached.extend(drive(&noise(seed, 3000)).unwrap().reached);
+    }
+    let all = [
+        "sent",
+        "sent-part",
+        "sent-object",
+        "sent-backing",
+        "full",
+        "no-receiver",
+        "too-long",
+        "received",
+        "received-object",
+        "received-backing",
+        "empty",
+        "ended",
+        "too-small",
+        "dropped-parcel",
+        "reclaimed",
+    ];
+    assert_eq!(reached, BTreeSet::from(all));
+}
+
 #[test]
 fn a_failure_reports_the_step() {
     // 空の入力は何もしない。

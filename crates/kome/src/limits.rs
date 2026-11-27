@@ -52,6 +52,10 @@ limits! {
     timers / with_timers: u32 = 256;
     /// I/O 要求の数。
     ios / with_ios: u32 = 1024;
+    /// 通信路の数。
+    channels / with_channels: u32 = 1024;
+    /// 通信路が持てるバイト数の合計。
+    channel_bytes / with_channel_bytes: u64 = 1 << 26;
     /// 同時に実行権を持てる worker の数。
     workers / with_workers: u32 = 1;
     /// ホストが取り出すまで保持できる `Effect` の数 (予約を含む)。

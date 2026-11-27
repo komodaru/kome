@@ -83,6 +83,18 @@ pub enum Refusal {
     IoInFlight,
     /// I/O の終端結果は確定していない、または既に公開済みである。
     IoNotPublishable,
+    /// 通信路の定義が成立しない (持てる数が 0、合計のバイト数が表現できない)。
+    BadChannelSpec,
+    /// 通信路のその端は、保持が無くなって閉じている。
+    EndClosed,
+    /// メッセージが、通信路の一つのメッセージの上限より長い。
+    MessageTooLong,
+    /// 受け取るバッファが、先頭のメッセージより短い。
+    BufferTooSmall,
+    /// バイトの流れは資源を運べない (境界が無いので、どのバイトに付くかが決まらない)。
+    ParcelOnStream,
+    /// この資源の数は kome が決める (通信路の通知)。外からは変えられない。
+    DrivenObject,
 }
 
 /// 足りなくなった資源。
@@ -102,6 +114,10 @@ pub enum Resource {
     Timers,
     /// I/O 要求の数。
     Ios,
+    /// 通信路の数。
+    Channels,
+    /// 通信路が持てるバイト数の合計。
+    ChannelBytes,
     /// 同時に実行権を持てる worker の数。
     Workers,
     /// `Effect` のキュー。ホストが取り出せば空く。
@@ -151,11 +167,13 @@ pub enum Invariant {
     ProcessTree,
     /// ERR-1: ゲストへ返す拒否と、ランタイム内部の障害を混同しない。
     ErrorClasses,
+    /// IPC-1: 通信路の中身は容量を超えず、端の保持と通知は実際の状態と一致する。
+    ChannelKept,
 }
 
 impl Invariant {
     /// すべての不変条件。台帳との照合に使う。
-    pub const ALL: [Invariant; 14] = [
+    pub const ALL: [Invariant; 15] = [
         Invariant::RunOnePermit,
         Invariant::RunQueue,
         Invariant::IdFresh,
@@ -170,6 +188,7 @@ impl Invariant {
         Invariant::TimeOrder,
         Invariant::ProcessTree,
         Invariant::ErrorClasses,
+        Invariant::ChannelKept,
     ];
 
     /// 台帳での識別子。
@@ -190,6 +209,7 @@ impl Invariant {
             Invariant::TimeOrder => "TIME-1",
             Invariant::ProcessTree => "PROC-1",
             Invariant::ErrorClasses => "ERR-1",
+            Invariant::ChannelKept => "IPC-1",
         }
     }
 }

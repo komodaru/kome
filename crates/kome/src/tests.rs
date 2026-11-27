@@ -1929,6 +1929,61 @@ fn audit_names_every_violation_it_can_report() {
             ("実行権の表が、worker の上限ぶんの容量を持っていない", bent(|w| w.k.running.corrupt_capacity())),
             ("実行待ちの列が、スレッドの数ぶんの容量を持っていない", bent(|w| w.k.ready.corrupt_capacity())),
             ("Effect のキューが、上限ぶんの容量を持っていない", bent(|w| w.k.effects.corrupt_capacity())),
+            ("通信路の端の保持数が一致しない", piped(|k, _, c| k.channels.get_mut(c).unwrap().corrupt_senders(2))),
+            (
+                "端の保持が無い通信路が残っている",
+                piped(|k, p, c| {
+                    process_mut(k, p).senders.sub(c).unwrap();
+                    process_mut(k, p).receivers.sub(c).unwrap();
+                    let channel = k.channels.get_mut(c).unwrap();
+                    channel.corrupt_senders(0);
+                    channel.receivers = 0;
+                }),
+            ),
+            (
+                "通信路の中身が容量を超えている",
+                piped(|k, _, c| {
+                    let channel = k.channels.get_mut(c).unwrap();
+                    channel.capacity = 1;
+                    k.channel_bytes = 1;
+                }),
+            ),
+            (
+                "通信路のメッセージの長さの合計が中身と一致しない",
+                piped(|k, _, c| assert_eq!(k.channels.get_mut(c).unwrap().bytes.drain_into(&mut [0u8; 1]), 1)),
+            ),
+            (
+                "受ける端の無い通信路に中身が残っている",
+                piped(|k, p, c| {
+                    process_mut(k, p).receivers.sub(c).unwrap();
+                    k.channels.get_mut(c).unwrap().receivers = 0;
+                }),
+            ),
+            (
+                "通信路の通知の数が中身と一致しない",
+                piped(|k, _, c| {
+                    let readable = k.channels.get(c).unwrap().readable;
+                    k.objects.get_mut(readable).unwrap().count = 0;
+                }),
+            ),
+            (
+                "通信路の通知の数が中身と一致しない",
+                piped(|k, _, c| {
+                    let writable = k.channels.get(c).unwrap().writable;
+                    k.objects.get_mut(writable).unwrap().driven = false;
+                }),
+            ),
+            ("通信路が持てるバイト数の合計が一致しない", piped(|k, _, _| k.channel_bytes += 1)),
+            ("通信路が持てるバイト数の合計が一致しない", piped(|k, _, _| k.limits = k.limits.with_channel_bytes(1))),
+            ("通信路が、容量ぶんの記憶域を持っていない", piped(|k, _, c| k.channels.get_mut(c).unwrap().frames.corrupt_capacity())),
+            ("資源の固定数が一致しない", piped(|k, _, c| k.channels.get_mut(c).unwrap().frames.clear())),
+            (
+                "実体の参照の数が一致しない",
+                piped(|k, p, _| {
+                    let backing = ok!(k, k.create_backing(p, PAGE));
+                    k.backings.get_mut(backing).unwrap().transit = 1;
+                }),
+            ),
         ]
     };
     for (at, (detail, k)) in cases.iter().enumerate() {
@@ -1939,6 +1994,284 @@ fn audit_names_every_violation_it_can_report() {
         include_str!("audit.rs").split('"').skip(1).step_by(2).filter(|text| !text.is_ascii()).collect();
     let covered: alloc::collections::BTreeSet<&str> = cases.iter().map(|(detail, _)| *detail).collect();
     assert_eq!(stated, covered);
+}
+
+// ---- 通信路 ----
+
+/// 一つのプロセスが両端を持つ、メッセージ 2 個 (各 8 バイトまで) の通信路。
+fn pipe(k: &mut Kernel, p: ProcessId) -> ChannelCreated {
+    ok!(k, k.create_channel(p, ChannelSpec::messages(2, 8)))
+}
+
+/// 資源を運ぶメッセージが一つ入った通信路を持つ状態を作り、`change` で壊す。
+fn piped(change: impl FnOnce(&mut Kernel, ProcessId, ChannelId)) -> Kernel {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let made = pipe(&mut k, p);
+    let carried = event(&mut k, p);
+    assert_eq!(ok!(k, k.send(p, made.channel(), b"abc", Some(Parcel::Object(carried)))), Sent::Accepted(3));
+    change(&mut k, p, made.channel());
+    k
+}
+
+fn take(k: &mut Kernel, p: ProcessId, c: ChannelId, room: usize) -> Result<(Vec<u8>, Option<Parcel>), Received> {
+    let mut buffer = vec![0xEEu8; room];
+    match ok!(k, k.receive(p, c, &mut buffer)) {
+        Received::Data { bytes, parcel } => {
+            let bytes = usize::try_from(bytes).unwrap();
+            assert!(buffer[bytes..].iter().all(|byte| *byte == 0xEE), "受け取った長さの外へ書いた");
+            buffer.truncate(bytes);
+            Ok((buffer, parcel))
+        }
+        other @ (Received::Empty | Received::Ended) => Err(other),
+    }
+}
+
+#[test]
+fn audit_detects_a_channel_out_of_step() {
+    assert_eq!(broken(&piped(|k, _, c| k.channels.get_mut(c).unwrap().corrupt_senders(2))), Invariant::ChannelKept);
+    assert_eq!(broken(&piped(|k, _, _| k.channel_bytes += 1)), Invariant::ChannelKept);
+}
+
+#[test]
+fn messages_keep_their_boundaries_and_order() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let made = pipe(&mut k, p);
+    let c = made.channel();
+    assert_eq!((k.signal_count(made.readable()), k.signal_count(made.writable())), (Ok(0), Ok(1)));
+    assert_eq!(take(&mut k, p, c, 8), Err(Received::Empty));
+    assert_eq!(k.send(p, c, b"123456789", None), Err(Error::Refused(Refusal::MessageTooLong)));
+    assert_eq!(ok!(k, k.send(p, c, b"ab", None)), Sent::Accepted(2));
+    assert_eq!((k.signal_count(made.readable()), k.signal_count(made.writable())), (Ok(1), Ok(1)));
+    // 長さ 0 のメッセージも一つのメッセージである。
+    assert_eq!(ok!(k, k.send(p, c, b"", None)), Sent::Accepted(0));
+    assert_eq!(k.signal_count(made.writable()), Ok(0));
+    let before = k.snapshot().unwrap();
+    assert_eq!(ok!(k, k.send(p, c, b"cd", None)), Sent::Full);
+    assert_eq!(k.receive(p, c, &mut [0u8; 1]), Err(Error::Refused(Refusal::BufferTooSmall)));
+    assert_eq!(k, before, "受け付けなかった送信と受信が状態を変えた");
+    assert_eq!((k.channel_queued(c), k.next_message_len(c)), (Ok(2), Ok(Some(2))));
+    assert_eq!(take(&mut k, p, c, 8), Ok((b"ab".to_vec(), None)));
+    assert_eq!(k.next_message_len(c), Ok(Some(0)));
+    assert_eq!(k.signal_count(made.writable()), Ok(1));
+    assert_eq!(take(&mut k, p, c, 0), Ok((Vec::new(), None)));
+    assert_eq!((k.signal_count(made.readable()), k.next_message_len(c)), (Ok(0), Ok(None)));
+    // 満杯まで入れて取り出すことを繰り返しても、順序と内容は保たれる (入れ物は輪になっている)。
+    for round in 0u8..20 {
+        assert_eq!(ok!(k, k.send(p, c, &[round; 8], None)), Sent::Accepted(8));
+        assert_eq!(ok!(k, k.send(p, c, &[round, 1, 2], None)), Sent::Accepted(3));
+        assert_eq!(take(&mut k, p, c, 8), Ok((vec![round; 8], None)));
+        assert_eq!(take(&mut k, p, c, 8), Ok((vec![round, 1, 2], None)));
+    }
+}
+
+#[test]
+fn a_stream_takes_what_fits_and_has_no_boundaries() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let made = ok!(k, k.create_channel(p, ChannelSpec::stream(4)));
+    let c = made.channel();
+    assert_eq!(ok!(k, k.send(p, c, b"abcdef", None)), Sent::Accepted(4));
+    assert_eq!(k.signal_count(made.writable()), Ok(0));
+    assert_eq!(ok!(k, k.send(p, c, b"ef", None)), Sent::Full);
+    assert_eq!(take(&mut k, p, c, 3), Ok((b"abc".to_vec(), None)));
+    assert_eq!(ok!(k, k.send(p, c, b"efgh", None)), Sent::Accepted(3));
+    assert_eq!((k.channel_queued(c), k.next_message_len(c)), (Ok(4), Ok(Some(4))));
+    assert_eq!(take(&mut k, p, c, 8), Ok((b"defg".to_vec(), None)));
+    assert_eq!(take(&mut k, p, c, 8), Err(Received::Empty));
+    assert_eq!(ok!(k, k.send(p, c, b"", None)), Sent::Accepted(0));
+    let o = event(&mut k, p);
+    assert_eq!(k.send(p, c, b"x", Some(Parcel::Object(o))), Err(Error::Refused(Refusal::ParcelOnStream)));
+}
+
+#[test]
+fn readers_and_writers_wait_on_the_channel() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (reader, _) = thread(&mut k, p);
+    let (writer, _) = thread(&mut k, p);
+    let made = ok!(k, k.create_channel(p, ChannelSpec::stream(2)));
+    let c = made.channel();
+    assert_eq!(trap(&mut k, W0), reader);
+    assert_eq!(wait_any(&mut k, reader, &[made.readable()]), WaitStart::Blocked);
+    assert_eq!(ok!(k, k.send(p, c, b"hi", None)), Sent::Accepted(2));
+    assert_eq!(drain(&mut k), vec![Effect::WaitDone { thread: reader, outcome: WaitOutcome::Signaled { index: 0 } }]);
+    // 読める間は、何度待ってもすぐ成立する (数は中身が決める)。
+    assert_eq!(wait_any(&mut k, reader, &[made.readable()]), WaitStart::Done(WaitOutcome::Signaled { index: 0 }));
+    assert_eq!(trap(&mut k, W0), writer);
+    assert_eq!(wait_any(&mut k, writer, &[made.writable()]), WaitStart::Blocked);
+    assert_eq!(take(&mut k, p, c, 1), Ok((b"h".to_vec(), None)));
+    assert_eq!(drain(&mut k), vec![Effect::WaitDone { thread: writer, outcome: WaitOutcome::Signaled { index: 0 } }]);
+    // 通知の数は外からは変えられない。
+    assert_eq!(k.signal(made.readable(), SignalOp::Set(0)), Err(Error::Refused(Refusal::DrivenObject)));
+    assert_eq!(k.signal(made.writable(), SignalOp::Add(1)), Err(Error::Refused(Refusal::DrivenObject)));
+    // タイマや I/O の通知先にもできない (kome の外の出来事で数が変わってしまう)。
+    let driven = Err(Error::Refused(Refusal::DrivenObject));
+    assert_eq!(k.create_timer(p, made.readable()).map(|_| ()), driven);
+    assert_eq!(k.prepare_io(p, IoLinks::NONE.with_notify(made.writable())).map(|_| ()), driven);
+    let both = IoLinks::NONE.with_target(made.readable()).with_notify(made.readable());
+    assert_eq!(k.prepare_io(p, both).map(|_| ()), driven);
+    // I/O の対象として生かしておくことはできる。
+    let io = ok!(k, k.prepare_io(p, IoLinks::NONE.with_target(made.readable())));
+    ok!(k, k.release_io(io));
+}
+
+#[test]
+fn a_closed_end_is_seen_by_the_other_side() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (q, _) = process(&mut k);
+    let made = pipe(&mut k, p);
+    let c = made.channel();
+    ok!(k, k.retain_channel(q, c, End::Receive));
+    ok!(k, k.release_channel(p, c, End::Receive));
+    assert_eq!(k.receive(p, c, &mut [0u8; 8]), Err(Error::Refused(Refusal::NotHeld)));
+    assert_eq!(k.send(q, c, b"x", None), Err(Error::Refused(Refusal::NotHeld)));
+    assert_eq!(ok!(k, k.send(p, c, b"last", None)), Sent::Accepted(4));
+    // 送る端が無くなっても、残りは読める。読み切ると終わりが分かる。
+    ok!(k, k.release_channel(p, c, End::Send));
+    assert_eq!(k.release_channel(p, c, End::Send), Err(Error::Refused(Refusal::NotHeld)));
+    assert_eq!(k.retain_channel(p, c, End::Send), Err(Error::Refused(Refusal::EndClosed)));
+    assert_eq!(take(&mut k, q, c, 8), Ok((b"last".to_vec(), None)));
+    assert_eq!(take(&mut k, q, c, 8), Err(Received::Ended));
+    assert_eq!(k.signal_count(made.readable()), Ok(1), "終わりは「読める」として通知する");
+    // 最後の端が無くなると回収し、通知の資源も破棄する。
+    assert_eq!(k.census().channels(), 1);
+    ok!(k, k.release_channel(q, c, End::Receive));
+    assert_eq!(k.census().channels(), 0);
+    assert_eq!(k.channel_queued(c), Err(Error::Stale(Tag::Channel)));
+    assert_eq!(
+        drain(&mut k),
+        vec![Effect::ObjectReclaimed { object: made.readable() }, Effect::ObjectReclaimed { object: made.writable() }]
+    );
+}
+
+#[test]
+fn a_channel_without_receivers_drops_its_content() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let made = pipe(&mut k, p);
+    let c = made.channel();
+    let carried = event(&mut k, p);
+    assert_eq!(ok!(k, k.send(p, c, b"abc", Some(Parcel::Object(carried)))), Sent::Accepted(3));
+    assert_eq!(ok!(k, k.send(p, c, b"de", None)), Sent::Accepted(2));
+    assert_eq!(k.signal_count(made.writable()), Ok(0));
+    ok!(k, k.release_channel(p, c, End::Receive));
+    // 運んでいた保持は誰にも渡らずに手放され、資源は破棄される。
+    assert_eq!(drain(&mut k), vec![Effect::ObjectReclaimed { object: carried }]);
+    assert_eq!((k.channel_queued(c), k.signal_count(made.writable())), (Ok(0), Ok(1)));
+    assert_eq!(ok!(k, k.send(p, c, b"x", None)), Sent::NoReceiver);
+    assert_eq!(k.channel_queued(c), Ok(0));
+    assert_eq!(k.retain_channel(p, c, End::Receive), Err(Error::Refused(Refusal::EndClosed)));
+}
+
+#[test]
+fn a_message_carries_a_hold_from_sender_to_receiver() {
+    let mut k = kernel_with(Limits::DEFAULT.with_holdings(2));
+    let (p, _) = process(&mut k);
+    let (q, _) = process(&mut k);
+    let c = pipe(&mut k, p).channel();
+    ok!(k, k.retain_channel(q, c, End::Receive));
+    let o = event(&mut k, p);
+    let b = ok!(k, k.create_backing(p, PAGE));
+    // 持っていない資源は送れない。
+    assert_eq!(k.send(q, c, b"", Some(Parcel::Object(o))), Err(Error::Refused(Refusal::NotHeld)));
+    ok!(k, k.retain_channel(q, c, End::Send));
+    assert_eq!(k.send(q, c, b"", Some(Parcel::Object(o))), Err(Error::Refused(Refusal::NotHeld)));
+    assert_eq!(k.send(q, c, b"", Some(Parcel::Backing(b))), Err(Error::Refused(Refusal::NotHeld)));
+    assert_eq!(ok!(k, k.send(p, c, b"obj", Some(Parcel::Object(o)))), Sent::Accepted(3));
+    assert_eq!(ok!(k, k.send(p, c, b"mem", Some(Parcel::Backing(b)))), Sent::Accepted(3));
+    // 送り手の保持は移った。運ばれている間、資源は破棄されない。
+    assert_eq!(k.release_object(p, o), Err(Error::Refused(Refusal::NotHeld)));
+    assert_eq!(k.release_backing(p, b), Err(Error::Refused(Refusal::NotHeld)));
+    assert!(drain(&mut k).is_empty());
+    assert_eq!((k.signal_count(o), k.backing_len(b)), (Ok(0), Ok(PAGE)));
+    // 受け手が保持を増やせなければ、メッセージは残る。
+    let (first, second) = (event(&mut k, q), event(&mut k, q));
+    let before = k.snapshot().unwrap();
+    assert_eq!(k.receive(q, c, &mut [0u8; 8]), Err(Error::Exhausted(Resource::Holdings)));
+    assert_eq!(k, before);
+    ok!(k, k.release_object(q, first));
+    ok!(k, k.release_object(q, second));
+    let _ = drain(&mut k);
+    assert_eq!(take(&mut k, q, c, 8), Ok((b"obj".to_vec(), Some(Parcel::Object(o)))));
+    assert_eq!(take(&mut k, q, c, 8), Ok((b"mem".to_vec(), Some(Parcel::Backing(b)))));
+    assert!(drain(&mut k).is_empty());
+    // 受け手が最後の保持者になった。
+    ok!(k, k.release_object(q, o));
+    ok!(k, k.release_backing(q, b));
+    assert_eq!(drain(&mut k), vec![Effect::ObjectReclaimed { object: o }, Effect::BackingReclaimed { backing: b }]);
+}
+
+#[test]
+fn a_carried_backing_is_released_when_nobody_can_receive_it() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let c = pipe(&mut k, p).channel();
+    let b = ok!(k, k.create_backing(p, PAGE));
+    assert_eq!(ok!(k, k.send(p, c, b"", Some(Parcel::Backing(b)))), Sent::Accepted(0));
+    assert!(drain(&mut k).is_empty());
+    ok!(k, k.release_channel(p, c, End::Receive));
+    assert_eq!(drain(&mut k), vec![Effect::BackingReclaimed { backing: b }]);
+}
+
+#[test]
+fn process_exit_closes_its_ends() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (q, _) = process(&mut k);
+    let made = pipe(&mut k, p);
+    let c = made.channel();
+    ok!(k, k.retain_channel(q, c, End::Send));
+    ok!(k, k.release_channel(p, c, End::Send));
+    assert_eq!(ok!(k, k.send(q, c, b"bye", None)), Sent::Accepted(3));
+    ok!(k, k.exit_process(q, ExitCode::new(0)));
+    let _ = drain(&mut k);
+    // 終了したプロセスの送る端は閉じ、受け手は残りを読んでから終わりを知る。
+    assert_eq!(take(&mut k, p, c, 8), Ok((b"bye".to_vec(), None)));
+    assert_eq!(take(&mut k, p, c, 8), Err(Received::Ended));
+    ok!(k, k.exit_process(p, ExitCode::new(0)));
+    assert_eq!(k.census().channels(), 0);
+    let _ = drain(&mut k);
+    assert!(is_empty(&k));
+}
+
+#[test]
+fn channels_are_bounded_by_the_limits() {
+    let mut k = kernel_with(Limits::DEFAULT.with_channels(2).with_channel_bytes(24));
+    let (p, _) = process(&mut k);
+    for bad in [ChannelSpec::messages(0, 8), ChannelSpec::stream(0)] {
+        assert_eq!(k.create_channel(p, bad), Err(Error::Refused(Refusal::BadChannelSpec)));
+    }
+    let before = k.snapshot().unwrap();
+    assert_eq!(k.create_channel(p, ChannelSpec::stream(25)), Err(Error::Exhausted(Resource::ChannelBytes)));
+    assert_eq!(k.create_channel(p, ChannelSpec::messages(5, 5)), Err(Error::Exhausted(Resource::ChannelBytes)));
+    assert_eq!(k, before);
+    let first = ok!(k, k.create_channel(p, ChannelSpec::messages(2, 8))).channel();
+    ok!(k, k.create_channel(p, ChannelSpec::stream(8)));
+    assert_eq!(k.create_channel(p, ChannelSpec::stream(1)), Err(Error::Exhausted(Resource::ChannelBytes)));
+    assert_eq!(k.create_channel(p, ChannelSpec::messages(1, 0)), Err(Error::Exhausted(Resource::Channels)));
+    // 回収すると、数もバイト数も戻る。
+    ok!(k, k.release_channel(p, first, End::Send));
+    ok!(k, k.release_channel(p, first, End::Receive));
+    ok!(k, k.create_channel(p, ChannelSpec::stream(16)));
+}
+
+#[test]
+fn a_restored_state_carries_the_channel_content() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let c = pipe(&mut k, p).channel();
+    let o = event(&mut k, p);
+    assert_eq!(ok!(k, k.send(p, c, b"keep", Some(Parcel::Object(o)))), Sent::Accepted(4));
+    let mut copy = k.snapshot().unwrap().restore(InstanceId::new(2)).unwrap();
+    copy.audit().unwrap();
+    assert_eq!(take(&mut copy, p, c, 8), Ok((b"keep".to_vec(), Some(Parcel::Object(o)))));
+    // 復元した状態でも、送信は確保済みの容量の中で進む。
+    assert_eq!(ok!(copy, copy.send(p, c, &[7; 8], None)), Sent::Accepted(8));
+    assert_eq!(ok!(copy, copy.send(p, c, &[8; 8], None)), Sent::Accepted(8));
+    assert_eq!(take(&mut k, p, c, 8), Ok((b"keep".to_vec(), Some(Parcel::Object(o)))));
 }
 
 // ---- 値の読み出し ----
@@ -2625,6 +2958,7 @@ struct Issued {
     b: BackingId,
     timer: TimerId,
     io: IoId,
+    c: ChannelId,
 }
 
 fn pair_member(instance: u64) -> Issued {
@@ -2637,7 +2971,8 @@ fn pair_member(instance: u64) -> Issued {
     ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), Prot::READ));
     let timer = ok!(k, k.create_timer(p, o));
     let io = ok!(k, k.prepare_io(p, IoLinks::NONE));
-    Issued { k, p, t, o, b, timer, io }
+    let c = ok!(k, k.create_channel(p, ChannelSpec::messages(2, 8))).channel();
+    Issued { k, p, t, o, b, timer, io, c }
 }
 
 #[test]
@@ -2664,8 +2999,11 @@ fn a_foreign_id_is_refused_in_every_position() {
     // lint foreign-ids-tested が、Input の ID の引数が全てここにあることを確かめる。
     let mut own = pair_member(1);
     let other = pair_member(2);
-    let (p, t, o, b, timer, io) = (own.p, own.t, own.o, own.b, own.timer, own.io);
-    let (fp, ft, fo, fb, ftimer, fio) = (other.p, other.t, other.o, other.b, other.timer, other.io);
+    let (p, t, o, b, timer, io, c) = (own.p, own.t, own.o, own.b, own.timer, own.io, own.c);
+    let (fp, ft, fo, fb, ftimer, fio, fc) = (other.p, other.t, other.o, other.b, other.timer, other.io, other.c);
+    let mut buffers = [[0u8; 8]; 2];
+    let [first_buffer, second_buffer] = &mut buffers;
+    let pipe = ChannelSpec::stream(8);
     let spec = SignalSpec::new(SignalMode::Keep, 0, 1);
     let code = ExitCode::new(1);
     let page = range(0x8000, PAGE);
@@ -2710,6 +3048,17 @@ fn a_foreign_id_is_refused_in_every_position() {
         Input::Map(p, page, backed(fb, 0), Prot::READ),
         Input::Unmap(fp, range(0x1000, PAGE)),
         Input::Protect(fp, range(0x1000, PAGE), Prot::READ_WRITE),
+        Input::CreateChannel(fp, pipe),
+        Input::RetainChannel(fp, c, End::Send),
+        Input::RetainChannel(p, fc, End::Send),
+        Input::ReleaseChannel(fp, c, End::Receive),
+        Input::ReleaseChannel(p, fc, End::Receive),
+        Input::Send(fp, c, b"a", None),
+        Input::Send(p, fc, b"a", None),
+        Input::Send(p, c, b"a", Some(Parcel::Object(fo))),
+        Input::Send(p, c, b"a", Some(Parcel::Backing(fb))),
+        Input::Receive(fp, c, first_buffer),
+        Input::Receive(p, fc, second_buffer),
     ];
     let before = own.k.snapshot().unwrap();
     for (at, input) in inputs.into_iter().enumerate() {
@@ -2731,6 +3080,8 @@ fn a_foreign_id_is_refused_in_every_position() {
     assert_eq!(k.backing_len(fb), Err(Error::Foreign));
     assert_eq!(k.io_phase(fio), Err(Error::Foreign));
     assert_eq!(k.io_outcome(fio), Err(Error::Foreign));
+    assert_eq!(k.channel_queued(fc), Err(Error::Foreign));
+    assert_eq!(k.next_message_len(fc), Err(Error::Foreign));
     assert_eq!(k.translate(fp, range(0x1000, 1), Access::Read), Err(Error::Foreign));
     assert_eq!(k.mapping_at(fp, addr), Err(Error::Foreign));
     assert_eq!(k.next_mapping(fp, addr), Err(Error::Foreign));

@@ -5,14 +5,15 @@ use std::fmt::Debug;
 use std::num::NonZeroU32;
 
 use kome::{
-    Access, AddrWidth, BackingId, BackingOffset, Budget, CancelReply, Completion, CompletionKind, Deadline, Duration,
-    Effect, Error, ExitCode, GuestAddr, GuestRange, HostError, InstanceId, Instant, Interruptible, IoId, IoLinks,
-    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFaultKind, NotRelinquished, ObjectId, PageSize, Period, ProcessId, ProcessPhase, Prot,
-    Refusal, RunPermit, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, TimerId, WaitMode, WaitOutcome,
+    Access, AddrWidth, BackingId, BackingOffset, Budget, CancelReply, ChannelId, ChannelSpec, Completion, CompletionKind,
+    Deadline, Duration, Effect, End, Error, ExitCode, GuestAddr, GuestRange, HostError, InstanceId, Instant, Interruptible, IoId, IoLinks,
+    IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFaultKind, NotRelinquished, ObjectId, PageSize, Parcel, Period, ProcessId, ProcessPhase, Prot,
+    Received, Refusal, RunPermit, Sent, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, TimerId, WaitMode, WaitOutcome,
     WaitStart, WorkerId,
 };
 
 use crate::pages::{Expect, Pages, Perm, Touch};
+use crate::pipes::{Got, Pipe, Put, Shape};
 
 /// シミュレーションのページの大きさ。
 pub const PAGE: u64 = 0x1000;
@@ -36,6 +37,8 @@ pub fn limits() -> Limits {
         .with_mappings(6)
         .with_wait_targets(3)
         .with_holdings(8)
+        .with_channels(3)
+        .with_channel_bytes(16)
         .with_quantum(Budget::new(10))
         // advance が途中で区切って返る経路を通すため、目安を小さくする。
         .with_advance_batch(NonZeroU32::MIN.saturating_add(1))
@@ -65,6 +68,8 @@ pub struct Summary {
     pub kernel: Kernel,
     /// 写しから別の実行インスタンスとして復元し、そちらへ乗り換えた回数。
     pub restores: u64,
+    /// 通信路の操作が到達した結果の種類。操作列が空回りしていないことを試験が確かめる。
+    pub reached: BTreeSet<&'static str>,
 }
 
 struct Reader<'a> {
@@ -162,6 +167,9 @@ struct Sim {
     backings: Vec<BackingId>,
     timers: Vec<TimerId>,
     ios: Vec<IoId>,
+    channels: Vec<ChannelId>,
+    /// 生きている通信路の独立したモデルと、その通知の資源 (読める、書ける)。
+    pipes: BTreeMap<ChannelId, (Pipe<ProcessId, Parcel>, ObjectId, ObjectId)>,
     held: Vec<Held>,
     /// 登録中の待機と、その対象。
     blocked: BTreeMap<ThreadId, Vec<ObjectId>>,
@@ -182,6 +190,7 @@ struct Sim {
     refused: usize,
     /// 復元した回数。復元のたびに新しい実行インスタンスの識別を作る。
     restores: u64,
+    reached: BTreeSet<&'static str>,
 }
 
 fn fresh<T: Ord + Copy + Debug>(gone: &BTreeSet<T>, id: T) -> Result<(), String> {
@@ -223,6 +232,8 @@ impl Sim {
             backings: Vec::new(),
             timers: Vec::new(),
             ios: Vec::new(),
+            channels: Vec::new(),
+            pipes: BTreeMap::new(),
             held: Vec::new(),
             blocked: BTreeMap::new(),
             counted: BTreeMap::new(),
@@ -239,6 +250,7 @@ impl Sim {
             accepted: 0,
             refused: 0,
             restores: 0,
+            reached: BTreeSet::new(),
         })
     }
 
@@ -306,6 +318,7 @@ impl Sim {
                 }
             }
             Effect::ProcessExited { process, .. } => {
+                // 通信路の端は、observe が先に外している。
                 self.spaces.remove(&process);
                 let phase = self.k.process_phase(process);
                 if !matches!(phase, Ok(ProcessPhase::Draining) | Err(Error::Stale(Tag::Process))) {
@@ -321,6 +334,12 @@ impl Sim {
             Effect::ObjectReclaimed { object } => {
                 retire(&mut self.gone_objects, object)?;
                 self.counted.remove(&object);
+                // 両端の保持が無くなった通信路は回収され、その通知の資源はここで破棄される。
+                for (channel, (pipe, readable, writable)) in self.pipes.iter().filter(|(_, (pipe, ..))| !pipe.gone()) {
+                    if *readable == object || *writable == object || pipe.parcels().any(|parcel| parcel == Parcel::Object(object)) {
+                        return Err(format!("IPC-1: 通信路 {channel:?} が使っている資源を破棄した: {object:?}"));
+                    }
+                }
                 // 終了したスレッドの待機は、終了の通知より先に外れている。
                 let waits = |thread: &ThreadId| self.k.thread_phase(*thread).is_ok();
                 if self.blocked.iter().any(|(thread, targets)| waits(thread) && targets.contains(&object)) {
@@ -332,6 +351,9 @@ impl Sim {
             }
             Effect::BackingReclaimed { backing } => {
                 retire(&mut self.gone_backings, backing)?;
+                if self.pipes.values().any(|(pipe, ..)| pipe.parcels().any(|parcel| parcel == Parcel::Backing(backing))) {
+                    return Err(format!("IPC-1: 通信路が運んでいる実体を解放した: {backing:?}"));
+                }
                 if self.held.iter().any(|held| held.stale && held.backings.contains(&backing)) {
                     return Err(format!("MEM-1: 古い世代の実行が使っている実体を解放した: {backing:?}"));
                 }
@@ -360,6 +382,17 @@ impl Sim {
 
     /// 操作の前に `seen` 個あったキューの、それより後ろを監視へ渡す。キューは取り出さない。
     fn observe(&mut self, seen: usize) -> Result<(), String> {
+        // 終了したプロセスの端は、終了の通知より先に外れている。捨てた中身が運んでいた資源の破棄も、
+        // 通知より先に届く。モデルの端を先に外してから、順に見る。
+        let mut at = seen;
+        while let Some(effect) = self.k.peek_effect(at) {
+            if let Effect::ProcessExited { process, .. } = effect {
+                for (pipe, ..) in self.pipes.values_mut() {
+                    pipe.forget(process);
+                }
+            }
+            at = at.saturating_add(1);
+        }
         let mut at = seen;
         while let Some(effect) = self.k.peek_effect(at) {
             self.on_effect(effect)?;
@@ -375,6 +408,40 @@ impl Sim {
             if actual != Ok(*expected) {
                 return Err(format!("{object:?} の数が {actual:?}、増減の合計は {expected}"));
             }
+        }
+        Ok(())
+    }
+
+    /// モデルとカーネルで、すべての通信路の中身の量、次の長さ、読める・書けるの通知を比べる。
+    /// 両端の保持が無くなった通信路は、回収されていることを確かめてモデルから外す。
+    fn check_pipes(&mut self) -> Result<(), String> {
+        let mut reclaimed = Vec::new();
+        for (channel, (pipe, readable, writable)) in &self.pipes {
+            let queued = self.k.channel_queued(*channel);
+            if pipe.gone() {
+                if queued != Err(Error::Stale(Tag::Channel)) {
+                    return Err(format!("IPC-1: 両端の保持が無い通信路が残っている: {channel:?} {queued:?}"));
+                }
+                reclaimed.push(*channel);
+                self.reached.insert("reclaimed");
+                continue;
+            }
+            let wide = |len: usize| u64::try_from(len).map_err(|error| error.to_string());
+            let next = pipe.next_len().map(wide).transpose()?;
+            if queued != Ok(wide(pipe.queued())?) || self.k.next_message_len(*channel) != Ok(next) {
+                return Err(format!("IPC-1: 通信路 {channel:?} の中身が {queued:?}、モデルは {}", pipe.queued()));
+            }
+            let levels = (self.k.signal_count(*readable), self.k.signal_count(*writable));
+            if levels != (Ok(u64::from(pipe.readable())), Ok(u64::from(pipe.writable()))) {
+                return Err(format!(
+                    "IPC-1: 通信路 {channel:?} の通知が {levels:?}、モデルは 読める {} 書ける {}",
+                    pipe.readable(),
+                    pipe.writable()
+                ));
+            }
+        }
+        for channel in reclaimed {
+            self.pipes.remove(&channel);
         }
         Ok(())
     }
@@ -932,6 +999,185 @@ impl Sim {
                     Err(error) => return Err(format!("復元の拒否が状況と合わない: {error:?}")),
                 }
             }
+            52 => {
+                let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
+                let narrow = |value: u64| u32::try_from(value).map_err(|error| error.to_string());
+                let size = |value: u64| usize::try_from(value).map_err(|error| error.to_string());
+                // 数や容量が 0 の形は拒否される。
+                let (spec, shape) = if r.flag() {
+                    let bytes = r.below(7);
+                    (ChannelSpec::stream(narrow(bytes)?), (bytes != 0).then_some(Shape::Stream(size(bytes)?)))
+                } else {
+                    let (count, max_len) = (r.below(4), r.below(5));
+                    let shape = Shape::Messages(size(count)?, size(max_len)?);
+                    (ChannelSpec::messages(narrow(count)?, narrow(max_len)?), (count != 0).then_some(shape))
+                };
+                match (self.k.create_channel(process, spec), shape) {
+                    (Ok(created), Some(shape)) => {
+                        fresh(&self.gone_objects, created.readable())?;
+                        fresh(&self.gone_objects, created.writable())?;
+                        self.channels.push(created.channel());
+                        self.objects.push(created.readable());
+                        self.objects.push(created.writable());
+                        if self.pipes.contains_key(&created.channel()) {
+                            return Err(format!("ID-1: 生きている通信路の ID をもう一度発行した: {created:?}"));
+                        }
+                        let pipe = Pipe::new(shape, process);
+                        self.pipes.insert(created.channel(), (pipe, created.readable(), created.writable()));
+                        Outcome::Accepted
+                    }
+                    (Ok(created), None) => return Err(format!("IPC-1: 容量の無い通信路を作れた: {created:?}")),
+                    (Err(Error::Refused(Refusal::BadChannelSpec)), Some(shape)) => {
+                        return Err(format!("モデルでは作れる形 {shape:?} を拒否した"));
+                    }
+                    (Err(error), Some(_) | None) => Outcome::Refused(error),
+                }
+            }
+            53 => {
+                let Some(channel) = r.prefer(&self.channels, |channel| self.pipes.contains_key(channel)) else { return Ok(Outcome::Skipped) };
+                let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
+                let sending = r.flag();
+                let end = if sending { End::Send } else { End::Receive };
+                let open = self.pipes.get(&channel).is_some_and(|(pipe, ..)| pipe.open(sending));
+                match self.k.retain_channel(process, channel, end) {
+                    Ok(()) if !open => return Err(format!("IPC-1: 保持の無い端 {end:?} を増やせた: {channel:?}")),
+                    Ok(()) => {
+                        let (pipe, ..) = self.pipes.get_mut(&channel).ok_or("モデルに無い通信路の保持を受理した")?;
+                        pipe.retain(process, sending);
+                        Outcome::Accepted
+                    }
+                    Err(Error::Refused(Refusal::EndClosed)) if open => {
+                        return Err(format!("モデルでは保持のある端 {end:?} を、閉じたとして拒否した: {channel:?}"));
+                    }
+                    Err(error) => Outcome::Refused(error),
+                }
+            }
+            54 => {
+                let Some(channel) = r.prefer(&self.channels, |channel| self.pipes.contains_key(channel)) else { return Ok(Outcome::Skipped) };
+                let sending = r.flag();
+                let end = if sending { End::Send } else { End::Receive };
+                let holder = |process: &ProcessId| self.pipes.get(&channel).is_some_and(|(pipe, ..)| pipe.holds(*process, sending));
+                let Some(process) = r.prefer(&self.processes, holder) else { return Ok(Outcome::Skipped) };
+                let held = holder(&process);
+                match self.quiet(|k| k.release_channel(process, channel, end)) {
+                    Ok(()) if !held => return Err(format!("IPC-1: 保持していない端 {end:?} を手放せた: {process:?} {channel:?}")),
+                    Ok(()) => {
+                        let (pipe, ..) = self.pipes.get_mut(&channel).ok_or("モデルに無い通信路の解放を受理した")?;
+                        if pipe.release(process, sending).iter().any(|parcel| matches!(parcel, Parcel::Object(_) | Parcel::Backing(_))) {
+                            self.reached.insert("dropped-parcel");
+                        }
+                        Outcome::Accepted
+                    }
+                    Err(error) if held => return Err(format!("保持している端 {end:?} の解放が拒否された: {error:?}")),
+                    Err(error) => Outcome::Refused(error),
+                }
+            }
+            55..=57 => {
+                let Some(channel) = r.prefer(&self.channels, |channel| self.pipes.contains_key(channel)) else { return Ok(Outcome::Skipped) };
+                let holder = |process: &ProcessId| self.pipes.get(&channel).is_some_and(|(pipe, ..)| pipe.holds(*process, true));
+                let Some(process) = r.prefer(&self.processes, holder) else { return Ok(Outcome::Skipped) };
+                let data: Vec<u8> = (0..r.below(6)).map(|_| r.byte()).collect();
+                let parcel = match r.below(6) {
+                    0 => r.prefer(&self.objects, self.exists()).map(Parcel::Object),
+                    1 => r.prefer(&self.backings, |backing| self.k.backing_len(*backing).is_ok()).map(Parcel::Backing),
+                    _ => None,
+                };
+                // モデルが受け付ける形の送信なら、その結果。長すぎる、流れに資源を載せる、端を持たない送信は拒否。
+                let expected = self.pipes.get(&channel).filter(|(pipe, ..)| pipe.holds(process, true)).and_then(|(pipe, ..)| {
+                    if parcel.is_some() && !pipe.carries() {
+                        return None;
+                    }
+                    match pipe.clone().put(&data, parcel) {
+                        Put::TooLong => None,
+                        put @ (Put::Accepted(_) | Put::Full | Put::NoReceiver) => Some(put),
+                    }
+                });
+                match (self.quiet(|k| k.send(process, channel, &data, parcel)), expected) {
+                    (Ok(sent), Some(put)) => {
+                        let got = match sent {
+                            Sent::Accepted(bytes) => Put::Accepted(usize::try_from(bytes).map_err(|error| error.to_string())?),
+                            Sent::Full => Put::Full,
+                            Sent::NoReceiver => Put::NoReceiver,
+                        };
+                        if got != put {
+                            return Err(format!("IPC-1: 送信の結果が {got:?}、モデルは {put:?}"));
+                        }
+                        let (pipe, ..) = self.pipes.get_mut(&channel).ok_or("モデルに無い通信路への送信を受理した")?;
+                        pipe.put(&data, parcel);
+                        self.reached.insert(match (put, parcel) {
+                            (Put::Accepted(taken), None) if taken < data.len() => "sent-part",
+                            (Put::Accepted(_), None) => "sent",
+                            (Put::Accepted(_), Some(Parcel::Object(_))) => "sent-object",
+                            (Put::Accepted(_), Some(Parcel::Backing(_))) => "sent-backing",
+                            (Put::Full, _) => "full",
+                            (Put::NoReceiver, _) => "no-receiver",
+                            (Put::TooLong, _) => "too-long",
+                        });
+                        Outcome::Accepted
+                    }
+                    (Ok(sent), None) => return Err(format!("IPC-1: モデルでは拒否される送信の結果が {sent:?}")),
+                    // 資源を載せた送信は、送り手がその資源を保持していなければ拒否される。モデルは保持を持たない。
+                    (Err(error), Some(put)) if parcel.is_none() => {
+                        return Err(format!("モデルでは {put:?} になる送信を拒否した: {error:?}"));
+                    }
+                    (Err(error), Some(_) | None) => {
+                        if matches!(error, Error::Refused(Refusal::MessageTooLong)) {
+                            self.reached.insert("too-long");
+                        }
+                        Outcome::Refused(error)
+                    }
+                }
+            }
+            58..=60 => {
+                let Some(channel) = r.prefer(&self.channels, |channel| self.pipes.contains_key(channel)) else { return Ok(Outcome::Skipped) };
+                let holder = |process: &ProcessId| self.pipes.get(&channel).is_some_and(|(pipe, ..)| pipe.holds(*process, false));
+                let Some(process) = r.prefer(&self.processes, holder) else { return Ok(Outcome::Skipped) };
+                const UNTOUCHED: u8 = 0xee;
+                let room = usize::try_from(r.below(7)).map_err(|error| error.to_string())?;
+                let mut buffer = vec![UNTOUCHED; room];
+                let expected = self.pipes.get(&channel).filter(|(pipe, ..)| pipe.holds(process, false)).map(|(pipe, ..)| pipe.peek(room));
+                match (self.k.receive(process, channel, &mut buffer), expected) {
+                    (Ok(Received::Data { bytes, parcel }), Some(Got::Data(want, carried))) => {
+                        let len = usize::try_from(bytes).map_err(|error| error.to_string())?;
+                        let (filled, rest) = buffer.split_at_checked(len).ok_or("IPC-1: 受け取ったバイト数がバッファより長い")?;
+                        if filled != want.as_slice() || parcel != carried {
+                            return Err(format!("IPC-1: 受け取ったもの {filled:?} {parcel:?}、モデルは {want:?} {carried:?}"));
+                        }
+                        if rest.iter().any(|byte| *byte != UNTOUCHED) {
+                            return Err("IPC-1: 受け取ったバイト数より後ろのバッファを書き換えた".to_owned());
+                        }
+                        let (pipe, ..) = self.pipes.get_mut(&channel).ok_or("モデルに無い通信路からの受信を受理した")?;
+                        pipe.take(len);
+                        self.reached.insert(match parcel {
+                            None => "received",
+                            Some(Parcel::Object(_)) => "received-object",
+                            Some(Parcel::Backing(_)) => "received-backing",
+                        });
+                        Outcome::Accepted
+                    }
+                    (Ok(Received::Empty), Some(Got::Empty)) => {
+                        self.reached.insert("empty");
+                        Outcome::Accepted
+                    }
+                    (Ok(Received::Ended), Some(Got::Ended)) => {
+                        self.reached.insert("ended");
+                        Outcome::Accepted
+                    }
+                    (Ok(received), expected) => return Err(format!("IPC-1: 受信の結果が {received:?}、モデルは {expected:?}")),
+                    (Err(Error::Refused(Refusal::BufferTooSmall)), Some(Got::TooSmall)) => {
+                        self.reached.insert("too-small");
+                        Outcome::Refused(Error::Refused(Refusal::BufferTooSmall))
+                    }
+                    // 資源を運ぶメッセージは、受け手が保持を増やせなければ受け取れない。モデルは保持の上限を持たない。
+                    (Err(error), Some(Got::Data(_, Some(_))) | None) => {
+                        if buffer.iter().any(|byte| *byte != UNTOUCHED) {
+                            return Err("IPC-1: 拒否した受信がバッファを書き換えた".to_owned());
+                        }
+                        Outcome::Refused(error)
+                    }
+                    (Err(error), Some(expected)) => return Err(format!("モデルでは {expected:?} になる受信を拒否した: {error:?}")),
+                }
+            }
             _ => Outcome::Skipped,
         })
     }
@@ -955,6 +1201,7 @@ impl Sim {
         }
         self.k.audit().map_err(|violation| format!("{}: {}", violation.invariant().code(), violation.detail()))?;
         self.observe(seen)?;
+        self.check_pipes()?;
         // 実行権を返したスレッドの古い世代の印は、Held ごと消えている。
         self.check_counts()?;
         if code & 0x40 != 0 {
@@ -978,5 +1225,5 @@ pub fn drive_probed(bytes: &[u8], probe: Probe) -> Result<Summary, Failure> {
         sim.step(&mut reader).map_err(|message| Failure { step: steps, message })?;
         steps = steps.saturating_add(1);
     }
-    Ok(Summary { steps, accepted: sim.accepted, refused: sim.refused, effects: sim.effects, kernel: sim.k, restores: sim.restores })
+    Ok(Summary { steps, accepted: sim.accepted, refused: sim.refused, effects: sim.effects, kernel: sim.k, restores: sim.restores, reached: sim.reached })
 }

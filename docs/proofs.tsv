@@ -15,3 +15,4 @@ effects_emit_exactly_what_was_promised	4	小さな上限での証明。前提: �
 a_removed_id_never_resolves_again	3	小さな上限での証明。前提: 表の上限は 1、確保が成功した場合。最初の世代は最大値を除く全ての値。作成・削除・再作成が 1 回ずつ
 an_exhausted_slot_is_retired	3	小さな上限での証明。前提: 表の上限は 1、確保が成功した場合。最初の世代は最大値。作成・削除・再作成が 1 回ずつ
 an_id_from_another_issuer_never_resolves	3	小さな上限での証明。前提: 表の上限は 1、確保が成功した場合。二つの実行インスタンスの識別は、互いに異なる u64 の全ての値。作成が 1 回ずつ
+an_admitted_send_fits_the_channel	-	形 (数、長さの上限、容量)、送る長さ、持っているバイト数とメッセージの数は全ての値。前提: メッセージの数は上限以下、流れの中身は容量以下 (audit が確かめる範囲)。メッセージの列の容量 (数 × 長さの上限) の掛け算は計算していない

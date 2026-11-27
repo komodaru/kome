@@ -191,6 +191,15 @@ impl<T> Queue<T> {
         }
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// 全て取り除く。確保しない。容量は残る。
+    pub(crate) fn clear(&mut self) {
+        self.items.clear();
+    }
+
     pub(crate) fn pop_front(&mut self) -> Option<T> {
         self.items.pop_front()
     }
@@ -210,6 +219,29 @@ impl<T> Queue<T> {
 
     pub(crate) fn position(&self, found: impl FnMut(&T) -> bool) -> Option<usize> {
         self.items.iter().position(found)
+    }
+}
+
+impl<T: Copy> Queue<T> {
+    /// 確保済みの容量の中でだけ、末尾へ並べて追加する。入り切らなければ何も足さない。
+    pub(crate) fn extend_within(&mut self, values: &[T]) -> Result<(), ()> {
+        let after = self.items.len().checked_add(values.len()).ok_or(())?;
+        if after > self.items.capacity() {
+            return Err(());
+        }
+        self.items.extend(values.iter().copied());
+        Ok(())
+    }
+
+    /// 先頭から `out` に入るぶんを写して取り除く。写した数を返す。確保しない。
+    pub(crate) fn drain_into(&mut self, out: &mut [T]) -> usize {
+        let mut moved = 0usize;
+        for (slot, value) in out.iter_mut().zip(self.items.iter()) {
+            *slot = *value;
+            moved = moved.saturating_add(1);
+        }
+        self.items.drain(..moved);
+        moved
     }
 }
 

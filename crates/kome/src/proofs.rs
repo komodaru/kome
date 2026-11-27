@@ -3,7 +3,7 @@
 //! 証明には二種類ある。どちらであるかと前提は、証明ごとに `docs/proofs.tsv` に書く
 //! (`kome-lint` の ledger が、この表と照合する)。
 //!
-//! - 整数だけの関数 (範囲、時刻、周期、I/O の遷移、席の勘定) は、引数の全ての値について示す。
+//! - 整数だけの関数 (範囲、時刻、周期、I/O の遷移、席の勘定、送信の受け付け) は、引数の全ての値について示す。
 //! - 表やキューを使う証明 (ID、`Effect` の発行) は、小さな上限と、決まった長さの操作の列に
 //!   限って示す。記憶域の確保が成功した場合だけを対象にする。上限や列の長さを変えた場合は
 //!   示していない。その部分は試験と決定的シミュレーションが見る。
@@ -12,8 +12,9 @@ use core::num::NonZeroU32;
 
 use crate::addr::{GuestAddr, GuestRange, PageSize};
 use crate::effect::{Effect, Effects, Seats};
-use crate::error::Error;
+use crate::error::{Error, Refusal};
 use crate::id::{Arena, IoId, kind};
+use crate::ipc::ChannelSpec;
 use crate::io::{HostError, IoEmit, IoEvent, IoOutcome, IoState, io_step};
 use crate::time::{Duration, Instant, Period};
 
@@ -304,4 +305,44 @@ fn an_id_from_another_issuer_never_resolves() {
     assert!(mine.get_mut(foreign).is_none());
     assert!(mine.remove(foreign).is_none());
     assert!(mine.get(own) == Some(&1));
+}
+
+/// 受け付けた送信は通信路に収まる (台帳 IPC-1)。
+///
+/// メッセージの列では、受け付けるのは「長さが上限以下で、数が上限より少ない」ときだけで、丸ごと
+/// 受け付ける。どのメッセージも長さの上限以下で、数が上限以下なら、中身は「数 × 長さの上限」(容量)
+/// 以下である。この最後の掛け算は証明の中では計算していない (`Kernel::audit` が状態ごとに確かめる)。
+/// 流れでは、受け付けた後の中身が容量以下であることを直接示す。
+#[kani::proof]
+fn an_admitted_send_fits_the_channel() {
+    let framed: bool = kani::any();
+    let (count, max_len, bytes): (u32, u32, u32) = (kani::any(), kani::any(), kani::any());
+    let spec = if framed { ChannelSpec::messages(count, max_len) } else { ChannelSpec::stream(bytes) };
+    // 数や容量が 0 の形は作れない。
+    assert!(spec.sizes().is_some() == if framed { count != 0 } else { bytes != 0 });
+    let (len, queued, frames, parcel): (u32, u64, u64, bool) = (kani::any(), kani::any(), kani::any(), kani::any());
+    let capacity = u64::from(bytes);
+    if framed {
+        kani::assume(frames <= u64::from(count));
+    } else {
+        kani::assume(frames == 0 && queued <= capacity);
+    }
+    let admitted = spec.admit(len, queued, frames, parcel);
+    if framed && len > max_len {
+        assert!(admitted == Err(Refusal::MessageTooLong));
+    } else if !framed && parcel {
+        assert!(admitted == Err(Refusal::ParcelOnStream));
+    } else {
+        assert!(admitted.is_ok());
+        match admitted.ok().flatten() {
+            Some(take) if framed => assert!(take == len && len <= max_len && frames < u64::from(count)),
+            Some(take) => {
+                // 流れは、全部か、空きを埋めるぶん。
+                assert!(u64::from(take) + queued <= capacity && queued < capacity);
+                assert!(take == len || u64::from(take) + queued == capacity);
+            }
+            // 受け付けないのは、空きが無いときだけ。
+            None => assert!(if framed { frames == u64::from(count) } else { queued == capacity }),
+        }
+    }
 }

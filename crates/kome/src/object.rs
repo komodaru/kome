@@ -51,13 +51,14 @@ pub enum SignalOp {
 
 impl TryClone for Object {
     fn try_clone(&self) -> Result<Object, Error> {
-        let Object { mode, count, max, handles, pins, waiters } = self;
+        let Object { mode, count, max, handles, pins, driven, waiters } = self;
         Ok(Object {
             mode: *mode,
             count: *count,
             max: *max,
             handles: *handles,
             pins: *pins,
+            driven: *driven,
             waiters: waiters.try_clone()?,
         })
     }
@@ -70,13 +71,20 @@ pub(crate) struct Object {
     pub(crate) max: u64,
     pub(crate) handles: u32,
     pub(crate) pins: u32,
+    /// 数を kome が決める資源 (通信路の通知)。外からの [`Kernel::signal`] を受け付けない。
+    pub(crate) driven: bool,
     /// この資源を対象に持つ待機中のスレッド。登録順。
     pub(crate) waiters: List<ThreadId>,
 }
 
 impl Object {
     pub(crate) const fn new(spec: SignalSpec, handles: u32, pins: u32) -> Object {
-        Object { mode: spec.mode, count: spec.initial, max: spec.max, handles, pins, waiters: List::new() }
+        Object { mode: spec.mode, count: spec.initial, max: spec.max, handles, pins, driven: false, waiters: List::new() }
+    }
+
+    /// 通信路の通知。数は 0 か 1 で、待機が成立しても変わらない。通信路が一つ固定する。
+    pub(crate) const fn driven(on: bool) -> Object {
+        Object { mode: SignalMode::Keep, count: if on { 1 } else { 0 }, max: 1, handles: 0, pins: 1, driven: true, waiters: List::new() }
     }
 }
 
@@ -125,6 +133,9 @@ impl Kernel {
     /// 数を変更し、成立した待機を登録順に確定する。変更前の数を返す。
     pub fn signal(&mut self, object: ObjectId, op: SignalOp) -> Result<u64, Error> {
         let entry = self.objects.find_mut(object, &self.lineage)?;
+        if entry.driven {
+            return Err(Error::Refused(Refusal::DrivenObject));
+        }
         let previous = entry.count;
         let next = match op {
             SignalOp::Add(amount) => previous.checked_add(amount).filter(|next| *next <= entry.max),
@@ -151,6 +162,15 @@ impl Kernel {
     pub(crate) fn can_pin(&self, object: ObjectId, extra: u32) -> Result<(), Error> {
         let entry = self.objects.find(object, &self.lineage)?;
         entry.pins.checked_add(extra).map(|_| ()).ok_or(Error::Exhausted(Resource::Pins))
+    }
+
+    /// kome が数を増やす通知先 (タイマ、I/O) として、`extra` 個の固定を追加できるか。
+    /// 数を kome が中身から決める資源 (通信路の通知) は、通知先にできない。
+    pub(crate) fn can_notify(&self, object: ObjectId, extra: u32) -> Result<(), Error> {
+        if self.objects.find(object, &self.lineage)?.driven {
+            return Err(Error::Refused(Refusal::DrivenObject));
+        }
+        self.can_pin(object, extra)
     }
 
     /// 固定を一つ追加する。[`Kernel::can_pin`] で確かめた後に呼ぶ。

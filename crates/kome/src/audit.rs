@@ -8,6 +8,7 @@
 use crate::error::Invariant;
 use crate::id::{BackingId, ObjectId, ProcessId};
 use crate::io::IoState;
+use crate::ipc::Parcel;
 use crate::kernel::{Due, Kernel};
 use crate::mem::MapSource;
 use crate::addr::Prot;
@@ -55,6 +56,7 @@ impl Kernel {
         self.audit_waits()?;
         self.audit_time()?;
         self.audit_memory()?;
+        self.audit_channels()?;
         self.audit_effects()
     }
 
@@ -64,7 +66,8 @@ impl Kernel {
             && self.objects.consistent()
             && self.backings.consistent()
             && self.timers.consistent()
-            && self.ios.consistent();
+            && self.ios.consistent()
+            && self.channels.consistent();
         ensure(consistent, Invariant::IdFresh, "表の空きスロットと生存数が一致しない")
     }
 
@@ -76,7 +79,8 @@ impl Kernel {
             && self.objects.reserved()
             && self.backings.reserved()
             && self.timers.reserved()
-            && self.ios.reserved();
+            && self.ios.reserved()
+            && self.channels.reserved();
         ensure(arenas, Invariant::IdFresh, "表が、取り除いた番号を戻すための容量を持っていない")?;
         let workers = usize::try_from(self.limits.workers()).unwrap_or(usize::MAX);
         ensure(
@@ -90,6 +94,14 @@ impl Kernel {
             Invariant::RunQueue,
             "実行待ちの列が、スレッドの数ぶんの容量を持っていない",
         )?;
+        for (_, channel) in self.channels.iter() {
+            let bytes = usize::try_from(channel.capacity).unwrap_or(usize::MAX);
+            ensure(
+                channel.bytes.capacity() >= bytes && channel.frames.capacity() >= channel.frame_limit(),
+                Invariant::ChannelKept,
+                "通信路が、容量ぶんの記憶域を持っていない",
+            )?;
+        }
         ensure(self.effects.reserved(), Invariant::EffectsKept, "Effect のキューが、上限ぶんの容量を持っていない")
     }
 
@@ -161,7 +173,10 @@ impl Kernel {
                 "プロセスの一覧に、所属していないスレッドがある",
             )?;
             ensure(
-                process.objects.well_formed() && process.backings.well_formed(),
+                process.objects.well_formed()
+                    && process.backings.well_formed()
+                    && process.senders.well_formed()
+                    && process.receivers.well_formed(),
                 Invariant::ObjectRefs,
                 "プロセスの参照の記録が整列していない",
             )?;
@@ -194,6 +209,8 @@ impl Kernel {
                     let empty = process.threads.is_empty()
                         && process.objects.is_empty()
                         && process.backings.is_empty()
+                        && process.senders.is_empty()
+                        && process.receivers.is_empty()
                         && process.space.maps.is_empty();
                     ensure(empty, Invariant::ProcessTree, "終了済みのプロセスが資源を持っている")?;
                     let in_flight = self
@@ -231,7 +248,22 @@ impl Kernel {
             .iter()
             .map(|(_, io)| u64::from(io.target == Some(object)).saturating_add(u64::from(io.notify == Some(object))))
             .fold(0u64, u64::saturating_add);
-        waits.saturating_add(exits).saturating_add(process_exits).saturating_add(timers).saturating_add(ios)
+        let channels: u64 = self
+            .channels
+            .iter()
+            .map(|(_, channel)| {
+                let carried = count(channel.frames.iter().filter(|frame| frame.parcel == Some(Parcel::Object(object))));
+                carried
+                    .saturating_add(u64::from(channel.readable == object))
+                    .saturating_add(u64::from(channel.writable == object))
+            })
+            .fold(0u64, u64::saturating_add);
+        waits
+            .saturating_add(exits)
+            .saturating_add(process_exits)
+            .saturating_add(timers)
+            .saturating_add(ios)
+            .saturating_add(channels)
     }
 
     fn audit_objects(&self) -> Result<(), Violation> {
@@ -321,7 +353,7 @@ impl Kernel {
         Ok(())
     }
 
-    fn backing_refs(&self, backing: BackingId) -> (u64, u64, u64) {
+    fn backing_refs(&self, backing: BackingId) -> (u64, u64, u64, u64) {
         let mut holds = 0u64;
         let mut maps = 0u64;
         let mut limbo = 0u64;
@@ -332,7 +364,12 @@ impl Kernel {
             )));
             limbo = limbo.saturating_add(count(process.space.limbo.iter().filter(|held| **held == backing)));
         }
-        (holds, maps, limbo)
+        let transit: u64 = self
+            .channels
+            .iter()
+            .map(|(_, channel)| count(channel.frames.iter().filter(|frame| frame.parcel == Some(Parcel::Backing(backing)))))
+            .fold(0u64, u64::saturating_add);
+        (holds, maps, limbo, transit)
     }
 
     fn audit_layout(&self, process: ProcessId) -> Result<(), Violation> {
@@ -383,12 +420,14 @@ impl Kernel {
         }
         let mut bytes = 0u64;
         for (id, backing) in self.backings.iter() {
-            let (holds, maps, limbo) = self.backing_refs(id);
-            let matches =
-                u64::from(backing.holds) == holds && u64::from(backing.maps) == maps && u64::from(backing.limbo) == limbo;
+            let (holds, maps, limbo, transit) = self.backing_refs(id);
+            let matches = u64::from(backing.holds) == holds
+                && u64::from(backing.maps) == maps
+                && u64::from(backing.limbo) == limbo
+                && u64::from(backing.transit) == transit;
             ensure(matches, Invariant::MemBackingAlive, "実体の参照の数が一致しない")?;
             ensure(
-                holds.saturating_add(maps).saturating_add(limbo) > 0,
+                holds.saturating_add(maps).saturating_add(limbo).saturating_add(transit) > 0,
                 Invariant::MemBackingAlive,
                 "参照の無い実体が残っている",
             )?;
@@ -398,6 +437,55 @@ impl Kernel {
             bytes == self.backing_bytes && bytes <= self.limits.backing_bytes(),
             Invariant::MemBackingAlive,
             "実体の合計バイト数が一致しない",
+        )
+    }
+
+    fn audit_channels(&self) -> Result<(), Violation> {
+        let mut bytes = 0u64;
+        for (id, channel) in self.channels.iter() {
+            let held = |senders: bool| -> u64 {
+                self.processes
+                    .iter()
+                    .map(|(_, process)| {
+                        u64::from(if senders { process.senders.count_of(id) } else { process.receivers.count_of(id) })
+                    })
+                    .fold(0u64, u64::saturating_add)
+            };
+            ensure(
+                u64::from(channel.senders) == held(true) && u64::from(channel.receivers) == held(false),
+                Invariant::ChannelKept,
+                "通信路の端の保持数が一致しない",
+            )?;
+            ensure(
+                channel.senders != 0 || channel.receivers != 0,
+                Invariant::ChannelKept,
+                "端の保持が無い通信路が残っている",
+            )?;
+            let queued = u64::try_from(channel.bytes.len()).unwrap_or(u64::MAX);
+            ensure(
+                queued <= channel.capacity && channel.frames.len() <= channel.frame_limit(),
+                Invariant::ChannelKept,
+                "通信路の中身が容量を超えている",
+            )?;
+            ensure(channel.framed(), Invariant::ChannelKept, "通信路のメッセージの長さの合計が中身と一致しない")?;
+            ensure(
+                channel.receivers != 0 || !channel.has_content(),
+                Invariant::ChannelKept,
+                "受ける端の無い通信路に中身が残っている",
+            )?;
+            let level = |object: ObjectId| self.objects.get(object).map(|entry| (entry.count, entry.driven));
+            ensure(
+                level(channel.readable) == Some((u64::from(channel.readable_now()), true))
+                    && level(channel.writable) == Some((u64::from(channel.writable_now()), true)),
+                Invariant::ChannelKept,
+                "通信路の通知の数が中身と一致しない",
+            )?;
+            bytes = bytes.saturating_add(channel.capacity);
+        }
+        ensure(
+            bytes == self.channel_bytes && bytes <= self.limits.channel_bytes(),
+            Invariant::ChannelKept,
+            "通信路が持てるバイト数の合計が一致しない",
         )
     }
 

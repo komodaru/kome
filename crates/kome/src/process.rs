@@ -11,6 +11,7 @@ use crate::addr::{AddrWidth, PageSize};
 use crate::effect::Effect;
 use crate::error::{Error, Invariant, Refusal, Resource};
 use crate::id::{Id, Kind, ObjectId, ProcessId, ThreadId, kind};
+use crate::ipc::End;
 use crate::kernel::Kernel;
 use crate::mem::Space;
 use crate::object::{Object, SignalMode, SignalSpec};
@@ -166,13 +167,15 @@ impl<K: Kind> Holdings<K> {
 
 impl TryClone for Process {
     fn try_clone(&self) -> Result<Process, Error> {
-        let Process { life, exit_signal, threads, objects, backings, space, ios, stale_runners } = self;
+        let Process { life, exit_signal, threads, objects, backings, senders, receivers, space, ios, stale_runners } = self;
         Ok(Process {
             life: *life,
             exit_signal: *exit_signal,
             threads: threads.try_clone()?,
             objects: objects.try_clone()?,
             backings: backings.try_clone()?,
+            senders: senders.try_clone()?,
+            receivers: receivers.try_clone()?,
             space: space.try_clone()?,
             ios: *ios,
             stale_runners: *stale_runners,
@@ -187,6 +190,10 @@ pub(crate) struct Process {
     pub(crate) threads: List<ThreadId>,
     pub(crate) objects: Holdings<kind::Object>,
     pub(crate) backings: Holdings<kind::Backing>,
+    /// 通信路の送る端の保持。
+    pub(crate) senders: Holdings<kind::Channel>,
+    /// 通信路の受ける端の保持。
+    pub(crate) receivers: Holdings<kind::Channel>,
     pub(crate) space: Space,
     /// このプロセスが持つ I/O 要求の数。
     pub(crate) ios: u32,
@@ -211,6 +218,8 @@ impl Kernel {
             threads: List::new(),
             objects: Holdings::new(),
             backings: Holdings::new(),
+            senders: Holdings::new(),
+            receivers: Holdings::new(),
             space: Space::new(width, page),
             ios: 0,
             stale_runners: 0,
@@ -291,6 +300,16 @@ impl Kernel {
             let entry = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
             let Some(backing) = entry.backings.take_one() else { break };
             self.drop_backing_hold(backing)?;
+        }
+        loop {
+            let entry = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
+            let Some(channel) = entry.senders.take_one() else { break };
+            self.drop_end(channel, End::Send)?;
+        }
+        loop {
+            let entry = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
+            let Some(channel) = entry.receivers.take_one() else { break };
+            self.drop_end(channel, End::Receive)?;
         }
         self.clear_space(process)?;
         self.raise(exit_signal)?;

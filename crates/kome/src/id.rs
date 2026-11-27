@@ -63,6 +63,8 @@ pub enum Tag {
     Timer,
     /// I/O 要求。
     Io,
+    /// 通信路。
+    Channel,
 }
 
 /// ID の種類を表す型。値は持たない。
@@ -95,6 +97,8 @@ pub mod kind {
         Timer => Timers;
         /// I/O 要求。
         Io => Ios;
+        /// 通信路。
+        Channel => Channels;
     }
 }
 
@@ -110,6 +114,8 @@ pub type BackingId = Id<kind::Backing>;
 pub type TimerId = Id<kind::Timer>;
 /// I/O 要求の ID。
 pub type IoId = Id<kind::Io>;
+/// 通信路の ID。
+pub type ChannelId = Id<kind::Channel>;
 
 /// 種類 `K` の資源を指す ID。
 pub struct Id<K: Kind> {
@@ -318,6 +324,18 @@ impl<K: Kind, T> Arena<K, T> {
             self.free.reserve_total(self.slots.len().saturating_add(1))?;
         }
         Ok(())
+    }
+
+    /// 続く `count` 回の [`Arena::insert`] が成功することを保証する。
+    pub(crate) fn reserve_many(&mut self, count: u32) -> Result<(), Error> {
+        if self.live.checked_add(count).is_none_or(|after| after > self.limit) {
+            return Err(Error::Exhausted(K::RESOURCE));
+        }
+        let fresh = usize::try_from(count).unwrap_or(usize::MAX).saturating_sub(self.free.len());
+        let total = self.slots.len().checked_add(fresh).filter(|total| u32::try_from(*total).is_ok());
+        let total = total.ok_or(Error::Exhausted(Resource::Identifiers))?;
+        self.slots.reserve(fresh)?;
+        self.free.reserve_total(total)
     }
 
     pub(crate) fn insert(&mut self, value: T) -> Result<Id<K>, Error> {

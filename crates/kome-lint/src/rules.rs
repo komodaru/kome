@@ -19,6 +19,9 @@ const EXPECT: &str = "tla/expect.tsv";
 const COMPILE_FAIL: &str = "docs/compile-fail.tsv";
 const TESTS_RS: &str = "crates/kome/src/tests.rs";
 const PAGES_RS: &str = "crates/kome-testkit/src/pages.rs";
+const PIPES_RS: &str = "crates/kome-testkit/src/pipes.rs";
+const IPC_RS: &str = "crates/kome/src/ipc.rs";
+const OBJECT_RS: &str = "crates/kome/src/object.rs";
 const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
 
@@ -218,6 +221,7 @@ pub const RULES: &[Rule] = &[
             |repo| repo.append(KERNEL_RS, "fn late(kernel: &mut Kernel, entry: DueEntry) -> bool { kernel.due.push_within(entry).is_ok() }"),
             |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("owner.space.limbo.reserve(", "owner.space.maps.reserve(")),
             |repo| repo.append(CAPACITY, "waiters\twait\tsignal\t同じ操作"),
+            |repo| repo.edit(CAPACITY, |text| text.lines().filter(|line| !line.starts_with("bytes\t")).map(|line| format!("{line}\n")).collect()),
         ],
     },
     Rule {
@@ -230,6 +234,25 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(SIM_RS, |text| text.replace("let expected = model.expect(page, within, touch);", "let expected = actual;")),
             |repo| repo.edit(SIM_RS, |text| text.replace("self.check_merged(process, first, count)?;", "")),
             |repo| repo.edit(SIM_RS, |text| text.replace("&& model.continues(page, PAGE)", "&& false")),
+        ],
+    },
+    Rule {
+        id: "channel-model",
+        about: "通信路のモデルは kome を使わず、決定的シミュレーションが結果・中身・通知をモデルと比べる。通知の数を変えられるのは通信路だけ",
+        check: channel_model,
+        breaks: &[
+            |repo| repo.append(PIPES_RS, "fn sized(spec: kome::ChannelSpec) -> kome::ChannelSpec { spec }"),
+            |repo| repo.edit(SIM_RS, |text| text.replace("        self.check_pipes()?;\n", "")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("if got != put {", "if false {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("if filled != want.as_slice() || parcel != carried {", "if parcel != carried {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("if levels != (Ok(u64::from(pipe.readable())), Ok(u64::from(pipe.writable()))) {", "if false {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("if queued != Ok(wide(pipe.queued())?) || self.k.next_message_len(*channel) != Ok(next) {", "if false {")),
+            |repo| repo.edit(SIM_RS, |text| text.replace("pipe.forget(process);", "")),
+            |repo| repo.edit(OBJECT_RS, |text| text.replacen("        if entry.driven {\n            return Err(Error::Refused(Refusal::DrivenObject));\n        }\n", "", 1)),
+            |repo| repo.edit(TIMER_RS, |text| text.replace("self.can_notify(", "self.can_pin(")),
+            |repo| repo.edit("crates/kome/src/io.rs", |text| text.replace("self.can_notify(", "self.can_pin(")),
+            |repo| repo.edit(IPC_RS, |text| text.replace("let admitted = entry.spec.admit(len, entry.queued(), frames, parcel.is_some()).map_err(Error::Refused)?;", "let admitted = Some(len);")),
+            |repo| repo.append(KERNEL_RS, "fn forced(kernel: &mut Kernel, object: crate::id::ObjectId) {\n    if let Some(entry) = kernel.objects.get_mut(object) {\n        entry.driven = false;\n    }\n}"),
         ],
     },
     Rule {
@@ -1005,7 +1028,7 @@ fn within_receivers(text: &str) -> Vec<(String, usize)> {
         if line.trim_start().starts_with("//") {
             continue;
         }
-        for call in [".push_within(", ".push_back_within("] {
+        for call in [".push_within(", ".push_back_within(", ".extend_within("] {
             for (place, _) in line.match_indices(call) {
                 let before = line.get(..place).unwrap_or("");
                 let name: String = before.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
@@ -1281,7 +1304,54 @@ fn independent_model(repo: &Repo, report: &mut Report) {
     }
 }
 
-const QUIET_OPS: [&str; 20] = [
+fn channel_model(repo: &Repo, report: &mut Report) {
+    // モデルは kome の名前を一つも使わない。端を持つ者と運ぶ資源は、型引数で受け取る。
+    if let Some(found) = scanned(report, PIPES_RS, repo.text(PIPES_RS), true) {
+        for (name, line) in &found.idents {
+            if name == "kome" {
+                report.add(PIPES_RS, *line, "通信路のモデルが kome を使っている。モデルは標準の入れ物と自分の判定だけで書く");
+            }
+        }
+    }
+    let sim = repo.text(SIM_RS);
+    let compared = [
+        ("        self.check_pipes()?;\n", "操作のたびに、通信路の中身と通知をモデルと比べる"),
+        ("if got != put {", "送信の結果をモデルと比べる"),
+        ("if filled != want.as_slice() || parcel != carried {", "受け取ったバイト列と資源をモデルと比べる"),
+        ("if levels != (Ok(u64::from(pipe.readable())), Ok(u64::from(pipe.writable()))) {", "読める・書けるの通知をモデルと比べる"),
+        ("if queued != Ok(wide(pipe.queued())?) || self.k.next_message_len(*channel) != Ok(next) {", "中身の量と次の長さをモデルと比べる"),
+        ("pipe.forget(process);", "プロセスの終了で、モデルの端を外す"),
+    ];
+    for (needed, what) in compared {
+        if !sim.contains(needed) {
+            report.add(SIM_RS, 1, format!("決定的シミュレーションが通信路をモデルと比べていない: {what} (`{needed}`)"));
+        }
+    }
+    // 通知の資源の数は中身から決まる。外からの signal、タイマ、I/O の通知では変えられない。
+    let refusals = repo.text(OBJECT_RS).matches("return Err(Error::Refused(Refusal::DrivenObject));").count();
+    if refusals < 2 {
+        report.add_at(repo, OBJECT_RS, "pub fn signal(", "通信路の通知の資源を、signal か通知先の指定で変えられる (DrivenObject で拒否する)");
+    }
+    for path in [TIMER_RS, "crates/kome/src/io.rs"] {
+        if !repo.text(path).contains("self.can_notify(") {
+            report.add(path, 1, "通知先にする資源を can_notify で確かめていない (通信路の通知の資源は通知先にできない)");
+        }
+    }
+    // 送信の受け付けは、Kani が全ての値で示した判定 (ChannelSpec::admit) を通る。
+    if !repo.text(IPC_RS).contains("let admitted = entry.spec.admit(len, entry.queued(), frames, parcel.is_some()).map_err(Error::Refused)?;") {
+        report.add_at(repo, IPC_RS, "pub fn send(", "send が、受け付けの判定 (ChannelSpec::admit) を通っていない");
+    }
+    // `driven` を決めるのは Object を作る所だけ。後から書き換えない。
+    for (path, text) in kernel_files(repo) {
+        for (at, line) in text.lines().enumerate() {
+            if line.contains(".driven = ") && !path.ends_with("/tests.rs") {
+                report.add(path, at.saturating_add(1), "通知の資源かどうか (driven) を後から書き換えている");
+            }
+        }
+    }
+}
+
+const QUIET_OPS: [&str; 22] = [
     "grant",
     "relinquish",
     "continue_thread",
@@ -1297,6 +1367,8 @@ const QUIET_OPS: [&str; 20] = [
     "release_object",
     "release_backing",
     "release_io",
+    "release_channel",
+    "send",
     "disarm_timer",
     "drop_timer",
     "terminate_thread",

@@ -14,8 +14,9 @@
 use crate::addr::{AddrWidth, GuestRange, PageSize, Prot};
 use crate::effect::{Completion, Effect};
 use crate::error::Error;
-use crate::id::{BackingId, IoId, ObjectId, ProcessId, ThreadId, TimerId};
+use crate::id::{BackingId, ChannelId, IoId, ObjectId, ProcessId, ThreadId, TimerId};
 use crate::io::{CancelReply, IoLinks, IoOutcome, IoSettled};
+use crate::ipc::{ChannelCreated, ChannelSpec, End, Parcel, Received, Sent};
 use crate::kernel::Kernel;
 use crate::mem::{MapGen, MapSource};
 use crate::object::{SignalOp, SignalSpec};
@@ -93,6 +94,16 @@ pub enum Input<'a> {
     Unmap(ProcessId, GuestRange),
     /// [`Kernel::protect`]
     Protect(ProcessId, GuestRange, Prot),
+    /// [`Kernel::create_channel`]
+    CreateChannel(ProcessId, ChannelSpec),
+    /// [`Kernel::retain_channel`]
+    RetainChannel(ProcessId, ChannelId, End),
+    /// [`Kernel::release_channel`]
+    ReleaseChannel(ProcessId, ChannelId, End),
+    /// [`Kernel::send`]
+    Send(ProcessId, ChannelId, &'a [u8], Option<Parcel>),
+    /// [`Kernel::receive`]
+    Receive(ProcessId, ChannelId, &'a mut [u8]),
     /// [`Kernel::poll_effect`]
     PollEffect,
 }
@@ -138,6 +149,12 @@ pub enum Reply {
     Outcome(IoOutcome),
     /// 変更後のアドレス空間の世代。
     Generation(MapGen),
+    /// 通信路を作った。
+    Channel(ChannelCreated),
+    /// 送信の結果。
+    Sent(Sent),
+    /// 受信の結果。
+    Received(Received),
 }
 
 impl Kernel {
@@ -192,6 +209,15 @@ impl Kernel {
             Input::Map(process, range, source, prot) => Reply::Generation(self.map(process, range, source, prot)?),
             Input::Unmap(process, range) => Reply::Count(self.unmap(process, range)?),
             Input::Protect(process, range, prot) => Reply::Generation(self.protect(process, range, prot)?),
+            Input::CreateChannel(process, spec) => Reply::Channel(self.create_channel(process, spec)?),
+            Input::RetainChannel(process, channel, end) => {
+                self.retain_channel(process, channel, end).map(|()| Reply::Done)?
+            }
+            Input::ReleaseChannel(process, channel, end) => {
+                self.release_channel(process, channel, end).map(|()| Reply::Done)?
+            }
+            Input::Send(process, channel, bytes, parcel) => Reply::Sent(self.send(process, channel, bytes, parcel)?),
+            Input::Receive(process, channel, buffer) => Reply::Received(self.receive(process, channel, buffer)?),
             Input::PollEffect => Reply::Effect(self.poll_effect()),
         })
     }

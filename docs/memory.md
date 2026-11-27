@@ -69,7 +69,9 @@ kome の表は全て `Limits` で上限を持つ。上限に達した操作は�
 | --- | --- |
 | `Kernel::new` | `Effect` のキュー (上限ぶん)、実行権の表 (worker の上限ぶん) |
 | `create_process`、`create_thread`、`create_object`、`create_backing`、`create_timer`、`prepare_io` | 表のスロット、所属の列、実行待ち行列の席 |
-| `retain_object`、`retain_backing` | プロセスの参照の列 |
+| `create_channel` | 表のスロット、通信路の容量ぶんの記憶域 (バイト列と、メッセージごとの長さの列)、プロセスの参照の列 |
+| `retain_object`、`retain_backing`、`retain_channel` | プロセスの参照の列 |
+| `receive` | 資源を運ぶメッセージを受け取るときの、受け手の参照の列 |
 | `map`、`unmap`、`protect` | マッピングの列 (範囲の途中を変えると項目が増える)、保留の列 |
 | `wait` | 待機の対象の列、対象ごとの待機者の列、期限の列 |
 | `arm_timer` | 期限の列 |
@@ -87,7 +89,8 @@ kome の表は全て `Limits` で上限を持つ。上限に達した操作は�
 | `continue_thread`、`suspend_thread`、`unsuspend_thread` | スレッドの再開と停止 |
 | `signal`、`interrupt_wait`、`advance` | 起床 (通知、割り込み、期限) |
 | `issue_io`、`cancel_io`、`complete`、`publish_io` | I/O の進行と終端 |
-| `release_object`、`release_backing`、`release_io`、`disarm_timer`、`drop_timer` | 解放 |
+| `release_object`、`release_backing`、`release_io`、`release_channel`、`disarm_timer`、`drop_timer` | 解放 |
+| `send` | 送信 (中身は、作るときに確保した容量へ入れる) |
 | `terminate_thread`、`exit_process` | 終了と回収 |
 | `poll_effect` | `Effect` の取り出し |
 

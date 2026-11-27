@@ -265,6 +265,8 @@ pub(crate) struct Backing {
     pub(crate) maps: u32,
     /// 保留しているアドレス空間の数 (一つの空間は一つの実体を一度だけ保留する)。
     pub(crate) limbo: u32,
+    /// 通信路のメッセージが運んでいる保持の数。
+    pub(crate) transit: u32,
 }
 
 /// `value` を `align` の倍数へ切り上げる。
@@ -294,7 +296,7 @@ impl Kernel {
         owner.backings.room_for_new(limit)?;
         self.backings.reserve()?;
         self.effects.promise(1)?;
-        let backing = self.backings.insert(Backing { len, holds: 1, maps: 0, limbo: 0 })?;
+        let backing = self.backings.insert(Backing { len, holds: 1, maps: 0, limbo: 0, transit: 0 })?;
         let owner = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
         owner.backings.add(backing, limit)?;
         self.backing_bytes = total;
@@ -743,9 +745,9 @@ impl Kernel {
         self.reclaim_backing_if_unused(backing)
     }
 
-    fn reclaim_backing_if_unused(&mut self, backing: BackingId) -> Result<(), Error> {
+    pub(crate) fn reclaim_backing_if_unused(&mut self, backing: BackingId) -> Result<(), Error> {
         let entry = self.backings.get(backing).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
-        if entry.holds != 0 || entry.maps != 0 || entry.limbo != 0 {
+        if entry.holds != 0 || entry.maps != 0 || entry.limbo != 0 || entry.transit != 0 {
             return Ok(());
         }
         let len = entry.len;

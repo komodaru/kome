@@ -4,10 +4,12 @@
 # 確かめ方は、Kernel::audit が報告する文言 (crates/kome/src/audit.rs)、または「同じ操作」
 # (使う操作が、状態を変える前に自分で確保する)。
 #
-# kome-lint の capacity-audited 規則が、容量の中でだけ追加する呼び出し (push_within、
+# kome-lint の capacity-audited 規則が、容量の中でだけ追加する呼び出し (push_within、extend_within、
 # push_back_within) の入れ物が全てここにあり、文言が audit.rs にあることを確かめる。
 queue	Kernel::new (Effect の上限ぶん)	Effect を出す全ての操作 (終了、回収、起床、I/O の進行、中断の要求)	Effect のキューが、上限ぶんの容量を持っていない
 running	Kernel::new (worker の上限ぶん)	grant	実行権の表が、worker の上限ぶんの容量を持っていない
 ready	create_thread (スレッドの数ぶん)	continue_thread、unsuspend_thread、relinquish	実行待ちの列が、スレッドの数ぶんの容量を持っていない
 free	資源を作る全ての操作 (表のスロットの数ぶん)	資源を取り除く全ての操作 (解放、終了、回収)	表が、取り除いた番号を戻すための容量を持っていない
 limbo	unmap (外す実体つきマッピングの数ぶん)	unmap	同じ操作
+bytes	create_channel (通信路の容量ぶん)	send	通信路が、容量ぶんの記憶域を持っていない
+frames	create_channel (メッセージの数の上限ぶん)	send	通信路が、容量ぶんの記憶域を持っていない

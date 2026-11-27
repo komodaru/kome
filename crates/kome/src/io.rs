@@ -226,10 +226,13 @@ impl Kernel {
         }
         let ios = owner.ios.checked_add(1).ok_or(Error::Exhausted(crate::error::Resource::Ios))?;
         match (target, notify) {
-            (Some(target), Some(notify)) if target == notify => self.can_pin(target, 2)?,
+            (Some(target), Some(notify)) if target == notify => self.can_notify(target, 2)?,
             (target, notify) => {
-                for object in [target, notify].into_iter().flatten() {
-                    self.can_pin(object, 1)?;
+                if let Some(target) = target {
+                    self.can_pin(target, 1)?;
+                }
+                if let Some(notify) = notify {
+                    self.can_notify(notify, 1)?;
                 }
             }
         }
