@@ -18,7 +18,7 @@ env:
 
 jobs:
   mutants:
-    # kome の全ての変異について、試験のどれかが落ちることを確かめる。生き残りがあれば失敗する。
+    # kome の全ての変異について、kome 自身の試験のどれかが落ちることを確かめる。生き残りがあれば失敗する。
     name: mutants
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -35,7 +35,7 @@ jobs:
             cargo install --locked cargo-mutants --version 27.1.0
           fi
       - name: mutants
-        run: cargo mutants -p kome --test-workspace true --profile mutants --timeout 90 -j 3
+        run: cargo mutants -p kome --profile mutants --timeout 90 -j 3
       - name: 生き残った変異を残す
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

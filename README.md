@@ -33,7 +33,7 @@ cargo test --workspace                                     # 単体・シナリ�
 cargo build -p kome --target wasm32v1-none                 # OS もホストも無いターゲット
 scripts/ci/tla.sh                                          # TLC。正しい設定は違反なし、誤りの変種は反例
 scripts/ci/kani.sh                                         # Kani の証明を一つずつ
-cargo mutants -p kome --test-workspace true --profile mutants   # 変異試験 (週次)
+cargo mutants -p kome --profile mutants   # 変異試験 (週次)
 ```
 
 実装を変えて TLA+ の表が変わったら `KOME_UPDATE_GOLDEN=1 cargo test -p kome the_tla` で書き直す。
