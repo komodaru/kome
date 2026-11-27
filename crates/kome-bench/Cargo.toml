@@ -8,7 +8,7 @@ repository.workspace = true
 publish = false
 description = "kome の性能の測定: よく通る操作の一回あたりの時間"
 
-[dependencies]
+[dev-dependencies]
 kome = { path = "../kome" }
 kome-host-std = { path = "../kome-host-std" }
 

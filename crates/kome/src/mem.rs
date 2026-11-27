@@ -25,11 +25,15 @@
 //! [`Kernel::translate`] は、範囲外・権限違反・マッピングの境界をまたぐアクセスを
 //! 明示的に扱う基準の経路である。高速経路は、同じ結果になることをこの経路と比べて確かめる。
 
+#[cfg(verus_keep_ghost)]
+use verus_builtin_macros::{verus_spec, verus_verify};
+
 use crate::addr::{Access, AddrWidth, BackingOffset, GuestAddr, GuestRange, PageSize, Prot};
 use crate::effect::Effect;
 use crate::error::{Error, Invariant, Refusal, Resource};
 use crate::id::{BackingId, ProcessId};
 use crate::kernel::Kernel;
+use crate::lookup;
 use crate::process::Life;
 use crate::store::{List, TryClone, plain_try_clone};
 use crate::thread::Run;
@@ -70,6 +74,18 @@ pub(crate) struct Mapping {
 }
 
 impl Mapping {
+    /// 先頭のアドレス。
+    #[cfg_attr(verus_keep_ghost, verus_verify(external_body), verus_spec(start => ensures start == crate::lookup::start_of(*self)))]
+    pub(crate) const fn start(&self) -> u64 {
+        self.start
+    }
+
+    /// 最後のバイトのアドレス。
+    #[cfg_attr(verus_keep_ghost, verus_verify(external_body), verus_spec(last => ensures last == crate::lookup::last_of(*self)))]
+    pub(crate) const fn last(&self) -> u64 {
+        self.last
+    }
+
     /// `from` (このマッピングの中のアドレス) から後ろだけを残したもの。
     fn tail_from(self, from: u64) -> Option<Mapping> {
         let skipped = from.checked_sub(self.start)?;
@@ -262,11 +278,11 @@ impl Space {
 
     /// `addr` 以降に終わる最初のマッピングの位置。
     fn first_ending_at_or_after(&self, addr: u64) -> usize {
-        self.maps.as_slice().partition_point(|mapping| mapping.last < addr)
+        lookup::first_ending_at_or_after(self.maps.as_slice(), addr)
     }
 
     fn at(&self, addr: u64) -> Option<&Mapping> {
-        self.maps.get(self.first_ending_at_or_after(addr)).filter(|mapping| mapping.start <= addr)
+        lookup::containing(self.maps.as_slice(), addr).and_then(|at| self.maps.get(at))
     }
 }
 

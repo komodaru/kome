@@ -195,5 +195,6 @@ lint `foreign-ids-tested` (ID を受け取る全ての引数に、別インス�
 | 走らなかった試験が合格に混ざらない | `scripts/ci/test.sh` の照合、lint `no-skipped-tests` |
 | 確保しないと約束した操作が確保しない | `checks/noalloc` (`docs/memory.md`) |
 | 値の範囲で決まる性質を全ての値について確かめる | Flux の篩型 (`docs/flux.md`)、lint `refinements-kept` |
+| 長さに上限の無い表についての性質を証明する | Verus (`docs/verus.md`)、lint `verus-kept` |
 | 実スレッドのホストが一つの書き手を守る | Loom (`scripts/ci/loom.sh`)、lint `host-single-writer` |
 | その場で検査を黙らせない | lint `no-local-allow`、`escape-comments`、`ci-required` |

@@ -25,11 +25,20 @@
 //!
 //! 不変条件の台帳は `docs/invariants.toml`、検査は [`Kernel::audit`]。
 #![cfg_attr(not(test), no_std)]
+// Verus の仕様を繰り返しの文へ付けるために要る (Verus で確かめるときだけ)。
+#![cfg_attr(verus_keep_ghost, feature(proc_macro_hygiene))]
 
 extern crate alloc;
 // Flux で確かめるときだけ、標準ライブラリの篩型 (checked_add など) を読み込む。
 #[cfg(flux)]
 extern crate flux_core;
+// Verus で確かめるときだけ、Verus の語彙を読み込む。
+#[cfg(verus_keep_ghost)]
+extern crate verus_builtin;
+#[cfg(verus_keep_ghost)]
+extern crate verus_builtin_macros;
+#[cfg(verus_keep_ghost)]
+extern crate vstd;
 
 mod addr;
 mod audit;
@@ -43,6 +52,7 @@ mod io;
 mod ipc;
 mod kernel;
 mod limits;
+mod lookup;
 mod mem;
 mod object;
 mod process;

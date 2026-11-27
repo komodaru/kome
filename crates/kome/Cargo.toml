@@ -20,7 +20,7 @@ check-overflow = "strict"
 
 [lints.rust]
 unsafe_code = "forbid"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(flux)", "cfg(flux_broken)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(flux)", "cfg(flux_broken)", "cfg(verus_keep_ghost)", "cfg(verus_broken)"] }
 missing_docs = "deny"
 unused_must_use = "deny"
 

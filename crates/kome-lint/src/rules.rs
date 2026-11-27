@@ -28,6 +28,10 @@ const LOOM_RS: &str = "crates/kome-host-std/tests/loom.rs";
 const LOOM_SH: &str = "scripts/ci/loom.sh";
 const BENCH_RS: &str = "crates/kome-bench/benches/kernel.rs";
 const BENCH_MD: &str = "docs/bench.md";
+const VERUS_TSV: &str = "docs/verus.tsv";
+const VERUS_SH: &str = "scripts/ci/verus.sh";
+const LOOKUP_RS: &str = "crates/kome/src/lookup.rs";
+const MEM_RS: &str = "crates/kome/src/mem.rs";
 const FLUX_TSV: &str = "docs/flux.tsv";
 const FLUX_SH: &str = "scripts/ci/flux.sh";
 const ADDR_RS: &str = "crates/kome/src/addr.rs";
@@ -333,6 +337,29 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(BENCH_MD, |text| text.replace("| 待機を始めて通知で起こす |", "| 待機 |")),
             |repo| repo.edit(BENCH_RS, |text| text.replace("\"64 バイトのメッセージを送って受け取る\"", "\"メッセージの往復\"")),
             |repo| repo.edit("crates/kome-bench/Cargo.toml", |text| text.replace("harness = false", "harness = true")),
+        ],
+    },
+    Rule {
+        id: "verus-kept",
+        about: "Verus の証明を減らさず、確かめずに信じる定義を増やさず、証明した関数を実際に使う",
+        check: verus_kept,
+        breaks: &[
+            |repo| repo.edit(LOOKUP_RS, |text| {
+                // `containing` の仕様を丸ごと取り除く。
+                let (before, rest) = text.split_once("/// `addr` を含むマッピングの位置。\n#[cfg_attr(verus_keep_ghost, verus_spec(found =>").unwrap_or((text, ""));
+                let (_, after) = rest.split_once("))]\n").unwrap_or(("", ""));
+                format!("{before}{after}")
+            }),
+            |repo| repo.edit(VERUS_TSV, |text| text.replace("kome::lookup::containing\tverified", "kome::lookup::contains\tverified")),
+            |repo| repo.append(LOOKUP_RS, "#[cfg_attr(verus_keep_ghost, verus_verify(external_body), verus_spec(r => ensures r == 0))]\nfn zero() -> u64 { 0 }"),
+            |repo| repo.append(LOOKUP_RS, "#[cfg(verus_keep_ghost)]\nverus! { proof fn anything() ensures false { assume(false); } }"),
+            |repo| repo.append(LOOKUP_RS, &format!("#[cfg(verus_keep_ghost)]\nverus! {{ proof fn anything() ensures false {{ {}(); }} }}", ["ad", "mit"].concat())),
+            |repo| repo.edit(MEM_RS, |text| text.replace("        lookup::containing(self.maps.as_slice(), addr).and_then(|at| self.maps.get(at))", "        self.maps.iter().find(|mapping| mapping.start <= addr && addr <= mapping.last)")),
+            |repo| repo.edit(MEM_RS, |text| text.replace("        lookup::first_ending_at_or_after(self.maps.as_slice(), addr)", "        self.maps.as_slice().partition_point(|mapping| mapping.last < addr)")),
+            |repo| repo.edit(LOOKUP_RS, |text| text.replace("pub(crate) fn verus_broken_lookup(", "pub(crate) fn lookup_twice(")),
+            |repo| repo.edit(VERUS_SH, |text| text.replace(" --cfg verus_broken ", " ")),
+            |repo| repo.edit(VERUS_SH, |text| text.replace("if [ -z \"$listed\" ] || [ \"$(proved \"$out/clean.json\")\" != \"$listed\" ]; then", "if false; then")),
+            |repo| repo.remove(VERUS_TSV),
         ],
     },
     Rule {
@@ -1523,6 +1550,91 @@ fn bench_listed(repo: &Repo, report: &mut Report) {
     }
 }
 
+fn verus_kept(repo: &Repo, report: &mut Report) {
+    if !repo.has(VERUS_TSV) {
+        report.add(VERUS_TSV, 1, "Verus が扱う関数の一覧が無い");
+    }
+    let listed: Vec<(&str, &str)> = repo
+        .text(VERUS_TSV)
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            Some((columns.next()?, columns.next()?))
+        })
+        .collect();
+    let (mut specs, mut trusted, mut loops, mut broken) = (0usize, 0usize, 0usize, 0usize);
+    for (path, text) in repo.under(KOME_SRC, ".rs") {
+        specs = specs.saturating_add(text.matches("verus_spec(").count());
+        trusted = trusted.saturating_add(text.matches("verus_verify(external_body)").count());
+        loops = loops.saturating_add(text.matches("verus_spec(\n        invariant\n").count());
+        broken = broken.saturating_add(text.matches("fn verus_broken_").count());
+        // 証明を飛ばす語は、どの形でも置かない。Mapping を中身の見えない型として渡す一か所だけを除く。
+        let skip = ["ad", "mit()"].concat();
+        for (at, line) in text.lines().enumerate() {
+            let opaque = path == LOOKUP_RS && (line == "#[verifier::external_type_specification]" || line == "#[verifier::external_body]");
+            let assumed = line.contains("assume(") && !line.contains("kani::assume(");
+            let skips = assumed || line.contains(&skip) || line.contains("verifier::external") || line.contains("verus_verify(external)");
+            if skips && !opaque {
+                report.add(path, at.saturating_add(1), "Verus の証明を飛ばす指定を置かない");
+            }
+        }
+    }
+    let want = |kind: &str| listed.iter().filter(|(_, listed)| *listed == kind).count();
+    if trusted != want("trusted") {
+        report.add(VERUS_TSV, 1, format!("本体を確かめずに信じる定義が {trusted} 個 (一覧では {} 個)。増やさない", want("trusted")));
+    }
+    let functions = specs.saturating_sub(loops).saturating_sub(broken);
+    if functions != listed.len() || want("verified") == 0 {
+        report.add(VERUS_TSV, 1, format!("Verus の仕様つきの関数が {functions} 個 (一覧では {} 個)。減らさない。増やしたら一覧を直す", listed.len()));
+    }
+    if broken != 1 {
+        report.add(LOOKUP_RS, 1, "Verus が確かめていることを示す、わざと誤った定義 (`fn verus_broken_..`) が一つ要る");
+    }
+    // 一覧の関数は、その名前で、仕様つきで、あるべきファイルにある。
+    for (function, kind) in &listed {
+        let mut parts = function.split("::").skip(1);
+        let module = parts.next().unwrap_or("");
+        let name = function.rsplit("::").next().unwrap_or("");
+        let text = repo.text(&format!("{KOME_SRC}{module}.rs"));
+        let defined = text.match_indices(&format!("fn {name}(")).any(|(at, _)| {
+            let before = text.get(..at).unwrap_or("");
+            let attribute = before.rfind("#[cfg_attr(verus_keep_ghost, ").map_or("", |from| before.get(from..).unwrap_or(""));
+            let own = !attribute.is_empty() && !attribute.contains("\n}\n");
+            let body_trusted = attribute.contains("verus_verify(external_body)");
+            own && attribute.contains("verus_spec(") && (body_trusted == (*kind == "trusted"))
+        });
+        if !defined || (*kind != "verified" && *kind != "trusted") {
+            report.add(VERUS_TSV, 1, format!("{function} ({kind}) に当たる、Verus の仕様つきの関数が無い"));
+        }
+    }
+    // 証明した関数を、アドレスを引く経路が実際に使う。
+    let mem = repo.text(MEM_RS);
+    for needed in [
+        "        lookup::first_ending_at_or_after(self.maps.as_slice(), addr)",
+        "        lookup::containing(self.maps.as_slice(), addr).and_then(|at| self.maps.get(at))",
+    ] {
+        if !mem.contains(needed) {
+            report.add(MEM_RS, 1, format!("アドレスを引く経路が、証明した関数を使っていない (`{}`)", needed.trim()));
+        }
+    }
+    if let Some(at) = mem.lines().position(|line| line.contains("partition_point") || line.contains("binary_search")) {
+        report.add(MEM_RS, at.saturating_add(1), "マッピングの表は lookup.rs の証明した探索で引く");
+    }
+    let script = repo.text(VERUS_SH);
+    for (needed, why) in [
+        ("\"${check[@]}\" >\"$out/clean.json\"\n", "証明を走らせる"),
+        ("if ! grep -q '\"errors\": 0,' \"$out/clean.json\"; then\n", "証明できない関数が無いことを確かめる"),
+        ("if [ -z \"$listed\" ] || [ \"$(proved \"$out/clean.json\")\" != \"$listed\" ]; then", "証明した関数が一覧とちょうど同じであることを確かめる"),
+        ("if \"${check[@]}\" --cfg verus_broken >\"$out/broken.json\" 2>\"$out/broken.log\"; then\n", "わざと誤った定義が拒まれることを確かめる"),
+        ("if [ \"$refused\" != \"$broken\" ] ||", "拒まれた定義が、わざと誤った定義とちょうど同じであることを確かめる"),
+    ] {
+        if !script.contains(needed) {
+            report.add(VERUS_SH, 1, format!("Verus のスクリプトが足りない: {why}"));
+        }
+    }
+}
+
 fn refinements_kept(repo: &Repo, report: &mut Report) {
     if !repo.has(FLUX_TSV) {
         report.add(FLUX_TSV, 1, "篩型の仕様の一覧が無い");
@@ -1915,7 +2027,7 @@ fn quiet_operations(repo: &Repo, report: &mut Report) {
 }
 
 /// CI が必ず実行するコマンドと、それを置くジョブ。ステップの `run` は、この文字列ちょうどである。
-const CI_RUNS: [(&str, &str); 14] = [
+const CI_RUNS: [(&str, &str); 16] = [
     ("lint", "cargo run -q --locked -p kome-lint"),
     ("lint", "cargo clippy --workspace --all-targets --locked -- -D warnings"),
     ("test", "scripts/ci/test.sh"),
@@ -1930,6 +2042,8 @@ const CI_RUNS: [(&str, &str); 14] = [
     ("flux", "scripts/ci/flux-install.sh"),
     ("flux", "scripts/ci/flux.sh"),
     ("loom", "scripts/ci/loom.sh"),
+    ("verus", "scripts/ci/verus-install.sh"),
+    ("verus", "scripts/ci/verus.sh"),
 ];
 /// ワークフロー、ジョブ、ステップに書いてよいキー。実行の条件や殻を変えるキー (`if`、
 /// `continue-on-error`、`shell`、`defaults`、`working-directory`、ステップの `env`) は無い。

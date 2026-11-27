@@ -147,6 +147,22 @@ jobs:
       - name: loom
         run: scripts/ci/loom.sh
 
+  verus:
+    name: verus
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.verus
+          key: verus-${{ hashFiles('scripts/ci/verus-install.sh') }}
+      - name: Verus を入れる
+        run: scripts/ci/verus-install.sh
+      - name: verus
+        run: scripts/ci/verus.sh
+
   tla:
     name: tla
     runs-on: ubuntu-latest
