@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/kome", "crates/kome-testkit", "crates/kome-lint", "crates/kome-host-std"]
+members = ["crates/kome", "crates/kome-testkit", "crates/kome-lint", "crates/kome-host-std", "crates/kome-bench"]
 exclude = ["fuzz"]
 
 [workspace.package]

@@ -3336,6 +3336,39 @@ fn a_context_follows_its_thread_across_workers() {
 }
 
 #[test]
+fn a_context_is_found_by_its_slot_and_never_by_an_earlier_thread() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let mut contexts = Contexts::new();
+    let (first, _) = thread(&mut k, p);
+    let (second, _) = thread(&mut k, p);
+    // 後のスロットから置いても、前のスロットは空いたままで数えない。
+    contexts.insert(second, 20).unwrap();
+    assert_eq!((contexts.len(), contexts.is_empty()), (1, false));
+    assert_eq!(contexts.remove(first), Err(Error::Refused(Refusal::NoContext)));
+    contexts.insert(first, 10).unwrap();
+    assert_eq!(contexts.len(), 2);
+    // 終了したスレッドのスロットを次のスレッドが使う。前の文脈が残っていれば、黙って捨てない。
+    ok!(k, k.terminate_thread(first, ExitCode::new(0)));
+    let (reused, _) = thread(&mut k, p);
+    assert_eq!((reused.slot(), reused == first), (first.slot(), false));
+    assert_eq!(contexts.insert(reused, 30), Err(Error::Refused(Refusal::ContextBusy)));
+    // 新しいスレッドの ID では、前のスレッドの文脈を引けない・取り除けない。
+    assert_eq!(contexts.remove(reused), Err(Error::Refused(Refusal::NoContext)));
+    let permit = ok!(k, k.grant_thread(W0, reused));
+    assert_eq!(contexts.load(&permit).map(|_| ()), Err(Error::Refused(Refusal::NoContext)));
+    assert_eq!(contexts.remove(first), Ok(Some(10)));
+    assert_eq!(contexts.len(), 1);
+    contexts.insert(reused, 30).unwrap();
+    let mut loaded = contexts.load(&permit).unwrap();
+    assert_eq!((*loaded.context(), contexts.len()), (30, 2));
+    contexts.save(loaded).unwrap();
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Yielded, Budget::new(0))), ThreadFate::Ready);
+    assert_eq!((contexts.remove(reused), contexts.remove(second), contexts.len()), (Ok(Some(30)), Ok(Some(20)), 0));
+    assert!(contexts.is_empty());
+}
+
+#[test]
 fn a_run_that_cannot_proceed_still_returns_its_permit() {
     let mut k = kernel();
     let (p, _) = process(&mut k);

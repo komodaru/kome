@@ -8,10 +8,10 @@ use std::thread;
 use std::time::Instant as StdInstant;
 
 use kome::{
-    BackingOffset, Contents, Executor, Instant, RunPermit, SignalMode, SignalSpec, Stop, Stopped, ThreadFate,
-    ThreadPhase, WorkerId,
+    AddrWidth, BackingOffset, Contents, Contexts, Effect, Error, Executor, InstanceId, Instant, Kernel, Limits,
+    PageSize, Ran, RunPermit, SignalMode, SignalSpec, Start, Stop, Stopped, ThreadPhase, WorkerId,
 };
-use kome_host_std::{FlatStore, HostFault, Interrupt, fault};
+use kome_host_std::{FlatStore, Host, HostFault, Interrupt, Personality, fault};
 
 fn clock() -> impl Fn() -> Instant + Send + Sync + 'static {
     let origin = StdInstant::now();
@@ -117,6 +117,69 @@ fn an_idle_worker_wakes_for_the_next_deadline() {
     .unwrap();
 }
 
+/// プロセスが終了したら仕事が終わったと答える Personality。
+#[derive(Default)]
+struct UntilExit {
+    watch: support::Watch,
+}
+
+impl Personality<support::Guest> for UntilExit {
+    fn stopped(&mut self, kernel: &mut Kernel, contexts: &mut Contexts<support::Guest>, ran: &Ran) -> Result<(), Error> {
+        self.watch.stopped(kernel, contexts, ran)
+    }
+
+    fn effect(&mut self, kernel: &mut Kernel, effect: Effect) -> Result<(), Error> {
+        self.watch.effect(kernel, effect)
+    }
+
+    fn finished(&self) -> bool {
+        self.watch.process_exited
+    }
+}
+
+#[test]
+fn the_host_closes_itself_when_the_personality_is_finished() {
+    let mut kernel = Kernel::new(InstanceId::new(1), Limits::DEFAULT.with_workers(3)).unwrap();
+    let (process, _) = kernel.create_process(AddrWidth::Bits32, PageSize::new(4096).unwrap()).unwrap();
+    let threads: Vec<_> = (0..5).map(|_| kernel.create_thread(process, Start::Ready).unwrap().0).collect();
+    let host: Host<support::Guest, UntilExit> = Host::new(kernel, UntilExit::default(), 3, clock());
+    host.with(|state| {
+        for thread in &threads {
+            state.contexts.insert(*thread, support::Guest { left: 40, steps: 0 }).unwrap();
+        }
+    })
+    .unwrap();
+    // 誰も閉じなくても、最後のスレッドが終了したところで全ての worker が戻る。
+    thread::scope(|scope| {
+        for worker in 0..3 {
+            let host = host.clone();
+            scope.spawn(move || assert_eq!(host.work(WorkerId::new(worker), &mut support::Stepper), Ok(())));
+        }
+    });
+    host.with(|state| {
+        state.kernel.audit().unwrap();
+        assert_eq!(state.personality.watch.exited.len(), 5);
+        assert!(state.personality.watch.exited.iter().all(|(_, steps)| *steps == 41));
+        assert!(state.contexts.is_empty());
+    })
+    .unwrap();
+    // 閉じた後に待っても、待ち続けない。
+    host.wait_until(|_| false).unwrap();
+}
+
+#[test]
+fn a_thread_ended_while_not_running_leaves_no_context_behind() {
+    let (host, _, made) = support::host(1, 2, 0, clock());
+    // 実行していないスレッドを外から終了させる。ホストが、その文脈を捨てる。
+    host.with(|state| state.kernel.terminate_thread(made[0], kome::ExitCode::new(9))).unwrap().unwrap();
+    host.with(|state| {
+        assert_eq!(state.contexts.len(), 1);
+        assert_eq!(state.personality.exited, vec![(made[0], 9)]);
+        state.kernel.audit().unwrap();
+    })
+    .unwrap();
+}
+
 #[test]
 fn a_failing_worker_closes_the_host_for_the_others() {
     // 文脈の無いスレッドを実行しようとした worker は失敗で戻り、ほかの worker も終わる。
@@ -138,7 +201,6 @@ fn a_failing_worker_closes_the_host_for_the_others() {
         assert_eq!(state.kernel.thread_phase(made[0]), Ok(ThreadPhase::Servicing));
     })
     .unwrap();
-    let _ = ThreadFate::Ready;
 }
 
 #[test]

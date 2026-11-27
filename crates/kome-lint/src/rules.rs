@@ -26,6 +26,8 @@ const BACKEND_RS: &str = "crates/kome/src/backend.rs";
 const HOST_RS: &str = "crates/kome-host-std/src/lib.rs";
 const LOOM_RS: &str = "crates/kome-host-std/tests/loom.rs";
 const LOOM_SH: &str = "scripts/ci/loom.sh";
+const BENCH_RS: &str = "crates/kome-bench/benches/kernel.rs";
+const BENCH_MD: &str = "docs/bench.md";
 const FLUX_TSV: &str = "docs/flux.tsv";
 const FLUX_SH: &str = "scripts/ci/flux.sh";
 const ADDR_RS: &str = "crates/kome/src/addr.rs";
@@ -307,15 +309,30 @@ pub const RULES: &[Rule] = &[
             |repo| repo.append(HOST_RS, "fn other() -> std::sync::Mutex<u8> { std::sync::Mutex::new(0) }"),
             |repo| repo.append("crates/kome-host-std/src/store.rs", "use std::sync::atomic::AtomicBool;"),
             |repo| repo.append(HOST_RS, "fn back(kernel: &mut Kernel, permit: RunPermit) { let _ = kernel.relinquish(permit, kome::Stop::Trap, kome::Budget::new(0)); }"),
-            |repo| repo.edit(HOST_RS, |text| text.replace("            #[cfg(not(loom_broken))]\n            self.inner.changed.notify_all();\n", "")),
-            |repo| repo.edit(HOST_RS, |text| text.replace("        drop(guard);\n        self.inner.changed.notify_all();\n        settled.map(|_| result)", "        drop(guard);\n        settled.map(|_| result)")),
+            |repo| repo.edit(HOST_RS, |text| text.replace("            #[cfg(not(loom_broken))]\n            self.wake(&guard, before);\n", "")),
+            |repo| repo.edit(HOST_RS, |text| text.replace("        self.wake(&guard, before);\n        drop(guard);\n        settled.map(|_| result)", "        drop(guard);\n        settled.map(|_| result)")),
+            |repo| repo.edit(HOST_RS, |text| text.replace("state.closed || state.kernel.ready_count() != 0 || state.kernel.next_deadline() != before;", "state.closed || state.kernel.ready_count() != 0;")),
+            |repo| repo.edit(HOST_RS, |text| text.replace("        guard.idle = guard.idle.saturating_add(1);\n", "")),
+            |repo| repo.edit(HOST_RS, |text| text.replace("            guard.watchers = guard.watchers.saturating_add(1);\n", "")),
             |repo| repo.edit(HOST_RS, |text| text.replace("                guard = self.sleep(guard)?;", "                drop(guard);\n                guard = self.lock()?;")),
             |repo| repo.edit(LOOM_RS, |text| text.replace("    explore(2, 2, 0, Some(5));", "    explore(1, 2, 0, Some(5));")),
+            |repo| repo.edit(LOOM_RS, |text| text.replace("        host.with(|state| state.kernel.unsuspend_thread(guest)).unwrap().unwrap();\n        host.wait_until", "        host.wait_until")),
             |repo| repo.edit(LOOM_RS, |text| text.replace("        support::check(&host, &made, yields);\n", "")),
             |repo| repo.edit(LOOM_SH, |text| text.replace("--cfg loom_broken", "")),
             |repo| repo.edit(LOOM_SH, |text| text.replace("    if ! grep -q \"^test $name ... ok$\" \"$log\"; then\n", "    if false; then\n")),
             |repo| repo.edit(LOOM_SH, |text| text.replace("if ! grep -q \"deadlock\" \"$log\"; then", "if false; then")),
             |repo| repo.edit("crates/kome-host-std/src/sync.rs", |text| text.replace("#[cfg(loom)]\n", "#[cfg(any())]\n")),
+        ],
+    },
+    Rule {
+        id: "bench-listed",
+        about: "測定する操作は全て実行され、文書の表に載っている",
+        check: bench_listed,
+        breaks: &[
+            |repo| repo.edit(BENCH_RS, |text| text.replace("    timers(&bench);\n", "")),
+            |repo| repo.edit(BENCH_MD, |text| text.replace("| 待機を始めて通知で起こす |", "| 待機 |")),
+            |repo| repo.edit(BENCH_RS, |text| text.replace("\"64 バイトのメッセージを送って受け取る\"", "\"メッセージの往復\"")),
+            |repo| repo.edit("crates/kome-bench/Cargo.toml", |text| text.replace("harness = false", "harness = true")),
         ],
     },
     Rule {
@@ -1432,8 +1449,11 @@ fn host_single_writer(repo: &Repo, report: &mut Report) {
         ("            drop(guard);\n            let stopped = executor.run(&permit, loaded.context());\n            guard = self.lock()?;\n", "ゲストは錠を放してから実行し、戻ったら取り直す"),
         ("                    break start_run(&mut state.kernel, permit, &mut state.contexts)?;", "文脈は start_run で取り出す"),
         ("            let ran = finish_run(&mut state.kernel, permit, loaded, stopped, &mut state.contexts)?;", "実行権は finish_run で返す"),
-        ("            #[cfg(not(loom_broken))]\n            self.inner.changed.notify_all();\n", "ゲストが止まった後に、待っている者を起こす"),
-        ("        drop(guard);\n        self.inner.changed.notify_all();\n        settled.map(|_| result)", "外からの操作の後に、待っている者を起こす"),
+        ("            #[cfg(not(loom_broken))]\n            self.wake(&guard, before);\n", "ゲストが止まった後に、待っている者を起こす"),
+        ("        self.wake(&guard, before);\n        drop(guard);\n        settled.map(|_| result)", "外からの操作の後に、待っている者を起こす"),
+        ("state.closed || state.kernel.ready_count() != 0 || state.kernel.next_deadline() != before;", "眠っている worker は、閉じたとき、貸せるスレッドがあるかもしれないとき、期限が変わったときに起こす"),
+        ("        guard.idle = guard.idle.saturating_add(1);\n", "眠る worker を、錠の中で数えてから眠らせる"),
+        ("            guard.watchers = guard.watchers.saturating_add(1);\n", "待つ者を、錠の中で数えてから待たせる"),
         ("                guard = self.sleep(guard)?;", "貸せるスレッドが無ければ、錠を放すのと待ち始めるのを一つの操作で行う"),
     ];
     for (needed, what) in kept {
@@ -1453,6 +1473,7 @@ fn host_single_writer(repo: &Repo, report: &mut Report) {
         "    explore(1, 1, 1, None);",
         "    explore(2, 1, 1, Some(5));",
         "    explore(2, 2, 0, Some(5));",
+        "        host.with(|state| state.kernel.unsuspend_thread(guest)).unwrap().unwrap();",
         "        host.wait_until(|state| state.personality.process_exited).unwrap();",
         "            assert_eq!(worker.join().unwrap(), Ok(()));",
         "        support::check(&host, &made, yields);\n",
@@ -1471,6 +1492,34 @@ fn host_single_writer(repo: &Repo, report: &mut Report) {
         if !script.contains(needed) {
             report.add(LOOM_SH, 1, format!("Loom のスクリプトが足りない: {why}"));
         }
+    }
+}
+
+fn bench_listed(repo: &Repo, report: &mut Report) {
+    let bench = repo.text(BENCH_RS);
+    let doc = repo.text(BENCH_MD);
+    // 測定をまとめた関数 (`fn 名前(bench: &Bench)`) は、全て main から呼ぶ。
+    for (at, line) in bench.lines().enumerate() {
+        let Some(name) = line.strip_prefix("fn ").and_then(|rest| rest.strip_suffix("(bench: &Bench) {")) else { continue };
+        if !bench.contains(&format!("    {name}(&bench);\n")) {
+            report.add(BENCH_RS, at.saturating_add(1), format!("測定 `{name}` が main から呼ばれていない"));
+        }
+    }
+    // 測定の名前 (かっこの前まで) は、文書の表に載せる。
+    let mut names = 0usize;
+    for (at, line) in bench.lines().enumerate() {
+        let Some((_, rest)) = line.split_once("measure(\"").or_else(|| line.split_once("format!(\"")) else { continue };
+        let name = rest.split(['"', '(']).next().unwrap_or("").trim();
+        names = names.saturating_add(1);
+        if name.is_empty() || !doc.lines().any(|row| row.starts_with(&format!("| {name}"))) {
+            report.add(BENCH_RS, at.saturating_add(1), format!("測定「{name}」が {BENCH_MD} の表に無い"));
+        }
+    }
+    if names == 0 {
+        report.add(BENCH_RS, 1, "測定が一つも無い");
+    }
+    if !repo.text("crates/kome-bench/Cargo.toml").contains("[[bench]]\nname = \"kernel\"\nharness = false") {
+        report.add("crates/kome-bench/Cargo.toml", 1, "測定は自前の計測器で動かす (`--smoke` を受け取れるように)");
     }
 }
 
@@ -1866,12 +1915,13 @@ fn quiet_operations(repo: &Repo, report: &mut Report) {
 }
 
 /// CI が必ず実行するコマンドと、それを置くジョブ。ステップの `run` は、この文字列ちょうどである。
-const CI_RUNS: [(&str, &str); 13] = [
+const CI_RUNS: [(&str, &str); 14] = [
     ("lint", "cargo run -q --locked -p kome-lint"),
     ("lint", "cargo clippy --workspace --all-targets --locked -- -D warnings"),
     ("test", "scripts/ci/test.sh"),
     ("test", "git diff --exit-code -- tla"),
     ("test", "cargo test --locked --manifest-path checks/noalloc/Cargo.toml"),
+    ("test", "cargo bench -p kome-bench --locked -- --smoke"),
     ("no-std", "cargo build -p kome --locked --target wasm32v1-none"),
     ("no-std", "cargo build -p kome --locked --target thumbv7em-none-eabi"),
     ("miri", "cargo miri test -p kome --locked --lib"),

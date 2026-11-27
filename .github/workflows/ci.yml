@@ -55,6 +55,8 @@ jobs:
         run: git diff --exit-code -- tla
       - name: 確保しないと約束した操作が確保しない
         run: cargo test --locked --manifest-path checks/noalloc/Cargo.toml
+      - name: 性能の測定の筋書きが動く
+        run: cargo bench -p kome-bench --locked -- --smoke
 
   no-std:
     name: no_std

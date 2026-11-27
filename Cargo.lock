@@ -234,6 +234,14 @@ name = "kome"
 version = "0.1.0"
 
 [[package]]
+name = "kome-bench"
+version = "0.1.0"
+dependencies = [
+ "kome",
+ "kome-host-std",
+]
+
+[[package]]
 name = "kome-host-std"
 version = "0.1.0"
 dependencies = [

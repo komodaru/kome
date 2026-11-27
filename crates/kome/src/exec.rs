@@ -27,7 +27,7 @@
 //! worker が一つのホストはこれを繰り返す。worker ごとにホストのスレッドを持つホストは、
 //! 「載せる、実行する、降ろす」を worker の側で行い、実行権と止まった理由を単一 writer へ送る。
 
-use crate::error::{Error, Refusal};
+use crate::error::{Error, Refusal, Resource};
 use crate::id::ThreadId;
 use crate::kernel::Kernel;
 use crate::sched::{Budget, NotRelinquished, RunGen, RunPermit, Stop, ThreadFate, WorkerId};
@@ -113,7 +113,9 @@ impl<C> Loaded<C> {
 /// 受けたら [`Contexts::remove`] を呼ぶ。
 #[derive(Debug)]
 pub struct Contexts<C> {
-    slots: List<Slot<C>>,
+    /// スレッドのスロット番号で引く表。文脈を持たないスロットは空いている。
+    slots: List<Option<Slot<C>>>,
+    held: usize,
 }
 
 impl<C> Default for Contexts<C> {
@@ -126,31 +128,50 @@ impl<C> Contexts<C> {
     /// 空の置き場。
     #[must_use]
     pub const fn new() -> Contexts<C> {
-        Contexts { slots: List::new() }
+        Contexts { slots: List::new(), held: 0 }
     }
 
     /// 文脈を持っているスレッドの数。
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.slots.len()
+    pub const fn len(&self) -> usize {
+        self.held
     }
 
     /// 一つも持っていないか。
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+    pub const fn is_empty(&self) -> bool {
+        self.held == 0
+    }
+
+    /// `thread` のスロットの席。スレッドの数によらず、一度で引く。
+    fn seat(&mut self, thread: ThreadId) -> Option<&mut Option<Slot<C>>> {
+        self.slots.get_mut(usize::try_from(thread.slot()).ok()?)
     }
 
     fn slot(&mut self, thread: ThreadId) -> Result<&mut Slot<C>, Error> {
-        self.slots.iter_mut().find(|slot| slot.thread == thread).ok_or(Error::Refused(Refusal::NoContext))
+        let slot = self.seat(thread).and_then(Option::as_mut).filter(|slot| slot.thread == thread);
+        slot.ok_or(Error::Refused(Refusal::NoContext))
     }
 
     /// `thread` の最初の文脈を置く。既にあれば `Refused(ContextBusy)`。
+    ///
+    /// 同じスロットを使っていた前のスレッドの文脈が残っているときも `Refused(ContextBusy)` を返す
+    /// (黙って捨てない)。終了したスレッドの文脈は [`Contexts::remove`] で取り除いておく。
     pub fn insert(&mut self, thread: ThreadId, context: C) -> Result<(), Error> {
-        if self.slots.iter().any(|slot| slot.thread == thread) {
-            return Err(Error::Refused(Refusal::ContextBusy));
+        let at = usize::try_from(thread.slot()).map_err(|_| Error::Exhausted(Resource::Identifiers))?;
+        let missing = at.saturating_add(1).saturating_sub(self.slots.len());
+        self.slots.reserve(missing)?;
+        while self.slots.len() <= at {
+            self.slots.push(None)?;
         }
-        self.slots.push(Slot { thread, seat: Seat::Parked(context) })
+        match self.slots.get_mut(at) {
+            Some(seat @ None) => {
+                *seat = Some(Slot { thread, seat: Seat::Parked(context) });
+                self.held = self.held.saturating_add(1);
+                Ok(())
+            }
+            Some(Some(_)) | None => Err(Error::Refused(Refusal::ContextBusy)),
+        }
     }
 
     /// 実行権のスレッドの文脈を取り出す。
@@ -187,7 +208,9 @@ impl<C> Contexts<C> {
     /// `thread` の文脈を取り除いて返す。実行のために取り出している間は、記録だけを取り除いて
     /// `None` を返す (後の [`Contexts::save`] は `Refused(NoContext)` になり、文脈は捨てられる)。
     pub fn remove(&mut self, thread: ThreadId) -> Result<Option<C>, Error> {
-        let slot = self.slots.remove_first(|slot| slot.thread == thread).ok_or(Error::Refused(Refusal::NoContext))?;
+        self.slot(thread)?;
+        let slot = self.seat(thread).and_then(Option::take).ok_or(Error::Refused(Refusal::NoContext))?;
+        self.held = self.held.saturating_sub(1);
         Ok(match slot.seat {
             Seat::Parked(context) => Some(context),
             Seat::Loaded(_) => None,

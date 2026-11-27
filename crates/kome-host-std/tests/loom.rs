@@ -49,3 +49,22 @@ fn two_workers_share_one_thread() {
 fn two_workers_run_two_threads_to_their_ends() {
     explore(2, 2, 0, Some(5));
 }
+
+/// 眠っている worker が、外からの操作でできた仕事のために起こされる。
+#[test]
+fn an_idle_worker_is_woken_for_new_work() {
+    loom::model(|| {
+        let (host, _, made) = support::host(1, 1, 0, || Instant::from_nanos(0));
+        let guest = made[0];
+        host.with(|state| state.kernel.suspend_thread(guest)).unwrap().unwrap();
+        let running = {
+            let host = host.clone();
+            thread::spawn(move || host.work(WorkerId::new(0), &mut support::Stepper))
+        };
+        host.with(|state| state.kernel.unsuspend_thread(guest)).unwrap().unwrap();
+        host.wait_until(|state| state.personality.process_exited).unwrap();
+        host.close().unwrap();
+        assert_eq!(running.join().unwrap(), Ok(()));
+        support::check(&host, &made, 0);
+    });
+}

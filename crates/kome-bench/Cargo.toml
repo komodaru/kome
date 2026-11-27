@@ -1,0 +1,24 @@
+[package]
+name = "kome-bench"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+description = "kome の性能の測定: よく通る操作の一回あたりの時間"
+
+[dependencies]
+kome = { path = "../kome" }
+kome-host-std = { path = "../kome-host-std" }
+
+# 計測器そのものは測らない (`cargo bench` の引数を benches/kernel.rs だけが受け取る)。
+[lib]
+bench = false
+
+[[bench]]
+name = "kernel"
+harness = false
+
+[lints]
+workspace = true

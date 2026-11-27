@@ -20,11 +20,13 @@
 | `crates/kome` | カーネル本体 |
 | `crates/kome-testkit` | 決定的シミュレーション (バイト列 → 操作列)、制御可能なホスト、ページごとの独立モデル |
 | `crates/kome-host-std` | 参照ホスト: 実スレッドの worker が一つの錠を通して kome を動かす。Loom で進み方を試す |
+| `crates/kome-bench` | 性能の測定 (`cargo bench -p kome-bench`) |
 | `crates/kome-lint` | 設計上の規則の検査。規則ごとに、検出しなければならない壊し方を持つ |
 | `docs/architecture.md` | 責務と依存方向、入力と出力、実行権、写しと復元 |
 | `docs/memory.md` | メモリ契約: ゲストのメモリの管理と、kome 自身が確保する操作・確保しない操作 |
 | `docs/invariants.toml` | 不変条件の台帳: 検査・試験・証明・モデルとの対応 |
 | `docs/proofs.tsv` | Kani の証明ごとの検証条件と範囲 |
+| `docs/bench.md` | 性能の測定と参考値 |
 | `docs/flux.md` | 篩型 (Flux) で確かめている性質と、その入れ方 |
 | `checks/noalloc` | 確保しないと約束した操作が確保しないことを、確保を数えて確かめる |
 | `tla/` | TLA+ のモデル (I/O の寿命、待機と通知の競合、プロセスの終了処理)。遷移の表は実装から生成する |
@@ -42,6 +44,7 @@ scripts/ci/tla.sh                                          # TLC。正しい設�
 scripts/ci/kani.sh                                         # Kani の証明を一つずつ (検証条件と範囲つき)
 scripts/ci/loom.sh                                         # Loom: 参照ホストの worker の進み方
 scripts/ci/flux.sh                                         # 篩型 (Flux): 範囲計算と容量の会計を全ての値について
+cargo bench -p kome-bench                                  # 性能の測定 (`-- --smoke` で一度だけ)
 cargo mutants -p kome --profile mutants   # 変異試験 (週次)
 ```
 
