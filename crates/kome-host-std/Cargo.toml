@@ -15,5 +15,10 @@ kome = { path = "../kome" }
 [target.'cfg(loom)'.dependencies]
 loom = "0.7.3"
 
+# 並列実行の決定的シミュレーション (`RUSTFLAGS="--cfg shuttle"`) のときだけ、同期の部品を Shuttle のものに
+# 差し替える (種から決まる順序で実スレッドの代わりを動かし、同じ種で同じ順序を再現する)。
+[target.'cfg(shuttle)'.dependencies]
+shuttle = "0.9.10"
+
 [lints]
 workspace = true

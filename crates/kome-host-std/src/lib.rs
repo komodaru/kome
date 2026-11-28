@@ -300,30 +300,34 @@ impl<C, P: Personality<C>> Host<C, P> {
 
     fn work_until_closed<E: Executor<Context = C>>(&self, worker: WorkerId, executor: &mut E) -> Result<(), HostFault> {
         let mut guard = self.lock()?;
+        // 直前に実行権を返していれば、返す前の最も近い期限。返したことは状態の変化なので、頼まれた
+        // 仕事を処理した後に、待っている者へ知らせる。
+        let mut returned: Option<Option<Instant>> = None;
         loop {
-            let (permit, mut loaded) = loop {
-                if guard.closed {
-                    return Ok(());
-                }
-                let before = guard.kernel.next_deadline();
-                let settled = self.settle(&mut guard)?;
-                // 仕事が全て終わったことは settle が見つける。眠る前に確かめ直さないと、起こす者の
-                // いない眠りに入る (最初から終わっているホスト、最後の仕事を自分で片付けた worker)。
-                if guard.closed {
-                    self.wake(&guard, before);
-                    return Ok(());
-                }
-                let state = &mut *guard;
-                if let Some(permit) = state.kernel.grant(worker)? {
-                    // 実行中になったことも状態の変化なので、待っている者に知らせる。
-                    self.wake(state, before);
-                    break start_run(&mut state.kernel, permit, &mut state.contexts)?;
-                }
-                if settled {
-                    self.wake(state, before);
-                }
+            let news = returned.is_some();
+            let before = returned.take().unwrap_or_else(|| guard.kernel.next_deadline());
+            let settled = self.settle(&mut guard)?;
+            // 仕事が全て終わったことは settle が見つける。眠る前に確かめないと、起こす者のいない
+            // 眠りに入る (最初から終わっているホスト、最後の仕事を自分で片付けた worker)。
+            if guard.closed {
+                self.wake(&guard, before);
+                return Ok(());
+            }
+            let state = &mut *guard;
+            let permit = state.kernel.grant(worker)?;
+            // 実行中になったことも状態の変化なので、待っている者に知らせる。
+            // `loom_broken` は、実行権を返したことと、頼まれた仕事を処理したことを知らせない誤りを、
+            // Loom と Shuttle が行き詰まりとして見つけることを確かめるためだけにある
+            // (`scripts/ci/loom.sh`、`scripts/ci/shuttle.sh`)。
+            let told = if cfg!(loom_broken) { permit.is_some() } else { news || settled || permit.is_some() };
+            if told {
+                self.wake(state, before);
+            }
+            let Some(permit) = permit else {
                 guard = self.sleep(guard)?;
+                continue;
             };
+            let (permit, mut loaded) = start_run(&mut state.kernel, permit, &mut state.contexts)?;
             drop(guard);
             let stopped = executor.run(&permit, loaded.context());
             guard = self.lock()?;
@@ -331,11 +335,7 @@ impl<C, P: Personality<C>> Host<C, P> {
             let state = &mut *guard;
             let ran = finish_run(&mut state.kernel, permit, loaded, stopped, &mut state.contexts)?;
             state.personality.stopped(&mut state.kernel, &mut state.contexts, &ran)?;
-            self.settle(&mut guard)?;
-            // `loom_broken` は、この通知を抜いた誤りを Loom が行き詰まりとして見つけることを
-            // 確かめるためだけにある (`scripts/ci/loom.sh`)。
-            #[cfg(not(loom_broken))]
-            self.wake(&guard, before);
+            returned = Some(before);
         }
     }
 }

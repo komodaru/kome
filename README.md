@@ -44,7 +44,8 @@ cargo test --manifest-path checks/noalloc/Cargo.toml       # 確保しないと�
 cargo build -p kome --target wasm32v1-none                 # OS もホストも無いターゲット
 scripts/ci/tla.sh                                          # TLC。正しい設定は違反なし、誤りの変種は反例、状態グラフが実装と一致
 scripts/ci/kani.sh                                         # Kani の証明を一つずつ (検証条件と範囲つき)
-scripts/ci/loom.sh                                         # Loom: 参照ホストの worker の進み方
+scripts/ci/loom.sh                                         # Loom: 参照ホストの worker の進み方 (小さな筋書きを全て)
+scripts/ci/shuttle.sh                                      # Shuttle: 並列実行の決定的シミュレーション (大きな筋書きを種から)
 scripts/ci/verus.sh                                        # Verus: アドレスからマッピングを引く探索を、表の長さによらず
 scripts/ci/flux.sh                                         # 篩型 (Flux): 範囲計算と容量の会計を全ての値について
 cargo bench -p kome-bench                                  # 性能の測定 (`-- --smoke` で一度だけ)

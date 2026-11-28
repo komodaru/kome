@@ -11,13 +11,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/loom"
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 RUSTFLAGS="--cfg loom" cargo test -p kome-host-std --test loom --release --locked 2>&1 | tee "$log"
-# 書いてある検査が全て走って合格したことを照合する (絞り込みや設定の違いで黙って減らないように)。
-for name in $(grep -A1 '^#\[test\]$' crates/kome-host-std/tests/loom.rs | sed -n 's/^fn \([a-z_0-9]*\)().*/\1/p'); do
-    if ! grep -q "^test $name ... ok$" "$log"; then
-        echo "loom: $name が走っていない" >&2
-        exit 1
-    fi
-done
+scripts/ci/tests-ran.sh crates/kome-host-std/tests/loom.rs "$log"
 
 if RUSTFLAGS="--cfg loom --cfg loom_broken" cargo test -p kome-host-std --test loom --release --locked >"$log" 2>&1; then
     echo "loom: 通知を抜いた誤りが通った" >&2

@@ -26,6 +26,9 @@ const BACKEND_RS: &str = "crates/kome/src/backend.rs";
 const HOST_RS: &str = "crates/kome-host-std/src/lib.rs";
 const LOOM_RS: &str = "crates/kome-host-std/tests/loom.rs";
 const LOOM_SH: &str = "scripts/ci/loom.sh";
+const SHUTTLE_RS: &str = "crates/kome-host-std/tests/shuttle.rs";
+const SHUTTLE_SH: &str = "scripts/ci/shuttle.sh";
+const TESTS_RAN_SH: &str = "scripts/ci/tests-ran.sh";
 const BENCH_RS: &str = "crates/kome-bench/benches/kernel.rs";
 const BENCH_MD: &str = "docs/bench.md";
 const INPUT_RS: &str = "crates/kome/src/input.rs";
@@ -410,7 +413,7 @@ pub const RULES: &[Rule] = &[
             Keep { path: HOST_TESTS_RS, needle: LATE_INTERRUPT_TEST, why: "実スレッド: 前の実行への中断の求めが次のスレッドを止めない", broken: "fn an_interrupt()" },
             Keep { path: SCHED_RS, needle: "        let run_gen = self.seq;\n", why: "実行の番号を、Kernel の通し番号から取る (スレッドごとに数えない)", broken: "        let run_gen = entry.run_gen.saturating_add(1);\n" },
             Keep { path: SCHED_RS, needle: "        self.unqueue(at)?;\n        self.seq = seq;\n", why: "貸すたびに、通し番号を進める", broken: "        self.unqueue(at)?;\n" },
-            Keep { path: HOST_RS, needle: "                if guard.closed {\n                    self.wake(&guard, before);\n                    return Ok(());\n                }\n", why: "worker は、頼まれた仕事を処理した後、眠る前に閉じたかを確かめ直す", broken: "" },
+            Keep { path: HOST_RS, needle: "            if guard.closed {\n                self.wake(&guard, before);\n                return Ok(());\n            }\n", why: "worker は、頼まれた仕事を処理した後、眠る前に閉じたかを確かめ直す", broken: "" },
             Keep { path: HOST_RS, needle: "self.wanted.load(Ordering::SeqCst) == permit.run().get()", why: "中断の求めは、実行の番号が一致するときだけ見える", broken: "self.wanted.load(Ordering::SeqCst) != NO_INTERRUPT" },
             Keep { path: HOST_RS, needle: "wanted.ok_or(HostFault::NoWorker)?.ask(run);", why: "中断の求めは、Effect::Interrupt が名指しした実行の番号で立てる", broken: "wanted.ok_or(HostFault::NoWorker)?.ask(kome::RunGen::new(0));" },
             Keep { path: SIM_RS, needle: "        self.check_interrupts()?;\n", why: "決定的シミュレーション: 操作のたびに、参照ホストの表現で中断の求めを確かめる", broken: "" },
@@ -462,16 +465,28 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "host-single-writer",
-        about: "参照ホストは錠の外でだけゲストを実行し、同期の部品を Loom に差し替えられる形で使い、Loom がその進み方を試す",
+        about: "参照ホストは錠の外でだけゲストを実行し、同期の部品を Loom と Shuttle に差し替えられる形で使い、Loom が小さな筋書きの進み方を全て、Shuttle が大きな筋書きを種から決まる進み方で試す",
         check: host_single_writer,
         keeps: &[
-            Keep { path: HOST_RS, needle: "            #[cfg(not(loom_broken))]\n            self.wake(&guard, before);\n", why: "ゲストが止まった後に、待っている者を起こす", broken: "" },
+            Keep { path: HOST_RS, needle: "            let told = if cfg!(loom_broken) { permit.is_some() } else { news || settled || permit.is_some() };\n", why: "実行権を返した後、頼まれた仕事を処理した後、実行権を貸した後に、待っている者を起こす", broken: "            let told = permit.is_some();\n" },
+            Keep { path: HOST_RS, needle: "            returned = Some(before);\n", why: "実行権を返したことを、返す前の期限と一緒に覚えておく", broken: "" },
+            Keep { path: HOST_RS, needle: "            let before = returned.take().unwrap_or_else(|| guard.kernel.next_deadline());\n", why: "期限が変わったかは、実行権を返す前の期限と比べる", broken: "            let before = guard.kernel.next_deadline();\n" },
             Keep { path: HOST_RS, needle: "        self.wake(&guard, before);\n        drop(guard);\n        settled.map(|_| result)", why: "外からの操作の後に、待っている者を起こす", broken: "        drop(guard);\n        settled.map(|_| result)" },
             Keep { path: HOST_RS, needle: "state.closed || state.kernel.ready_count() != 0 || state.kernel.next_deadline() != before;", why: "眠っている worker は、閉じたとき、貸せるスレッドがあるかもしれないとき、期限が変わったときに起こす", broken: "state.closed || state.kernel.ready_count() != 0;" },
             Keep { path: HOST_RS, needle: "        guard.idle = guard.idle.saturating_add(1);\n", why: "眠る worker を、錠の中で数えてから眠らせる", broken: "" },
             Keep { path: HOST_RS, needle: "            guard.watchers = guard.watchers.saturating_add(1);\n", why: "待つ者を、錠の中で数えてから待たせる", broken: "" },
             Keep { path: HOST_RS, needle: "                guard = self.sleep(guard)?;", why: "貸せるスレッドが無ければ、錠を放すのと待ち始めるのを一つの操作で行う", broken: "                drop(guard);\n                guard = self.lock()?;" },
-            Keep { path: LOOM_SH, needle: "    if ! grep -q \"^test $name ... ok$\" \"$log\"; then\n", why: "書いてある検査が全て走ったことを照合する", broken: "    if false; then\n" },
+            Keep { path: TESTS_RAN_SH, needle: "    if ! grep -q \"^test $name ... ok$\" \"$log\"; then\n", why: "書いてある検査が全て走ったことを照合する", broken: "    if false; then\n" },
+            Keep { path: LOOM_SH, needle: "scripts/ci/tests-ran.sh crates/kome-host-std/tests/loom.rs \"$log\"\n", why: "Loom の検査が全て走ったことを照合する", broken: "" },
+            Keep { path: SHUTTLE_SH, needle: "scripts/ci/tests-ran.sh crates/kome-host-std/tests/shuttle.rs \"$log\"\n", why: "Shuttle の検査が全て走ったことを照合する", broken: "" },
+            Keep { path: SHUTTLE_SH, needle: "if RUSTFLAGS=\"--cfg shuttle --cfg loom_broken\" \"${broken[@]}\" any_schedule >\"$log\" 2>&1; then\n", why: "Shuttle が、知らせない誤りを見つけることを確かめる", broken: "if false; then\n" },
+            Keep { path: SHUTTLE_SH, needle: "if KOME_SHUTTLE_SEED=\"$seed\" RUSTFLAGS=\"--cfg shuttle --cfg loom_broken\" \"${broken[@]}\" a_failing_seed_replays >\"$log\" 2>&1; then\n", why: "落ちた回を、種から再現できることを確かめる", broken: "if false; then\n" },
+            Keep { path: SHUTTLE_RS, needle: "const SCHEDULES: usize = 50_000;\n", why: "試す進み方の数", broken: "const SCHEDULES: usize = 50;\n" },
+            Keep { path: SHUTTLE_RS, needle: "        assert_eq!(first, again, \"種 {seed} の二度の実行で、記録が違う\");\n", why: "同じ種が同じ進み方を選ぶことを確かめる", broken: "" },
+            Keep { path: SHUTTLE_RS, needle: "    assert_eq!(seen.into_iter().collect::<Vec<_>>(), all);\n", why: "筋書きが、確かめたい出来事の全てを通ることを確かめる", broken: "" },
+            Keep { path: SHUTTLE_RS, needle: "                assert!(*code == whole || *code == KILLED,", why: "スレッドが台本を飛ばさず、繰り返さずに終わることを確かめる", broken: "                assert!(*code != 0," },
+            Keep { path: SHUTTLE_RS, needle: "            state.kernel.audit().unwrap();\n", why: "筋書きの後に、Kernel の検査を通す", broken: "" },
+            Keep { path: HOST_TESTS_RS, needle: "fn a_deadline_set_by_a_returning_worker_wakes_a_sleeping_one() {", why: "実スレッド: 実行権を返した worker が作った期限で、眠っている worker が起きる", broken: "fn a_deadline()" },
         ],
         breaks: &[
             |repo| repo.edit(HOST_RS, |text| text.replace("            drop(guard);\n            let stopped = executor.run(", "            let stopped = executor.run(")),
@@ -485,6 +500,9 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(LOOM_SH, |text| text.replace("--cfg loom_broken", "")),
             |repo| repo.edit(LOOM_SH, |text| text.replace("if ! grep -q \"deadlock\" \"$log\"; then", "if false; then")),
             |repo| repo.edit("crates/kome-host-std/src/sync.rs", |text| text.replace("#[cfg(loom)]\n", "#[cfg(any())]\n")),
+            |repo| repo.edit("crates/kome-host-std/src/sync.rs", |text| text.replace("#[cfg(shuttle)]\n", "#[cfg(any())]\n")),
+            |repo| repo.edit(SHUTTLE_SH, |text| text.replace("if ! grep -q \"^deadlock! blocked tasks\" \"$log\"; then", "if false; then")),
+            |repo| repo.edit(SHUTTLE_RS, |text| text.replace("    // 誰もホストを閉じない。", "    host.close().unwrap();\n    // 誰もホストを閉じない。")),
         ],
     },
     Rule {
@@ -1898,23 +1916,24 @@ fn host_single_writer(repo: &Repo, report: &mut Report) {
             continue;
         }
         for (at, line) in text.lines().enumerate() {
-            if line.contains("std::sync") || line.contains("std::thread") || line.contains("loom::") {
-                report.add(path, at.saturating_add(1), format!("同期の部品は {sync_rs} を通して使う (Loom が差し替えられるように)"));
+            if line.contains("std::sync") || line.contains("std::thread") || line.contains("loom::") || line.contains("shuttle::") {
+                report.add(path, at.saturating_add(1), format!("同期の部品は {sync_rs} を通して使う (Loom と Shuttle が差し替えられるように)"));
             }
         }
     }
     let sync = repo.text(sync_rs);
     for needed in [
         "#[cfg(loom)]\npub(crate) use loom::sync::{Arc, Condvar, Mutex, MutexGuard, atomic::AtomicU64, atomic::Ordering};",
-        "#[cfg(not(loom))]\npub(crate) use std::sync::{Arc, Condvar, Mutex, MutexGuard, atomic::AtomicU64, atomic::Ordering};",
+        "#[cfg(shuttle)]\npub(crate) use shuttle::sync::{Arc, Condvar, Mutex, MutexGuard, atomic::AtomicU64, atomic::Ordering};",
+        "#[cfg(not(any(loom, shuttle)))]\npub(crate) use std::sync::{Arc, Condvar, Mutex, MutexGuard, atomic::AtomicU64, atomic::Ordering};",
     ] {
         if !sync.contains(needed) {
-            report.add(sync_rs, 1, "同期の部品を、Loom のものと標準のものの同じ組で差し替える");
+            report.add(sync_rs, 1, "同期の部品を、Loom のもの、Shuttle のもの、標準のものの同じ組で差し替える");
         }
     }
     let kept = [
         ("            drop(guard);\n            let stopped = executor.run(&permit, loaded.context());\n            guard = self.lock()?;\n", "ゲストは錠を放してから実行し、戻ったら取り直す"),
-        ("                    break start_run(&mut state.kernel, permit, &mut state.contexts)?;", "文脈は start_run で取り出す"),
+        ("            let (permit, mut loaded) = start_run(&mut state.kernel, permit, &mut state.contexts)?;", "文脈は start_run で取り出す"),
         ("            let ran = finish_run(&mut state.kernel, permit, loaded, stopped, &mut state.contexts)?;", "実行権は finish_run で返す"),
     ];
     for (needed, what) in kept {
@@ -1954,6 +1973,19 @@ fn host_single_writer(repo: &Repo, report: &mut Report) {
         if !script.contains(needed) {
             report.add(LOOM_SH, 1, format!("Loom のスクリプトが足りない: {why}"));
         }
+    }
+    let shuttle = repo.text(SHUTTLE_SH);
+    for (needed, why) in [
+        ("RUSTFLAGS=\"--cfg shuttle\" cargo test -p kome-host-std --test shuttle --release --locked 2>&1 | tee \"$log\"\n", "筋書きを走らせる"),
+        ("if ! grep -q \"^deadlock! blocked tasks\" \"$log\"; then\n", "見つかった理由が行き詰まりであることを確かめる"),
+    ] {
+        if !shuttle.contains(needed) {
+            report.add(SHUTTLE_SH, 1, format!("Shuttle のスクリプトが足りない: {why}"));
+        }
+    }
+    // 筋書きの中では、誰もホストを閉じない (仕事が終わったホストが自分で閉じ、worker が自分で戻ることを見る)。
+    if let Some(at) = repo.text(SHUTTLE_RS).lines().position(|line| line.contains(".close()")) {
+        report.add(SHUTTLE_RS, at.saturating_add(1), "Shuttle の筋書きがホストを閉じている。閉じるのはホスト自身に任せる");
     }
 }
 
@@ -2609,7 +2641,7 @@ fn quiet_operations(repo: &Repo, report: &mut Report) {
 }
 
 /// CI が必ず実行するコマンドと、それを置くジョブ。ステップの `run` は、この文字列ちょうどである。
-const CI_RUNS: [(&str, &str); 20] = [
+const CI_RUNS: [(&str, &str); 21] = [
     ("cover", "scripts/ci/cover.sh"),
     ("lint", "cargo run -q --locked -p kome-lint"),
     ("lint", "cargo clippy --workspace --all-targets --locked -- -D warnings"),
@@ -2626,6 +2658,7 @@ const CI_RUNS: [(&str, &str); 20] = [
     ("flux", "scripts/ci/flux-install.sh"),
     ("flux", "scripts/ci/flux.sh"),
     ("loom", "scripts/ci/loom.sh"),
+    ("shuttle", "scripts/ci/shuttle.sh"),
     ("lean", "scripts/ci/lean-install.sh"),
     ("lean", "scripts/ci/lean.sh"),
     ("verus", "scripts/ci/verus-install.sh"),

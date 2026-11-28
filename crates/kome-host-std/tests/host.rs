@@ -7,13 +7,14 @@ mod support;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::thread;
-use std::time::Instant as StdInstant;
+use std::time::{Duration, Instant as StdInstant};
 
 use kome::{
-    AddrWidth, BackingOffset, Contents, InstanceId, Instant, Kernel, Limits, PageSize, SignalMode, SignalSpec, Start,
-    ThreadPhase, WorkerId,
+    AddrWidth, BackingOffset, Contents, Contexts, Deadline, Effect, Error, Executor, ExitCode, InstanceId, Instant,
+    Interruptible, Kernel, Limits, ObjectId, PageSize, Ran, RunPermit, SignalMode, SignalSpec, Start, Stop, Stopped,
+    ThreadFate, ThreadId, ThreadPhase, WaitMode, WorkerId,
 };
-use kome_host_std::{FlatStore, Host, HostFault, fault};
+use kome_host_std::{FlatStore, Host, HostFault, Interrupt, Personality, fault};
 
 fn clock() -> impl Fn() -> Instant + Send + Sync + 'static {
     let origin = StdInstant::now();
@@ -85,7 +86,7 @@ fn an_idle_worker_wakes_for_the_next_deadline() {
         .with(|state| {
             let object = state.kernel.create_object(process, SignalSpec::new(SignalMode::Keep, 0, 1)).unwrap();
             let timer = state.kernel.create_timer(process, object).unwrap();
-            let at = Instant::from_nanos(state.kernel.now().nanos().saturating_add(20_000_000));
+            let at = Instant::from_nanos(state.kernel.now().nanos().saturating_add(150_000_000));
             state.kernel.arm_timer(timer, at, None).unwrap();
             timer
         })
@@ -159,6 +160,127 @@ fn an_interrupt_for_one_run_never_stops_the_next_thread_on_the_same_worker() {
         let running = thread::spawn(work);
         Box::new(move || running.join().unwrap())
     });
+}
+
+/// 一度だけ Personality を呼んでから終了するスレッドと、中断を求められるまで実行し続けるスレッド。
+#[derive(Debug)]
+enum Role {
+    Napper { called: bool },
+    Spinner,
+}
+
+struct Duo {
+    interrupt: Interrupt,
+}
+
+impl Executor for Duo {
+    type Context = Role;
+
+    fn run(&mut self, permit: &RunPermit, role: &mut Role) -> Stopped {
+        let stop = match role {
+            Role::Napper { called: false } => {
+                // もう一方の worker が、貸せるスレッドが無いのを見て、期限なしで眠り直すのを待つ。
+                thread::sleep(Duration::from_millis(30));
+                *role = Role::Napper { called: true };
+                Stop::Trap
+            }
+            Role::Napper { called: true } => Stop::Exited(ExitCode::new(7)),
+            Role::Spinner => {
+                while !self.interrupt.requested(permit) {
+                    thread::yield_now();
+                }
+                Stop::Exited(ExitCode::new(8))
+            }
+        };
+        Stopped::new(stop, permit.budget())
+    }
+}
+
+/// 呼ばれたら、呼んだスレッドを 150 ミリ秒眠らせ (Kernel の時刻は、実行の前に進めたままである)、実行し続けるスレッドを実行待ちにする。
+#[derive(Debug)]
+struct Nap {
+    never: ObjectId,
+    spinner: ThreadId,
+    exited: Vec<ThreadId>,
+}
+
+impl Personality<Role> for Nap {
+    fn stopped(&mut self, kernel: &mut Kernel, _contexts: &mut Contexts<Role>, ran: &Ran) -> Result<(), Error> {
+        if ran.fate() == ThreadFate::Servicing {
+            let due = Instant::from_nanos(kernel.now().nanos().saturating_add(150_000_000));
+            kernel.wait(ran.thread(), &[self.never], WaitMode::Any, Deadline::At(due), Interruptible::No)?;
+            kernel.unsuspend_thread(self.spinner)?;
+        }
+        Ok(())
+    }
+
+    fn effect(&mut self, kernel: &mut Kernel, effect: Effect) -> Result<(), Error> {
+        match effect {
+            Effect::WaitDone { thread, .. } => kernel.continue_thread(thread),
+            Effect::ThreadExited { thread, .. } => {
+                self.exited.push(thread);
+                Ok(())
+            }
+            Effect::Interrupt { .. }
+            | Effect::ProcessExited { .. }
+            | Effect::ProcessReclaimed { .. }
+            | Effect::ObjectReclaimed { .. }
+            | Effect::BackingReclaimed { .. }
+            | Effect::IoSubmit { .. }
+            | Effect::IoCancel { .. } => Ok(()),
+        }
+    }
+}
+
+/// 実行権を返した worker が作った期限は、期限の無いまま眠っていた別の worker を起こす。
+///
+/// 一方の worker は、スレッドを眠らせた後、続けて別のスレッドを実行し続ける。期限が来たときに時刻を
+/// 進められるのは、眠っているもう一方だけである。起こされなければ、眠らせたスレッドは、実行中の
+/// スレッドが止まるまで起きない。
+#[test]
+fn a_deadline_set_by_a_returning_worker_wakes_a_sleeping_one() {
+    let mut kernel = Kernel::new(InstanceId::new(1), Limits::DEFAULT.with_workers(2)).unwrap();
+    let (process, _) = kernel.create_process(AddrWidth::Bits32, PageSize::new(4096).unwrap()).unwrap();
+    let never = kernel.create_object(process, SignalSpec::new(SignalMode::Keep, 0, 1)).unwrap();
+    let (napper, _) = kernel.create_thread(process, Start::Suspended).unwrap();
+    let (spinner, _) = kernel.create_thread(process, Start::Suspended).unwrap();
+    let host = Host::new(kernel, Nap { never, spinner, exited: Vec::new() }, 2, clock());
+    host.with(|state| {
+        state.contexts.insert(napper, Role::Napper { called: false }).unwrap();
+        state.contexts.insert(spinner, Role::Spinner).unwrap();
+    })
+    .unwrap();
+    thread::scope(|scope| {
+        let running: Vec<_> = [0, 1]
+            .into_iter()
+            .map(|worker| {
+                let host = host.clone();
+                let mut duo = Duo { interrupt: host.interrupt(WorkerId::new(worker)).unwrap() };
+                scope.spawn(move || host.work(WorkerId::new(worker), &mut duo))
+            })
+            .collect();
+        // 貸せるスレッドも期限も無いので、二つの worker は期限なしで眠る。
+        thread::sleep(Duration::from_millis(50));
+        host.with(|state| state.kernel.unsuspend_thread(napper)).unwrap().unwrap();
+        // 状態を見るだけで、時刻は進めない (`with` は時刻を進めるので、起こし忘れを隠してしまう)。
+        let mut seen = (false, Err(Error::Refused(kome::Refusal::NotRunning)));
+        let limit = StdInstant::now() + Duration::from_secs(5);
+        while !seen.0 && StdInstant::now() < limit {
+            thread::sleep(Duration::from_millis(1));
+            host.wait_until(|state| {
+                seen = (state.personality.exited.contains(&napper), state.kernel.thread_phase(spinner));
+                true
+            })
+            .unwrap();
+        }
+        host.close().unwrap();
+        host.with(|state| state.kernel.preempt_thread(spinner)).unwrap().unwrap();
+        for worker in running {
+            assert_eq!(worker.join().unwrap(), Ok(()));
+        }
+        assert_eq!(seen, (true, Ok(ThreadPhase::Running)), "眠らせたスレッドが、もう一方が実行中の間に起きて終了していない");
+    });
+    host.with(|state| state.kernel.audit()).unwrap().unwrap();
 }
 
 #[test]
