@@ -62,6 +62,8 @@ mod runq;
 mod sched;
 mod store;
 #[cfg(test)]
+mod conform;
+#[cfg(test)]
 mod tests;
 mod thread;
 mod time;

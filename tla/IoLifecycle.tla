@@ -4,6 +4,8 @@
    カーネルの遷移は IoTable (crates/kome/src/io.rs の io_step から生成) をそのまま使う。
    ここが加えるのは周りの動き: Personality (発行・取消・出力の書き込み・公開・回収)、
    ホスト (要求の受け取り、応答、重複した応答)、持ち主のプロセスの終了。
+   状態と遷移の全体は、scripts/ci/tla.sh が実際の Kernel の動きと突き合わせる
+   (crates/kome/src/conform.rs、変数の対応は docs/tla-conformance.md)。
 
    確かめる性質:
      SettlesOnce        終端は一度だけ確定する (台帳 IO-1)。

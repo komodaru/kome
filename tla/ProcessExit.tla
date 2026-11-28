@@ -6,7 +6,8 @@
    ここが加えるのは周りの動き: worker (実行権を受け取り、返す)、Personality (待機、再開、
    I/O の発行と取消、スレッドとプロセスの終了の要求)、ホスト (I/O の応答)。
 
-   モデルの変数と実装の対応:
+   モデルの変数と実装の対応 (scripts/ci/tla.sh が、状態と遷移の全体を実際の Kernel の動きと
+   突き合わせる。docs/tla-conformance.md):
      run      Thread::run (Gone は表から消えたこと)
      kill     Thread::kill が Some であること
      asked    Run::Running の interrupted (Effect::Interrupt を出したこと)
@@ -105,6 +106,13 @@ Return(t) ==
     /\ asked' = [asked EXCEPT ![t] = FALSE]
     /\ UNCHANGED <<kill, life, io, handles, exits, lateGrant, drained>>
 
+\* 終了を求められていないスレッドが、自分から終了して実行権を返す。
+Leave(t) ==
+    /\ run[t] = "Running" /\ ~kill[t]
+    /\ asked' = [asked EXCEPT ![t] = FALSE]
+    /\ Settle([run EXCEPT ![t] = "Gone"], FALSE)
+    /\ UNCHANGED <<kill, lateGrant, drained>>
+
 \* 終了を求められたスレッドが実行権を返す。どの理由で返しても終了する。
 KilledReturn(t) ==
     /\ run[t] = "Running" /\ kill[t]
@@ -121,7 +129,8 @@ Move(t, from, to) ==
 
 Continue(t) == Move(t, "Servicing", "Ready")
 Block(t) == Move(t, "Servicing", "Blocked")
-Wake(t) == Move(t, "Blocked", "Ready")
+\* 待機が終わったスレッドは、サービス中に戻る。実行待ちにするのは Personality (Continue)。
+Wake(t) == Move(t, "Blocked", "Servicing")
 
 Serviced == \E t \in Threads : run[t] = "Servicing"
 
@@ -172,7 +181,7 @@ HostComplete ==
     /\ UNCHANGED <<run, kill, asked, handles, exits, lateGrant>>
 
 Next ==
-    \/ \E t \in Threads : Grant(t) \/ Return(t) \/ KilledReturn(t)
+    \/ \E t \in Threads : Grant(t) \/ Return(t) \/ Leave(t) \/ KilledReturn(t)
     \/ \E t \in Threads : Continue(t) \/ Block(t) \/ Wake(t) \/ Terminate(t)
     \/ IoPrepare \/ IoRelease \/ \E e \in {"Issue", "Cancel", "Publish"} : IoDo(e)
     \/ ExitProcess \/ HostComplete

@@ -3,6 +3,8 @@
 
    成立の判定と消費は WaitTable (実際の Kernel::wait を動かして生成) をそのまま使う。
    ここが加えるのは周りの動き: 複数のスレッドの待機の開始、通知、登録順の評価、期限。
+   状態と遷移の全体は、scripts/ci/tla.sh が実際の Kernel の動きと突き合わせる
+   (crates/kome/src/conform.rs、変数の対応は docs/tla-conformance.md)。
 
    確かめる性質:
      OneOutcome     一つの待機に結果は一つだけ確定する (台帳 WAIT-1)。

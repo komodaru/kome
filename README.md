@@ -42,7 +42,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 scripts/ci/test.sh                                         # 全ての試験と、必須の試験が走ったことの照合
 cargo test --manifest-path checks/noalloc/Cargo.toml       # 確保しないと約束した操作が確保しない
 cargo build -p kome --target wasm32v1-none                 # OS もホストも無いターゲット
-scripts/ci/tla.sh                                          # TLC。正しい設定は違反なし、誤りの変種は反例
+scripts/ci/tla.sh                                          # TLC。正しい設定は違反なし、誤りの変種は反例、状態グラフが実装と一致
 scripts/ci/kani.sh                                         # Kani の証明を一つずつ (検証条件と範囲つき)
 scripts/ci/loom.sh                                         # Loom: 参照ホストの worker の進み方
 scripts/ci/verus.sh                                        # Verus: アドレスからマッピングを引く探索を、表の長さによらず
@@ -61,8 +61,10 @@ cargo mutants -p kome --profile mutants   # 変異試験 (週次)
 
 証明とモデルが示す範囲は、項目ごとに台帳に書く。Kani の証明は、整数だけの関数では全ての値に
 ついて示し、表やキューを使うものは小さな上限と確保が成功した場合に限って示す (`proved` と
-`docs/proofs.tsv` の「前提」)。TLA+ のモデルが調べるのは設計で、Rust のコードではない。実装から
-生成した表が結ぶ範囲 (`tied`) と、それ以外を見る実装の試験 (`tested`) を分けて書く。
+`docs/proofs.tsv` の「前提」)。TLA+ のモデルが調べるのは設計で、Rust のコードではない。モデルと
+実装は二つの仕組みで結ぶ: 遷移の表を実装から生成することと、モデルの状態グラフの全体を実際の
+`Kernel` の動きと突き合わせること (`docs/tla-conformance.md`)。結ぶ範囲 (`tied`) と、それ以外を
+見る実装の試験 (`tested`) を分けて書く。
 
 ## 規則を足すとき
 

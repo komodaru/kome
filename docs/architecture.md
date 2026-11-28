@@ -206,7 +206,7 @@ lint `foreign-ids-tested` (ID を受け取る全ての引数に、別インス�
 | 混同してはいけない値を別の型にする | 型 (`GuestAddr`、`BackingOffset`、`Id<K>`)、compile_fail 試験 |
 | 状態管理へ `unsafe` が広がらない | `unsafe_code = "forbid"` (lint `required-lints`) |
 | 状態の追加を既存の処理が見落とさない | lint `no-catch-all` |
-| 新しい遷移の検証が抜けない | lint `ledger`、`operations-covered`、`tla-listed` |
+| 新しい遷移の検証が抜けない | lint `ledger`、`operations-covered`、`tla-listed`、`tla-conform` |
 | 走らなかった試験が合格に混ざらない | `scripts/ci/test.sh` の照合、lint `no-skipped-tests` |
 | 確保しないと約束した操作が確保しない | `checks/noalloc` (`docs/memory.md`) |
 | 値の範囲で決まる性質を全ての値について確かめる | Flux の篩型 (`docs/flux.md`)、lint `refinements-kept` |

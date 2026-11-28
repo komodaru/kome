@@ -111,7 +111,7 @@ models = [
 ]
 proved = "io_step の一歩について、全ての状態・出来事・結果の値。前提は無い。出来事の列についての性質は、一歩の性質の繰り返しとして成り立つ。Kernel が io_step の周りで行う通知・固定・Effect の発行は示していない。"
 modelled = "IoLifecycle は一つの要求について、ホストが完了を重複して送る場合と取消の後に完了が届く場合を含む全ての順序を調べる。調べるのは設計であり、Rust のコードではない。要求は一つで、探索は有限。"
-tied = "受理する遷移の表 IoTable は io.rs の io_step から生成し、試験 the_tla_table_is_io_step が実装との一致を確かめる。待機を起こす時点と解放の時点はモデルが自分で書いており、実装と機械的には結ばれていない。"
+tied = "受理する遷移の表 IoTable は io.rs の io_step から生成し、試験 the_tla_table_is_io_step が実装との一致を確かめる。待機を起こす時点と解放の時点を含む状態と遷移の全体は、scripts/ci/tla.sh が TLC の状態グラフと実際の Kernel の動きを突き合わせて、過不足なく一致することを確かめる (crates/kome/src/conform.rs、docs/tla-conformance.md)。"
 tested = "待機を起こすのが公開の後であること、進行中に解放しないことが実装で成り立つことは、tests の試験と決定的シミュレーションが見る。複数の要求が混ざる場合も同じ。"
 scope = "一つの要求の進行。ホストが完了を重複して送ること、取消の後に正常完了が届くことを含む。転送の内容とバッファは Personality と Host が持つ。"
 
@@ -162,7 +162,7 @@ models = [
     "WaitRace:AllOrNothing",
 ]
 modelled = "WaitRace は 3 スレッド・2 資源・資源ごとの通知 2 回までの全ての順序で、待機の開始・通知・登録順の評価・期限の競合を調べる。調べるのは設計であり、Rust のコードではない。"
-tied = "成立の判定と消費の表 WaitTable は Kernel::wait を実際に動かして生成し、試験 the_tla_wait_table_is_the_kernel が一致を確かめる。待機の列の扱い (登録順の評価、期限、中断) はモデルが自分で書いており、実装と機械的には結ばれていない。"
+tied = "成立の判定と消費の表 WaitTable は Kernel::wait を実際に動かして生成し、試験 the_tla_wait_table_is_the_kernel が一致を確かめる。待機の列の扱い (登録順の評価、期限) を含む状態と遷移の全体は、scripts/ci/tla.sh が TLC の状態グラフと実際の Kernel の動きを突き合わせて、過不足なく一致することを確かめる (crates/kome/src/conform.rs、docs/tla-conformance.md)。中断はモデルに無い。"
 tested = "結果が一度だけ確定すること、「すべて」が一括で消費することが実装で成り立つことは、audit の数え直し、tests の試験、決定的シミュレーションが見る。中断とスレッドの終了による確定はモデルに無く、試験だけが見る。"
 scope = "成立・期限・中断・スレッドの終了のどれか一つで終わる。「すべて」は全対象が同時に成立したときにだけ、まとめて消費する。"
 
@@ -183,7 +183,7 @@ models = [
     "WaitRace:NoLostWake",
 ]
 modelled = "WaitRace は 3 スレッド・2 資源・資源ごとの通知 2 回までの全ての順序で、確認と登録が一つの状態更新であれば成立した待機が待ち続けないことを調べる。確認と登録を分けた変種では反例が出る。"
-tied = "成立の判定と消費の表 WaitTable は Kernel::wait を実際に動かして生成する。確認と登録が一つの更新であることは、実装では Kernel を &mut で一つずつ更新する型の制約から来ており、モデルとは機械的に結ばれていない。"
+tied = "成立の判定と消費の表 WaitTable は Kernel::wait を実際に動かして生成する。確認と登録が一つの更新であることは、実装では Kernel を &mut で一つずつ更新する型の制約から来る。モデルの状態と遷移の全体は、scripts/ci/tla.sh が TLC の状態グラフと実際の Kernel の動きを突き合わせて、過不足なく一致することを確かめる (crates/kome/src/conform.rs、docs/tla-conformance.md)。"
 tested = "同じ資源を待つ待機を登録順に評価することが実装で成り立つことは、tests の試験と決定的シミュレーションが見る。"
 scope = "確認と登録は一つの状態更新で行う。同じ資源を待つ待機は登録順に評価する。"
 
@@ -343,7 +343,7 @@ models = [
     "ProcessExit:KilledAreInterrupted",
 ]
 modelled = "ProcessExit は 3 スレッドと一つの I/O について、終了の要求・実行権の返却・完了の全ての順序を調べる。調べるのは設計であり、Rust のコードではない。"
-tied = "スレッドごとの終了の表 ExitTable (ExitThread、ExitFinish、ExitComplete) は Kernel を実際に動かして生成し、試験 the_tla_exit_table_is_the_kernel が一致を確かめる。I/O の遷移は IoTable を使う。回収の時点と資源の解放はモデルが自分で書いており、実装と機械的には結ばれていない。"
+tied = "スレッドごとの終了の表 ExitTable (ExitThread、ExitFinish、ExitComplete) は Kernel を実際に動かして生成し、試験 the_tla_exit_table_is_the_kernel が一致を確かめる。I/O の遷移は IoTable を使う。回収の時点と資源の解放を含む状態と遷移の全体は、scripts/ci/tla.sh が TLC の状態グラフと実際の Kernel の動きを突き合わせて、過不足なく一致することを確かめる (crates/kome/src/conform.rs、docs/tla-conformance.md)。"
 tested = "終了済みのプロセスが資源を持たないこと、所属関係が相互に一致することが実装で成り立つことは、audit の数え直し、tests の試験、決定的シミュレーションが見る。"
 scope = "モデルはスレッド 3 つ、I/O 一つ、参照一つのプロセス一つ。終了は、実行中のスレッドが戻り、応答待ちの I/O が終端するまで回収を待つ。親子関係とジョブは Personality が上に作る。"
 

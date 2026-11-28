@@ -42,6 +42,9 @@ const RUNQ_RS: &str = "crates/kome/src/runq.rs";
 const TRACE_RS: &str = "crates/kome-trace/src/lib.rs";
 const TRACE_WORDS_RS: &str = "crates/kome-trace/src/words.rs";
 const TRACE_TESTS_RS: &str = "crates/kome-trace/tests/cases/mod.rs";
+const CONFORM_RS: &str = "crates/kome/src/conform.rs";
+const CONFORM_MD: &str = "docs/tla-conformance.md";
+const TLA_SH: &str = "scripts/ci/tla.sh";
 const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
 
@@ -326,6 +329,23 @@ pub const RULES: &[Rule] = &[
         ],
     },
     Rule {
+        id: "tla-conform",
+        about: "TLA+ のモデルの状態グラフの全体を、実際の Kernel の動きと突き合わせる。モデルの変数は、どれも実装の値との対応を持つ",
+        check: tla_conform,
+        breaks: &[
+            |repo| repo.edit(CONFORM_RS, |text| text.replace("const NAME: &'static str = \"WaitRace\";", "const NAME: &'static str = \"WaitRaces\";")),
+            |repo| repo.edit(CONFORM_RS, |text| text.replace("            if !model.edges.contains(&(from, to)) {", "            if false {")),
+            |repo| repo.edit(CONFORM_RS, |text| text.replace("    never_taken(&model, &taken).unwrap_or_else(|why| panic!(\"{}: {why}\", D::NAME));\n", "")),
+            |repo| repo.edit(CONFORM_RS, |text| text.replace("format!(\"woken = {}\"", "format!(\"awake = {}\"")),
+            |repo| repo.edit(TLA_SH, |text| text.replace("        dump=(-dump dot \"$graphs/$module.dot\")\n", "")),
+            |repo| repo.edit(TLA_SH, |text| text.replace("--lib conform:: --", "--lib conform::the_io --")),
+            |repo| repo.edit(TLA_SH, |text| text.replace("        failed=1\n    fi\ndone\nexit", "    fi\ndone\nexit")),
+            |repo| repo.edit(CONFORM_MD, |text| text.replace("| `lateGrant` |", "| `late` |")),
+            |repo| repo.edit("tla/ProcessExit.tla", |text| text.replace("    drained    \\* ", "    extra,\n    drained    \\* ")),
+            |repo| repo.edit(CONFORM_MD, |text| text.replace("### IoLifecycle", "### I/O")),
+        ],
+    },
+    Rule {
         id: "run-queue-kept",
         about: "実行権を貸す相手は実行待ちの列の先頭から一手で選び、列の中の位置は runq.rs だけが書く。スレッドを全て見て選ぶ形へ戻さない",
         check: run_queue_kept,
@@ -544,7 +564,7 @@ pub const RULES: &[Rule] = &[
 ];
 
 fn kernel_files(repo: &Repo) -> impl Iterator<Item = (&str, &str)> {
-    repo.under(KOME_SRC, ".rs").filter(|(path, _)| !path.ends_with("/tests.rs") && !path.ends_with("/proofs.rs"))
+    repo.under(KOME_SRC, ".rs").filter(|(path, _)| !path.ends_with("/tests.rs") && !path.ends_with("/conform.rs") && !path.ends_with("/proofs.rs"))
 }
 
 fn scanned(report: &mut Report, path: &str, text: &str, skip_tests: bool) -> Option<Scan> {
@@ -1102,6 +1122,60 @@ fn ledger(repo: &Repo, report: &mut Report) {
     });
     for (name, _) in harness_like {
         report.add_at(repo, proofs_rs, &format!("fn {name}("), format!("{name} に #[kani::proof] が無い"));
+    }
+}
+
+/// モデルの `VARIABLES` の名前。
+fn model_variables(text: &str) -> Vec<&str> {
+    let Some((_, rest)) = text.split_once("\nVARIABLES\n") else { return Vec::new() };
+    rest.lines()
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(|line| line.trim().split(|c: char| !(c.is_alphanumeric() || c == '_')).next())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+fn tla_conform(repo: &Repo, report: &mut Report) {
+    let (conform, doc, script) = (repo.text(CONFORM_RS), repo.text(CONFORM_MD), repo.text(TLA_SH));
+    let expect = expectations(repo);
+    let modules: BTreeSet<&str> = expect.iter().filter(|(_, _, want)| *want == "ok").map(|(_, module, _)| *module).collect();
+    for module in modules {
+        if !conform.contains(&format!("const NAME: &'static str = \"{module}\";")) {
+            report.add(CONFORM_RS, 1, format!("{module} を実装と突き合わせる試験が無い"));
+        }
+        let section = doc.split_once(&format!("\n### {module} ")).map_or("", |(_, rest)| rest.split("\n### ").next().unwrap_or(""));
+        if section.is_empty() {
+            report.add(CONFORM_MD, 1, format!("{module} の、変数と実装の対応の節が無い"));
+        }
+        let model = format!("tla/{module}.tla");
+        let variables = model_variables(repo.text(&model));
+        if variables.is_empty() {
+            report.add(&model, 1, "VARIABLES を読めない");
+        }
+        for name in variables {
+            let listed = section.contains(&format!("`{name}`")) || section.contains(&format!("`{name}["));
+            if !listed {
+                report.add_at(repo, &model, name, format!("変数 {name} と実装の値の対応を {CONFORM_MD} に書く"));
+            }
+            if !conform.contains(&format!("format!(\"{name} = ")) && !conform.contains(&format!("\"{name} = ")) {
+                report.add_at(repo, &model, name, format!("変数 {name} を、実装の状態から作っていない ({CONFORM_RS})"));
+            }
+        }
+    }
+    let kept = [
+        (CONFORM_RS, conform, "            if !model.edges.contains(&(from, to)) {", "実装の遷移がモデルにあることを確かめる"),
+        (CONFORM_RS, conform, "    never_taken(&model, &taken).unwrap_or_else(|why| panic!(\"{}: {why}\", D::NAME));\n", "モデルの遷移を実装が全て行うことを確かめる"),
+        (CONFORM_RS, conform, "    assert!(explore::<D>(&fewer).is_err(), ", "モデルから遷移を抜くと一致しなくなることを確かめる"),
+        (CONFORM_RS, conform, "    assert!(never_taken(&more, &taken).is_err(), ", "モデルに遷移を足すと一致しなくなることを確かめる"),
+        (TLA_SH, script, "        dump=(-dump dot \"$graphs/$module.dot\")\n", "正しい設定の状態グラフを書き出す"),
+        (TLA_SH, script, "out=\"$(KOME_TLA_DUMPS=\"$graphs\" cargo test --release --locked -p kome --lib conform:: -- --nocapture 2>&1)\" || {", "突き合わせの試験を全て走らせる"),
+        (TLA_SH, script, "    if line=\"$(echo \"$out\" | grep -o \"conform $module: .*\")\"; then", "モデルごとに、突き合わせが走ったことを見る"),
+        (TLA_SH, script, "        failed=1\n    fi\ndone\nexit \"$failed\"\n", "突き合わせが走らなければ失敗にする"),
+    ];
+    for (path, text, needed, what) in kept {
+        if !text.contains(needed) {
+            report.add(path, 1, format!("モデルと実装の突き合わせが崩れている: {what}"));
+        }
     }
 }
 

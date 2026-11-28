@@ -1,6 +1,7 @@
 target/
 tla/tla2tools.jar
 tla/states/
+tla/graphs/
 *.tmp
 fuzz/target/
 fuzz/corpus/
