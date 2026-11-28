@@ -41,7 +41,16 @@ tests = [
 proofs = [
     "a_stop_reason_is_accepted_only_when_it_fits",
 ]
-models = []
+models = [
+    "RunPermits:OneWorkerOnePermit",
+    "RunPermits:WithinLimit",
+    "RunPermits:LentWhileRunning",
+    "RunPermits:InterruptOnce",
+    "RunPermits:SuspendedRunnerAsked",
+]
+modelled = "RunPermits は 3 スレッド・3 worker・同時に貸せる数 2・停止要求 2 回までの全ての順序で、貸し出し (順序に従うものと名指し)・返却・中断の要求・停止要求とその解除を調べる。調べるのは設計であり、Rust のコードではない。"
+tied = "生成した表は使わない。状態と遷移の全体を、scripts/ci/tla.sh が TLC の状態グラフと実際の Kernel の動きを突き合わせて、過不足なく一致することを確かめる (crates/kome/src/conform.rs、docs/tla-conformance.md)。スレッドの終了、待機、古い世代の実行 (台帳 MEM-3) はこのモデルに無い。"
+tested = "実行権の照合 (インスタンスと実行の番号)、返し済みの実行権の拒否、写しと復元は、モデルに無く、tests の試験と決定的シミュレーションが見る。貸し出しの記録と実行中のスレッドが一対一であることは audit が数え直す。"
 proved = "止まった理由を受理するかどうか (stop_allowed) と、受理した後のスレッドの行き先 (after_stop) について、理由・中断の要求の有無・貸した量・実行した量・終了要求の全ての値。前提は無い。実行権の照合、貸し出しの記録、実行待ちの列の更新は示していない。その部分は試験と決定的シミュレーションが見る。"
 scope = "実行権は複製できない値 (RunPermit) で、返却のときにインスタンスと実行の世代を照合する。Kernel も複製できず、写し (Snapshot) は実行権を貸していないときに別の実行インスタンスとしてだけ復元できる。worker が実行権を返さずに実行を続けないことは、実行統括 (kome の外) が守る。"
 
@@ -62,7 +71,14 @@ tests = [
 ]
 proofs = ["the_lending_order_is_a_strict_total_order"]
 proved = "貸す順序 (lent_before) について、三つの席の優先度と実行待ちになった順番の全ての値。どの二つにも順序が付き、回らない。前提は無い。列 (ヒープ) の出し入れで形が保たれること、各スレッドが持つ位置が席と合うことは示していない。"
-models = []
+models = [
+    "RunPermits:QueueExact",
+    "RunPermits:NoLendWhileSuspended",
+    "RunPermits:NoOvertake",
+]
+modelled = "RunPermits は 3 スレッド (優先度が低い一つと高い二つ)・3 worker・停止要求 2 回までの全ての順序で、列への出し入れと貸す順序を調べる。活性 Progress も調べる: worker が実行権を返し、順序に従う貸し出しが繰り返されるなら、最も高い優先度で列にあるスレッドは必ず実行権を受け取る。優先度が低いスレッドにこの保証は無い (モデルが反例を出す)。調べるのは設計であり、Rust のコードではない。"
+tied = "生成した表は使わない。状態と遷移の全体を、scripts/ci/tla.sh が TLC の状態グラフと実際の Kernel の動きを突き合わせて、過不足なく一致することを確かめる (crates/kome/src/conform.rs、docs/tla-conformance.md)。突き合わせは、列の席を実行待ちになった順に並べてモデルの列と比べ、順序に従う貸し出しが飛ばしたかどうかを、実装の比較を使わずに数え直す。優先度の変更と、古い世代の実行による列からの退避 (台帳 MEM-3) はこのモデルに無い。"
+tested = "列 (ヒープ) の形、各スレッドが持つ位置、優先度の変更、退避と復帰の順番は、audit の数え直し、tests の試験、決定的シミュレーションが見る。活性は実装については、遷移が一致することから従う範囲でしか言えない。"
 scope = "貸せるとは、実行待ちで、停止の数が 0 で、プロセスに古い世代の実行が残っていないこと。貸す順序は、優先度が高い方、同じなら先に実行待ちになった方。列はこの順序のヒープで、各スレッドが列の中の自分の位置を持つ。Kani が示すのは順序が必ず付くことだけで、列の形が保たれることは audit と試験が見る。優先度をいつ変えるかは Personality が決める。"
 
 [[invariant]]

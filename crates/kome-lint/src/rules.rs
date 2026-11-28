@@ -259,7 +259,7 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(LEDGER, |text| text.replace("proved = \"表を使う小さな上限での証明。前提: ", "proved = \"全ての値について示す。")),
             |repo| repo.edit(LEDGER, |text| text.replace("tied = \"受理する遷移の表 IoTable は", "tied = \"受理する遷移の表は")),
             |repo| repo.edit(LEDGER, |text| text.replace("tested = \"同じ資源を待つ待機を", "remark = \"同じ資源を待つ待機を")),
-            |repo| repo.edit(LEDGER, |text| text.replacen("id = \"RUN-2\"", "id = \"RUN-2\"\nmodelled = \"実行待ち行列の全ての順序\"", 1)),
+            |repo| repo.edit(LEDGER, |text| text.replacen("id = \"OBJ-1\"", "id = \"OBJ-1\"\nmodelled = \"資源の全ての順序\"", 1)),
             |repo| repo.remove(PROOFS_TSV),
         ],
     },
@@ -276,6 +276,7 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("tla/ProcessExit.tla", |text| text.replace("EXTENDS ExitTable, ", "EXTENDS ")),
             |repo| repo.append("tla/ProcessExit.tla", "ExitFinish == <<>>"),
             |repo| repo.edit(EXPECT, |text| text.replace("ProcessExitKeepHandles.cfg\tProcessExit\tReleasedAtExit\n", "")),
+            |repo| repo.edit(EXPECT, |text| text.replace("RunPermitsLifo.cfg\tRunPermits\tNoOvertake\n", "")),
         ],
     },
     Rule {
@@ -454,6 +455,8 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(CONFORM_MD, |text| text.replace("| `lateGrant` |", "| `late` |")),
             |repo| repo.edit("tla/ProcessExit.tla", |text| text.replace("    drained    \\* ", "    extra,\n    drained    \\* ")),
             |repo| repo.edit(CONFORM_MD, |text| text.replace("### IoLifecycle", "### I/O")),
+            |repo| repo.edit(CONFORM_RS, |text| text.replace("format!(\"overtaken = {}\"", "format!(\"passed = {}\"")),
+            |repo| repo.edit(CONFORM_MD, |text| text.replace("| `queue` | `Kernel::ready`", "| `seats` | `Kernel::ready`")),
         ],
     },
     Rule {

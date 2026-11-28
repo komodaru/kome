@@ -14,7 +14,7 @@
 //! 何も確かめない (tla.sh は、確かめた行が出たことまで見る)。
 
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use std::{eprintln, format, println};
@@ -749,6 +749,198 @@ impl Driven for ProcessExit {
 #[test]
 fn the_exit_model_and_the_kernel_take_the_same_steps() {
     conform::<ProcessExit>();
+}
+
+// ---- RunPermits ----
+
+/// tla/RunPermits.cfg の MaxSuspend。モデルが探索を有限にするための上限で、実装の上限ではない。
+const MAX_SUSPEND: u32 = 2;
+/// tla/RunPermits.cfg の Limit。同時に貸せる実行権の数。
+const LIMIT: u32 = 2;
+/// tla/RunPermits.tla の Top に入るスレッドの優先度。
+const HIGH: Priority = Priority::new(200);
+
+#[derive(Clone, Copy, Debug)]
+enum PermitOp {
+    /// 順序に従って、この worker へ貸す。
+    Grant(u32),
+    /// 名指しして、この worker へ貸す。
+    GrantThread(u32, usize),
+    /// 実行権を、この理由で返す。
+    Return(usize, Back),
+    Continue(usize),
+    Preempt(usize),
+    Suspend(usize),
+    Unsuspend(usize),
+}
+
+struct RunPermits;
+
+/// 席 `a` を席 `b` より先に貸すか。モデルの `Ahead` と同じ規則を、実装の比較 (`lent_before`) を
+/// 使わずに書く: 優先度が高い方、同じなら先に実行待ちになった方。
+fn goes_first(a: &runq::Waiting, b: &runq::Waiting) -> bool {
+    (core::cmp::Reverse(a.priority), a.turn) < (core::cmp::Reverse(b.priority), b.turn)
+}
+
+impl Driven for RunPermits {
+    type Op = PermitOp;
+    const NAME: &'static str = "RunPermits";
+
+    fn ops() -> Vec<PermitOp> {
+        use PermitOp::*;
+        let mut ops = Vec::new();
+        for worker in 0..3 {
+            ops.push(Grant(worker));
+            ops.extend((0..3).map(|thread| GrantThread(worker, thread)));
+        }
+        for thread in 0..3 {
+            ops.extend([Continue(thread), Preempt(thread), Suspend(thread), Unsuspend(thread)]);
+            for back in [Back::Yielded, Back::BudgetExhausted, Back::Interrupted, Back::Trap] {
+                ops.push(Return(thread, back));
+            }
+        }
+        ops
+    }
+
+    fn run(path: &[PermitOp]) -> Option<String> {
+        let mut k = kernel(LIMIT);
+        let p = process(&mut k);
+        let made: [ThreadId; 3] = threads(&mut k, p);
+        // 先に作ったスレッドが、後から作った二つに譲る。
+        for thread in &made[1..] {
+            k.set_priority(*thread, HIGH).unwrap();
+        }
+        drain(&mut k);
+        let index = |thread: ThreadId| made.iter().position(|other| *other == thread).unwrap();
+        let mut permits: [Option<RunPermit>; 3] = [None, None, None];
+        let mut sent = [0u32; 3];
+        let (mut lent_suspended, mut overtaken) = (false, false);
+        let refused = |result: Result<(), Error>| match result {
+            Ok(()) => true,
+            Err(Error::Refused(_)) => false,
+            Err(other) => panic!("操作が {other:?} で失敗した"),
+        };
+        for (op, last) in path.iter().zip((1..=path.len()).rev().map(|left| left == 1)) {
+            let accepted = match *op {
+                PermitOp::Grant(worker) => {
+                    let waiting: Vec<runq::Waiting> = k.ready.iter().copied().collect();
+                    match k.grant(WorkerId::new(worker)) {
+                        Ok(Some(permit)) => {
+                            let chosen = waiting.iter().find(|seat| seat.thread == permit.thread()).unwrap();
+                            overtaken |= waiting.iter().any(|other| other.thread != chosen.thread && goes_first(other, chosen));
+                            let at = index(permit.thread());
+                            lent_suspended |= k.suspend_count(made[at]).unwrap() != 0;
+                            permits[at] = Some(permit);
+                            true
+                        }
+                        Ok(None) | Err(Error::Refused(Refusal::WorkerBusy) | Error::Exhausted(Resource::Workers)) => false,
+                        Err(other) => panic!("実行権を貸すのが {other:?} で失敗した"),
+                    }
+                }
+                PermitOp::GrantThread(worker, at) => match k.grant_thread(WorkerId::new(worker), made[at]) {
+                    Ok(permit) => {
+                        assert_eq!(permit.thread(), made[at]);
+                        lent_suspended |= k.suspend_count(made[at]).unwrap() != 0;
+                        permits[at] = Some(permit);
+                        true
+                    }
+                    Err(Error::Refused(Refusal::WorkerBusy | Refusal::NotReady) | Error::Exhausted(Resource::Workers)) => false,
+                    Err(other) => panic!("実行権を名指しで貸すのが {other:?} で失敗した"),
+                },
+                PermitOp::Return(at, back) => match permits[at].take() {
+                    None => false,
+                    Some(permit) => {
+                        let (stop, consumed) = match back {
+                            Back::Yielded => (Stop::Yielded, Budget::new(1)),
+                            Back::BudgetExhausted => (Stop::BudgetExhausted, permit.budget()),
+                            Back::Interrupted => (Stop::Interrupted, Budget::new(1)),
+                            Back::Trap => (Stop::Trap, Budget::new(1)),
+                            Back::Exited => panic!("この筋書きでは、スレッドは終了しない"),
+                        };
+                        match k.relinquish(permit, stop, consumed) {
+                            Ok(_) => {
+                                assert!(!matches!(back, Back::Interrupted) || sent[at] != 0, "要求していない中断に応じた返却を受理した");
+                                sent[at] = 0;
+                                true
+                            }
+                            // 中断に応じたと言えるのは、中断を要求した実行だけである。
+                            Err(NotRelinquished::Rejected(_, Error::Refused(Refusal::NotInterrupted))) => {
+                                assert!(matches!(back, Back::Interrupted) && sent[at] == 0);
+                                false
+                            }
+                            Err(other) => panic!("実行権を返すのが {other:?} で失敗した"),
+                        }
+                    }
+                },
+                PermitOp::Continue(at) => refused(k.continue_thread(made[at])),
+                PermitOp::Preempt(at) => refused(k.preempt_thread(made[at])),
+                PermitOp::Suspend(at) => {
+                    k.suspend_count(made[at]).unwrap() < MAX_SUSPEND && refused(k.suspend_thread(made[at]).map(|_| ()))
+                }
+                PermitOp::Unsuspend(at) => refused(k.unsuspend_thread(made[at]).map(|_| ())),
+            };
+            if !accepted {
+                assert!(last, "受け付けたはずの操作を、やり直したら受け付けなかった: {path:?}");
+                return None;
+            }
+            for effect in drain(&mut k) {
+                let Effect::Interrupt { worker, thread, run } = effect else {
+                    panic!("この筋書きで出るはずのない出力: {effect:?}");
+                };
+                let at = index(thread);
+                let permit = permits[at].as_ref().expect("実行権が出ていないスレッドへ中断を要求した");
+                assert_eq!((permit.worker(), permit.run()), (worker, run), "中断の要求が、いまの実行を指していない");
+                sent[at] = sent[at].checked_add(1).unwrap();
+            }
+        }
+        k.audit().unwrap();
+        assert_eq!(k.running_count(), permits.iter().flatten().count(), "貸した数と、返っていない実行権の数が違う");
+        let entry = |at: usize| k.threads.get(made[at]).unwrap();
+        let run: Vec<&str> = (0..3)
+            .map(|at| match entry(at).run {
+                Run::Ready => "Ready",
+                Run::Running { interrupted, .. } => {
+                    assert_eq!(interrupted, sent[at] != 0, "中断を要求した印と、出した要求の数が合わない");
+                    "Running"
+                }
+                Run::Servicing => "Servicing",
+                Run::Blocked(_) => panic!("この筋書きでは、スレッドは待たない"),
+            })
+            .collect();
+        let on: Vec<String> = (0..3)
+            .map(|at| match entry(at).run {
+                Run::Running { worker, .. } => format!("w{}", worker.get().checked_add(1).unwrap()),
+                Run::Ready | Run::Servicing | Run::Blocked(_) => "None".to_owned(),
+            })
+            .collect();
+        let suspend: Vec<u32> = (0..3).map(|at| entry(at).suspend).collect();
+        // 列の席を、実行待ちになった順に並べる。席は、スレッドが持つ位置と合っている。
+        let mut seats: Vec<(u64, usize)> = k.ready.iter().map(|seat| (seat.turn, index(seat.thread))).collect();
+        seats.sort_unstable();
+        for (place, seat) in k.ready.iter().enumerate() {
+            assert_eq!(entry(index(seat.thread)).queued, Some(place), "スレッドが持つ位置が、列の席と合わない");
+        }
+        if let Some(first) = k.ready_thread(0) {
+            let head = k.ready.iter().find(|seat| seat.thread == first).unwrap();
+            assert!(k.ready.iter().all(|other| other.thread == first || goes_first(head, other)), "列の先頭が、最も先に貸すスレッドでない");
+        }
+        let queue: Vec<String> = seats.iter().map(|(_, at)| format!("t{}", at.checked_add(1).unwrap())).collect();
+        Some(state_text(vec![
+            format!("run = {}", per_thread(&run, |name| quoted(name))),
+            format!("on = {}", per_thread(&on, Clone::clone)),
+            format!("sent = {}", per_thread(&sent, u32::to_string)),
+            format!("suspend = {}", per_thread(&suspend, u32::to_string)),
+            format!("queue = <<{}>>", queue.join(", ")),
+            format!("lentSuspended = {}", truth(lent_suspended)),
+            format!("overtaken = {}", truth(overtaken)),
+        ]))
+    }
+}
+
+/// tla/RunPermits.tla の状態と遷移は、`Kernel` の実行権の貸し出しと返却の動きそのものである。
+#[test]
+fn the_permit_model_and_the_kernel_take_the_same_steps() {
+    conform::<RunPermits>();
 }
 
 #[test]

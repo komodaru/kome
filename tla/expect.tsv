@@ -17,3 +17,13 @@ ProcessExitReclaimWithIo.cfg	ProcessExit	NoReclaimInFlight
 ProcessExitTwice.cfg	ProcessExit	ExitsOnce
 ProcessExitNoInterrupt.cfg	ProcessExit	KilledAreInterrupted
 ProcessExitReach.cfg	ProcessExit	ReachDrained
+RunPermits.cfg	RunPermits	ok
+RunPermitsBusyWorker.cfg	RunPermits	OneWorkerOnePermit
+RunPermitsOverLimit.cfg	RunPermits	WithinLimit
+RunPermitsKeepPermit.cfg	RunPermits	LentWhileRunning
+RunPermitsKeepSuspended.cfg	RunPermits	NoLendWhileSuspended
+RunPermitsRequeueEarly.cfg	RunPermits	QueueExact
+RunPermitsAskAgain.cfg	RunPermits	InterruptOnce
+RunPermitsNoInterrupt.cfg	RunPermits	SuspendedRunnerAsked
+RunPermitsLifo.cfg	RunPermits	NoOvertake
+RunPermitsReach.cfg	RunPermits	ReachBusy
