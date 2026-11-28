@@ -68,3 +68,33 @@ fn an_idle_worker_is_woken_for_new_work() {
         support::check(&host, &made, 0);
     });
 }
+
+/// 仕事が最初から終わっているホストでは、誰も閉じない。どの進み方でも、worker は眠らずに戻る
+/// (眠れば、起こす者がいないので Loom が行き詰まりとして検出する)。
+#[test]
+fn a_host_finished_from_the_start_lets_its_workers_go() {
+    loom::model(|| {
+        let host = support::finished_host(2, || Instant::from_nanos(0));
+        let running: Vec<_> = (0..2)
+            .map(|worker| {
+                let host = host.clone();
+                thread::spawn(move || host.work(WorkerId::new(worker), &mut support::Stepper))
+            })
+            .collect();
+        for worker in running {
+            assert_eq!(worker.join().unwrap(), Ok(()));
+        }
+    });
+}
+
+/// 一本目のスレッドへの中断の求めは、同じ worker が次に実行する二本目を止めない。
+/// 求めを立てる側と見る側の進み方を全て試す。
+#[test]
+fn an_interrupt_for_one_run_never_stops_the_next_thread_on_the_same_worker() {
+    loom::model(|| {
+        support::interrupt_names_one_run(|| Instant::from_nanos(0), thread::yield_now, |work| {
+            let running = thread::spawn(work);
+            Box::new(move || running.join().unwrap())
+        });
+    });
+}

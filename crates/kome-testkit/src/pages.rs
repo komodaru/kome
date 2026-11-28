@@ -194,6 +194,17 @@ impl Pages {
         }
     }
 
+    /// 実体 `backing` の `offset` のバイトを、実行できる権限で見せているアドレスの全て。
+    pub fn executes(&self, backing: BackingId, offset: u64, page_size: u64) -> impl Iterator<Item = u64> + '_ {
+        self.pages.iter().filter_map(move |(page, shown)| match shown {
+            Page::Backed { backing: mine, offset: first, prot } if *mine == backing && prot.execute => {
+                let within = offset.checked_sub(*first).filter(|within| *within < page_size)?;
+                page.checked_mul(page_size)?.checked_add(within)
+            }
+            Page::Backed { .. } | Page::Reserved => None,
+        })
+    }
+
     /// この実体を見せているページがあるか。
     #[must_use]
     pub fn shows(&self, backing: BackingId) -> bool {

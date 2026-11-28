@@ -225,4 +225,8 @@ fn main() {
     timers(&bench);
     snapshots(&bench);
     hosts(&bench);
+    if let Err(why) = bench.finish() {
+        eprintln!("kome-bench: {why}");
+        std::process::exit(1);
+    }
 }

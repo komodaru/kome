@@ -82,7 +82,8 @@ impl WorkerId {
     }
 }
 
-/// 一つのスレッドの何回目の実行か。
+/// 一回の実行 (実行権を貸してから返すまで) の番号。一つの `Kernel` の中で、スレッドをまたいで
+/// 一意である。worker へ届く中断の要求 ([`crate::Effect::Interrupt`]) は、この番号だけで実行を名指しできる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RunGen(u64);
 
@@ -351,7 +352,10 @@ impl Kernel {
         let thread = self.ready.get(at).ok_or(Error::Broken(Invariant::RunQueue))?.thread;
         let entry = self.threads.get(thread).ok_or(Error::Broken(Invariant::RunQueue))?;
         let process = entry.process;
-        let run_gen = entry.run_gen.checked_add(1).ok_or(Error::Exhausted(Resource::Identifiers))?;
+        // 実行の番号は、この Kernel の通し番号から取る。スレッドごとに数えると、別のスレッドの
+        // 同じ回数めの実行と区別できず、worker へ届いた前の実行への中断が次の実行に当たる。
+        let run_gen = self.seq;
+        let seq = self.seq.checked_add(1).ok_or(Error::Exhausted(Resource::Identifiers))?;
         let map = self.processes.get(process).ok_or(Error::Broken(Invariant::ProcessTree))?.space.generation();
         // 貸し出しの記録は、確保済みの容量へ置く。容量が無いのは内部の障害で、何も変えずに返す。
         if self.running.len() >= self.running.capacity() {
@@ -360,6 +364,7 @@ impl Kernel {
         // この実行への中断要求の席。ここから先は失敗しない。
         self.effects.promise(1)?;
         self.unqueue(at)?;
+        self.seq = seq;
         self.running.push_within(Lent { worker, thread }).map_err(|_| Error::Broken(Invariant::RunOnePermit))?;
         let entry = self.threads.get_mut(thread).ok_or(Error::Broken(Invariant::RunQueue))?;
         entry.run_gen = run_gen;
@@ -397,6 +402,14 @@ impl Kernel {
             }
             Err(reason) => Err(NotRelinquished::Rejected(permit, reason)),
         }
+    }
+
+    /// 実行権が、この `Kernel` が貸していて、まだ返っていないものかを確かめる。状態は変えない。
+    ///
+    /// 別の実行インスタンスの実行権なら `Foreign`、返し済みなら `Refused(StalePermit)`。実行器は、
+    /// これを通った実行権でだけ実行を始める ([`crate::start_run`])。
+    pub fn lent(&self, permit: &RunPermit) -> Result<(), Error> {
+        self.admit(permit).map(|_| ())
     }
 
     /// 実行権が、この状態が貸していて、まだ返っていないものかを確かめる。状態は変えない。

@@ -12,8 +12,9 @@
 //!   [`unmap_observed`]、[`protect_observed`] を通して呼ぶ。backend は、通知だけを見ていれば
 //!   kome と同じアドレス空間を保てる (ホスト側のページ表、引いた結果の覚え書きを更新できる)。
 //! - **コードの無効化** ([`CodeCache`]、[`CodeWatch`]): 変換済みのコードを持つ実行器は、マッピングが
-//!   外れた範囲と権限が変わった範囲のコードを捨てる。書き込めて実行もできる範囲への書き込みは、
-//!   [`guest_write_watched`] が知らせる。実行器が自分の速い経路で書く場合は、実行器が同じことをする。
+//!   外れた範囲と権限が変わった範囲のコードを捨てる。実行できる権限で見せている実体への書き込みは、
+//!   どの範囲から書いても [`guest_write_watched`] が知らせる。実行器が自分の速い経路で書く場合は、
+//!   実行器が同じことをする。
 //!
 //! 通知は、変更を受理した直後に届く。古い世代で実行中の worker がいても、実体の内容は
 //! [`crate::Effect::BackingReclaimed`] が出るまで手放してはならない (台帳 MEM-1)。
@@ -110,9 +111,14 @@ pub fn guest_write<C: Contents + ?Sized>(
     })
 }
 
-/// [`guest_write`] と同じ。書いた範囲に実行できる部分があれば、その範囲のコードを捨てさせる。
+/// [`guest_write`] と同じ。書いた内容を実行できる権限で見せているマッピングがあれば、そのコードを捨てさせる。
 ///
 /// Personality や Host がゲストのメモリへ書く経路 (読み込んだファイルの内容、再配置) に使う。
+///
+/// - 見るのは書き込み先の範囲の権限ではなく、書いた実体である。同じ実体を別の範囲や別のプロセスへ
+///   実行できる権限で見せていれば (別名)、そちらのコードも捨てさせる ([`Kernel::executable_views`])。
+/// - backend が途中で失敗しても ([`AccessError::Host`])、内容は一部変わっているかもしれないので、
+///   範囲の全体について捨てさせてから失敗を返す。何も書いていない失敗 ([`AccessError::Fault`]) では捨てない。
 pub fn guest_write_watched<C: Contents + ?Sized, K: CodeCache + ?Sized>(
     kernel: &Kernel,
     contents: &mut C,
@@ -121,22 +127,24 @@ pub fn guest_write_watched<C: Contents + ?Sized, K: CodeCache + ?Sized>(
     addr: GuestAddr,
     data: &[u8],
 ) -> Result<(), AccessError> {
-    guest_write(kernel, contents, process, addr, data)?;
-    let len = u64::try_from(data.len()).unwrap_or(u64::MAX);
-    let Some(range) = GuestRange::new(addr, len) else { return Ok(()) };
-    let mut from = addr;
-    while let Some(mapping) = kernel.next_mapping(process, from).map_err(AccessError::Kernel)? {
-        if mapping.range().start() > range.last() {
-            break;
+    walk(kernel, process, addr, data.len(), Access::Write, |_, _, _| Ok(()))?;
+    let written = walk(kernel, process, addr, data.len(), Access::Write, |span, done, take| {
+        match data.get(done..done.saturating_add(take)) {
+            Some(part) => contents.write(span.backing(), span.offset(), part),
+            None => Ok(()),
         }
-        if mapping.prot().allows(Access::Execute) {
-            code.invalidate(process, range);
-            break;
+    });
+    let mut failed = None;
+    walk(kernel, process, addr, data.len(), Access::Write, |span, _, take| {
+        let len = u64::try_from(take).unwrap_or(u64::MAX);
+        let seen = kernel.executable_views(span.backing(), span.offset(), len, |shown_in, range| code.invalidate(shown_in, range));
+        if let Err(error) = seen {
+            failed.get_or_insert(error);
         }
-        let Some(next) = mapping.range().last().get().checked_add(1) else { break };
-        from = GuestAddr::new(next);
-    }
-    Ok(())
+        Ok(())
+    })?;
+    written?;
+    failed.map_or(Ok(()), |error| Err(AccessError::Kernel(error)))
 }
 
 /// アドレス空間の一つの変更。

@@ -36,684 +36,684 @@ limits processes=16 threads=24 objects=4096 backings=1024 backing_bytes=42949672
 > Protect p0 20480 28671 r-- #bdfc585eefc9ddd7
 < effects=0 ready=2 running=0 now=0 alive=1/2/12/1/0/0/4 Err(Refused(NotMapped)) #1e19d8c31d4c28c8
 > GrantThread 0 t1 #2f856010651e7dc8
-< effects=0 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#1.1@7, process: Process#0.1@7, worker: WorkerId(0), run: RunGen(1), map: MapGen(0), budget: Budget(100000) }))) #e24038bfae86fc85
-> PollEffect #513b77c496fa8020
-< effects=0 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Ok(Effect(None)) #a577ac9687c246c9
-> InterruptWait t0 #46755b1dd46cb9ca
-< effects=0 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Err(Refused(NotWaiting)) #67596116492132cd
-> ReleaseBacking p0 b0 #968408982b2b6ff8
-< effects=1 ready=1 running=1 now=0 alive=1/2/12/0/0/0/4 Ok(Done) #4ce195558b75b3f3
-> Signal o3 Set 1 #de59877f2bf46f0d
-< effects=1 ready=1 running=1 now=0 alive=1/2/12/0/0/0/4 Err(Refused(DrivenObject)) #f3f24f6db1282273
-> CreateBacking p0 12288 #ed94fc58d73bc5a2
-< effects=1 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Ok(Backing(Backing#0.2@7)) #55e863323294bebb
-> PreemptThread t0 #79843805557c2651
-< effects=1 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Err(Refused(NotRunning)) #9b9661821240cd8b
-> PreemptThread t1 #febe10d89b472bfc
-< effects=2 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Ok(Done) #6bc4935ccf43cbbf
-> Signal o3 Add 1 #0cb3a2155acb8c18
-< effects=2 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Err(Refused(DrivenObject)) #ffb1e45be6a61376
-> Advance 21 #0d6cd4a937020c80
-< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Ok(Advanced(Advanced { fired: 0, reached: Instant(21), more: false })) #2c2b08b629fa2362
-> Protect p0 12288 16383 r-- #09c321be996e3abc
-< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Err(Refused(NotMapped)) #1733af10326637b6
-> InterruptWait t0 #7acba7f5c5e23b3f
-< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Err(Refused(NotWaiting)) #9bdf7cca1ce880e1
-> SetQuota p0 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=20480 #4a93db5ea3566cb4
-< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #60870a99a812b692
-> ContinueThread t0 #3b463a76c6fd53aa
-< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Err(Refused(NotServicing)) #eb66ecc1fc70ddc3
-> ReleaseObject p0 o5 #66e78c56ca4a7f5c
-< effects=3 ready=1 running=1 now=21 alive=1/2/11/1/0/0/4 Ok(Done) #f6a491af45ba4220
-> Map p0 8192 12287 r-x Backing b0 4096 #0bee9e11383e8d78
-< effects=3 ready=1 running=1 now=21 alive=1/2/11/1/0/0/4 Err(Stale(Backing)) #0ea3b4a11268eb0a
-> CreateChannel p0 Stream 20 #b74aacf08e773e08
-< effects=3 ready=1 running=1 now=21 alive=1/2/13/1/0/0/5 Ok(Channel(ChannelCreated { channel: Channel#4.1@7, readable: Object#5.2@7, writable: Object#12.1@7 })) #3e283bbbbf422ae4
-> CreateChannel p0 Stream 20 #969042cfc01369d6
-< effects=3 ready=1 running=1 now=21 alive=1/2/15/1/0/0/6 Ok(Channel(ChannelCreated { channel: Channel#5.1@7, readable: Object#13.1@7, writable: Object#14.1@7 })) #52db527d0655ff1c
-> Grant 1 #13611c65481b5a82
-< effects=3 ready=0 running=2 now=21 alive=1/2/15/1/0/0/6 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#0.1@7, process: Process#0.1@7, worker: WorkerId(1), run: RunGen(1), map: MapGen(0), budget: Budget(100000) }))) #2042ae9b30421a7a
-> CreateThread p0 Ready #e755e75387fa1b72
-< effects=3 ready=0 running=2 now=21 alive=1/2/15/1/0/0/6 Err(Exhausted(ProcessThreads)) #6c392a8e7419b0a1
-> CreateProcess Bits64 4096 #fc442e0132393b48
-< effects=3 ready=0 running=2 now=21 alive=2/2/16/1/0/0/6 Ok(Process(Process#1.1@7, Object#15.1@7)) #7f0541ed7f043b6d
-> ContinueThread t1 #b9d6f3302e8998ec
-< effects=3 ready=0 running=2 now=21 alive=2/2/16/1/0/0/6 Err(Refused(NotServicing)) #c2b377d944587f55
-> Advance 380 #3a5ed9ddcc24dc69
-< effects=3 ready=0 running=2 now=380 alive=2/2/16/1/0/0/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(380), more: false })) #614512480fcff913
-> SuspendThread t0 #a96df0e814146dce
-< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/0/0/6 Ok(Count(0)) #2eb53cd17888a5bd
-> CreateThread p0 Suspended #3bead69928d11ed3
-< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/0/0/6 Err(Exhausted(ProcessThreads)) #2a2589be3c512479
-> CreateTimer p1 o16 #2d9bc279f05528de
-< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/1/0/6 Ok(Timer(Timer#0.1@7)) #95b0962b19bd5a96
-> CreateTimer p1 o2 #d4bb2e2b656ee158
-< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/2/0/6 Ok(Timer(Timer#1.1@7)) #15c690dd508cf4f4
-> RetainChannel p1 c2 Send #d2510f9fa5758c15
-< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/2/0/6 Ok(Done) #2eb2b3f26b730d0a
-> CreateProcess Bits64 4096 #fd35e2d6aec8415b
-< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Process(Process#2.1@7, Object#16.1@7)) #2b3be74371fc9147
-> SetPriority t1 238 #74d3185f9c629ed0
-< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Priority(Priority(128))) #99799913d0aa4552
-> GrantThread 0 t1 #ba90097881b447fe
-< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Err(Refused(WorkerBusy)) #beee7cf5b911d864
-> RetainObject p0 o10 #d277950b11c88627
-< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Done) #26ba439646577282
-> CreateTimer p1 o9 #ac9e184c843be5eb
-< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Err(Refused(DrivenObject)) #c709c2b722737bef
-> Unmap p1 8192 12287 #af5445c6fdd45372
-< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Count(0)) #c1dcdd576cc7aa29
-> RetainObject p0 o17 #54124bde5dcbe145
-< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Done) #9e0c2758b6a93410
-> Wait t0 Any No Never 1 o17 #7a643c99569df87f
-< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Err(Refused(NotServicing)) #f24c83301351993d
-> CreateThread p1 Ready #467d0ff7f048df3c
-< effects=4 ready=1 running=2 now=380 alive=3/3/18/1/2/0/6 Ok(Thread(Thread#2.1@7, Object#17.1@7)) #6df8947e4bdcf204
-> ReleaseChannel p2 c5 Send #82485dddb7f00771
-< effects=4 ready=1 running=2 now=380 alive=3/3/18/1/2/0/6 Err(Refused(NotHeld)) #f7f888585b4101df
-> Advance 679 #771d24770b1c822e
-< effects=4 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(679), more: false })) #3ce2237faa84fd1e
-> SetQuota p0 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=20480 #645e0f97b839d11f
-< effects=4 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Ok(Quota(Quota { threads: 2, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 20480 })) #c9fefe67394aade2
-> UnsuspendThread t1 #2344cc47e3c2f681
-< effects=4 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Err(Refused(NotSuspended)) #6d30815cf169bf7c
-> PollEffect #350a9b88bfa9b0a3
-< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Ok(Effect(Some(BackingReclaimed { backing: Backing#0.1@7 }))) #cb581e9e03a790c4
-> PreemptThread t1 #a80a39b514401d99
-< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Ok(Done) #71ac3afe9477daab
-> Signal o1 Set 2 #0918846391549cfc
-< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Err(Refused(SignalOverflow)) #814885994d6454d6
-> PrepareIo p1 - - #40a3be71494449a3
-< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/1/6 Ok(Io(Io#0.1@7)) #ad1e0c68ba9a7150
-> InterruptWait t1 #fe2c044bbd61f758
-< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/1/6 Err(Refused(NotWaiting)) #601e516f9e6d3243
-> IssueIo i0 #16b99d885f7b9d2e
-< effects=4 ready=1 running=2 now=679 alive=3/3/18/1/2/1/6 Ok(Done) #8c071e14ec34cd64
-> CreateBacking p2 8192 #8e601e12641a1c40
-< effects=4 ready=1 running=2 now=679 alive=3/3/18/2/2/1/6 Ok(Backing(Backing#1.1@7)) #e57f59cd29c525bc
-> TerminateThread t0 0 #c7182356c4a0134c
-< effects=4 ready=1 running=2 now=679 alive=3/3/18/2/2/1/6 Ok(Done) #956d80459ec6423b
-> CreateBacking p1 12288 #702184effa677b33
-< effects=4 ready=1 running=2 now=679 alive=3/3/18/3/2/1/6 Ok(Backing(Backing#2.1@7)) #e0d50abcd162c23f
-> Relinquish g1 0 Exited 2 #d11e011aaa346c89
-< effects=6 ready=1 running=1 now=679 alive=3/2/17/3/2/1/6 Ok(Fate(Exited(ExitCode(0)))) #e3e2f5aaef56a343
-> ExitProcess p2 1 #13efa130901a05b8
-< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Ok(Done) #51f623b687b14a0c
-> PublishIo i0 #04573e71f2d6d6eb
-< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Refused(IoNotPublishable)) #c89a58402e40779d
-> SuspendThread t1 #a948646e54fd13a1
-< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Ok(Count(0)) #345afc6385bdc357
-> UnsuspendThread t0 #5cf37976f76120bf
-< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Stale(Thread)) #608a6d3a0a6ba6e4
-> PreemptThread t2 #39021dcac5e0a36e
-< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Refused(NotRunning)) #4d438b7ef5a41e80
-> Unmap p2 24576 32767 #492764a107547bdd
-< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Stale(Process)) #2df57a3c31544665
-> ContinueThread t0 #c78b898879d045d9
-< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Stale(Thread)) #12a68fae0f45b422
-> CancelIo i0 #3df86fce0631a5b2
-< effects=10 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Ok(Cancel(Requested)) #3c6f892991968617
-> InterruptWait t0 #267670af97830c14
-< effects=10 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Stale(Thread)) #06a63ff712710d0d
-> CreateBacking p0 8192 #e2d3b2f842131ff7
-< effects=10 ready=1 running=1 now=679 alive=2/2/17/3/2/1/6 Ok(Backing(Backing#1.2@7)) #33fce7b734797090
-> ReleaseBacking p1 b0 #852d27cb1e714334
-< effects=10 ready=1 running=1 now=679 alive=2/2/17/3/2/1/6 Err(Stale(Backing)) #b2db440833cf937d
-> CreateBacking p0 12288 #9f4a6d5acd2c3bac
-< effects=10 ready=1 running=1 now=679 alive=2/2/17/4/2/1/6 Ok(Backing(Backing#3.1@7)) #adeea41993ab9e31
-> GrantThread 1 t2 #2284728e8df794a7
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#2.1@7, process: Process#1.1@7, worker: WorkerId(1), run: RunGen(1), map: MapGen(0), budget: Budget(100000) }))) #f7e362547ce7e9bc
-> SetQuota p2 threads=3 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=24576 #15e6f7f6c10affb0
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Stale(Process)) #b35e164e30c687a8
-> Unmap p0 4096 12287 #5001f8e7894704ab
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Ok(Count(0)) #aec29bc70c999859
-> UnsuspendThread t1 #f73bc1feed46be94
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Ok(Count(1)) #6764358eec3f1ee1
-> Complete 8 Io i0 Done 475892305086 #550ca323024ff69f
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Foreign) #9adac9b29bc99622
-> CreateTimer p2 o1 #db65b141f6e59206
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Stale(Process)) #a8417c67c7f42a92
-> Receive p1 c2 16 #8ccc7eba495bb399
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Refused(NotHeld)) #aeaaa8213586d21b
-> Map p0 4096 8191 --- Backing b2 0 #8f4bab453c927cd8
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Stale(Backing)) #a0188391d319077c
-> CreateBacking p1 12288 #a7f321149e622222
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Ok(Backing(Backing#4.1@7)) #a76e42a78015a13d
-> ReleaseIo i0 #dff5f29d13271ad2
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Refused(IoInFlight)) #2c7cb8d88169de7e
-> SetQuota p0 threads=5 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=36864 #55ffc6e713c59d15
-< effects=10 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Ok(Quota(Quota { threads: 2, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 20480 })) #b52f592ac894566a
-> PollEffect #de912c95a5e60085
-< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Ok(Effect(Some(Interrupt { worker: WorkerId(0), thread: Thread#1.1@7, run: RunGen(1) }))) #61506ddb9681fbdc
-> CreateChannel p2 Stream 20 #1ebdc8ad68d01e44
-< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Stale(Process)) #df6c9002010c1593
-> RetainBacking p2 b6 #6e4b91e5a092c5fa
-< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Stale(Process)) #28c70b4c1fe7c459
-> RetainChannel p2 c3 Send #61ce4da29f07377a
-< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Stale(Process)) #8e8dba179f94c0d9
-> CancelIo i0 #be5c0a1d6136a89d
-< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Ok(Cancel(AlreadyRequested)) #8b1fcc057cb7b81b
-> InterruptWait t2 #78e91f9205f7932a
-< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Refused(NotWaiting)) #d3ac9826fd560d17
-> Advance 1462 #a51077c7381fc3fb
-< effects=9 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(1462), more: false })) #ae87da57601ebe0b
-> PollEffect #e057f21e815f8992
-< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(Effect(Some(ObjectReclaimed { object: Object#5.1@7 }))) #3662f65ac3b12cd7
-> DisarmTimer m1 #42790904216f419f
-< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(WasArmed(false)) #eca5f19824af4ea8
-> SuspendThread t1 #2732158956bb9476
-< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(Count(0)) #c3154b24daaee311
-> ContinueThread t0 #42244737441018f5
-< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Err(Stale(Thread)) #6462868ce8d82f29
-> Signal o2 Set 0 #dc251249ebf8690f
-< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(Count(0)) #43515bea3dccd152
-> ReleaseIo i0 #36c84dcf9d57dbaf
-< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Err(Refused(IoInFlight)) #ca56772e562ef699
-> CreateThread p0 Suspended #4d624a354539795f
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/5/2/1/6 Ok(Thread(Thread#0.2@7, Object#1.2@7)) #203f2bc8646ae44f
-> SuspendThread t0 #cc3243061fc5df72
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/5/2/1/6 Err(Stale(Thread)) #7428f03c67b6f5e4
-> ContinueThread t3 #bb2f18697e59cad7
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/5/2/1/6 Err(Refused(NotServicing)) #6e9c71b59b70f7c7
-> CancelIo i0 #55c49ca174979793
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/5/2/1/6 Ok(Cancel(AlreadyRequested)) #e6a78707827eea2d
-> CreateBacking p1 12288 #2f3a6d01c11060f5
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Backing(Backing#5.1@7)) #ce4c96367d46782c
-> Complete 7 Io i0 Cancelled 3245578595062 #a7a7662129ffe198
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Settled(Held(Cancelled { transferred: 3245578595062 }))) #56826739db55a948
-> SetPriority t3 254 #8b9e94071ab2dd99
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Priority(Priority(128))) #6c104215553e1158
-> PreemptThread t3 #98633f3d0368cef7
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Err(Refused(NotRunning)) #a2910c36b472f957
-> SuspendThread t3 #30417c2aeca2e2d5
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Count(1)) #ba2de27ceb5de2b0
-> GrantThread 1 t2 #a295fecf809a81a8
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Err(Refused(WorkerBusy)) #359ee0cae2472c47
-> CreateBacking p2 8192 #ed4928f219d992cf
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Err(Stale(Process)) #f034acdbff8676d9
-> SetQuota p0 threads=5 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=4096 #6f580c696983546e
-< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Quota(Quota { threads: 5, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 36864 })) #32b1139928adf534
-> Relinquish g2 0 Fault 6336253867784 Denied #504da1abdab12371
-< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Fate(Servicing)) #7dc1c8d929dac179
-> Unmap p1 20480 28671 #284d99755d484f20
-< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Count(0)) #09253aa47ca584cf
-> Unmap p1 20480 24575 #1b10287a07941e55
-< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Count(0)) #d22b87ca6cb40a18
-> RetainBacking p0 b4 #bbea4a34ac317469
-< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Done) #3feed10b6b5d9292
-> CancelIo i0 #a5d98c366f488aa2
-< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Err(Refused(IoSettled)) #d88e31c6b2f237d4
-> ReleaseObject p2 o19 #342f557fe382a39e
-< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Err(Stale(Process)) #29c0eb411052265f
-> PollEffect #2d8209988ae0049e
-< effects=7 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Effect(Some(Interrupt { worker: WorkerId(1), thread: Thread#0.1@7, run: RunGen(1) }))) #42167c4c70a7673e
-> PollEffect #208753d9d0701a11
-< effects=6 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Effect(Some(IoSubmit { io: Io#0.1@7 }))) #1126dcab8e0b3cd2
-> Grant 1 #67d27da5f4b0b05c
-< effects=6 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Permit(None)) #c8f0dfdbdecb81d9
-> Advance 2275 #74023ea6123bc07e
-< effects=6 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(2275), more: false })) #015afdb14e0d1d01
-> CreateBacking p2 4096 #f2ebca7cff52ac9c
-< effects=6 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Err(Stale(Process)) #3401642ba9b3d55a
-> PollEffect #9034d5a5ef0e67f5
-< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Ok(Effect(Some(ObjectReclaimed { object: Object#1.1@7 }))) #034f9fcbbc0a6d32
-> RetainObject p0 o2 #8d0cbf31212bd51c
-< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Ok(Done) #cb25c745bf774ca9
-> Complete 7 Io i0 Failed 32 15916658916520 #1709681cca218bf9
-< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Err(Refused(IoSettled)) #6b615f11cb2cc3bb
-> ReleaseObject p2 o3 #40c773890e595940
-< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Err(Stale(Process)) #38a1ad74425bcd49
-> DropTimer m1 #1ac096d8ecfc799c
-< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/1/1/6 Ok(Done) #0ab41282dd8ec500
-> RetainChannel p2 c0 Receive #0113c4f7d0e9b6b9
-< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/1/1/6 Err(Stale(Process)) #efcc0d3fe80a474b
-> PublishIo i0 #357dc9fed74060b6
-< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/1/1/6 Ok(Outcome(Cancelled { transferred: 3245578595062 })) #c8254d166eaeb887
-> Signal o1 Add 1 #8ab3e620d851043a
-< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/1/1/6 Err(Stale(Object)) #0a85234ba147fbc0
-> CreateObject p0 Keep 0 1 #9e4f5a870e07a8f4
-< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Ok(Object(Object#18.1@7)) #120829b774b2bbe2
-> PrepareIo p0 - o13 #3e529bb02259438c
-< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Err(Refused(DrivenObject)) #decbbc30707f2f3e
-> ReleaseChannel p1 c0 Send #8eac831c0ef37e73
-< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Err(Refused(NotHeld)) #0f53f7b1bb7673da
-> RetainChannel p2 c3 Send #7b6e2355658c8837
-< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Err(Stale(Process)) #79e4ff8358cda550
-> SetQuota p2 threads=5 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=36864 #bb03421b6702bd39
-< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Err(Stale(Process)) #e5ade792d08ef352
-> Advance 2608 #25100db2a7194e3f
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(2608), more: false })) #b598c63d5cc302d5
-> Send p1 c0 78 Backing b2 #1875a38be68752fa
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Refused(NotHeld)) #176c5d6cc74946d7
-> UnsuspendThread t3 #adb67d3b0153df98
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(Count(2)) #8c80037eae224a57
-> InterruptWait t3 #afe8bfeb097b68ab
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Refused(NotWaiting)) #0624e01efbcb3208
-> Send p0 c4 0e0e0e0e0e0e0e0e0e Object o10 #ea396a57db77c116
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Refused(ParcelOnStream)) #d650d7b3d3db4c1b
-> DisarmTimer m0 #74b24b2d8a3b0ffe
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(WasArmed(false)) #8e627437321a1a07
-> Send p0 c5 3535353535 - #3d44102f3c9d52ed
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(Sent(Accepted(5))) #9b19b88fb5d1e360
-> Grant 2 #91f2cfdc25c9f839
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(Permit(None)) #b3f6c4c688ce3b6e
-> ArmTimer m1 2923 12152262341214 #a7e411476b52bfe4
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Stale(Timer)) #40b7d7962902cd53
-> CreateThread p2 Ready #a7008a2c036db8dd
-< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Stale(Process)) #f05b1c700c71b7de
-> CreateObject p1 Keep 0 1 #e45722f68fd4f32d
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/6/1/1/6 Ok(Object(Object#19.1@7)) #1a49bd5ea862203a
-> ReleaseBacking p1 b5 #32e669c837233f2b
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/6/1/1/6 Err(Refused(NotHeld)) #5a7f023bde3bd626
-> CreateBacking p0 8192 #14bb5e199477bf6c
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/1/6 Ok(Backing(Backing#6.1@7)) #d23072c152f7c9e8
-> ReleaseIo i0 #e03e160fa0314075
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Ok(Done) #7a740bfe8f60eb78
-> Send p1 c3 1e1e1e1e1e - #846de08bc32b7f7f
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Err(Refused(NotHeld)) #b1776d989364ee72
-> RetainChannel p0 c2 Receive #c69662cc69081baf
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Ok(Done) #37cd2268131f363e
-> DisarmTimer m0 #c39967805b6ff0d9
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Ok(WasArmed(false)) #16213cb1bb5f1820
-> ArmTimer m1 3395 5724371546986 #d8d89145779339bf
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Err(Stale(Timer)) #e64a16ac73c00784
-> IssueIo i0 #39859cb902ecc2fb
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Err(Stale(Io)) #68c625937418dbb9
-> CreateBacking p0 8192 #448c773bb2167f3b
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/8/1/0/6 Ok(Backing(Backing#7.1@7)) #adbb4ba9fbc204ae
-> Wait t0 All No At 2884 2 o21 o1 #c431bbea5993144b
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/8/1/0/6 Err(Stale(Thread)) #d563e92759d0cdfc
-> Send p2 c2 4e4e4e4e4e Backing b6 #e5c86b48e434bba6
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/8/1/0/6 Err(Stale(Process)) #301c608ae626dc82
-> ReleaseObject p2 o19 #7ab759872f66e6c0
-< effects=5 ready=0 running=1 now=2608 alive=2/3/20/8/1/0/6 Err(Stale(Process)) #f3935d59380c6938
-> CreateProcess Bits64 4096 #7ea0a3db62312dc5
-< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Ok(Process(Process#2.2@7, Object#20.1@7)) #5460e21495d70f8e
-> ArmTimer m0 3237 - #f62aa129a240dd8d
-< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Ok(Done) #fe8adf14ee0dd54b
-> CreateTimer p1 o5 #94b66f290ae7052a
-< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Err(Stale(Object)) #4b0f40c68ce5b938
-> GrantThread 0 t3 #e86b3049b9e04f62
-< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Err(Refused(WorkerBusy)) #0c3b1b45453e73ad
-> DisarmTimer m1 #acfc9134a3426575
-< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Err(Stale(Timer)) #883763dd37611cd7
-> ContinueThread t2 #c38a4023f25d0fa5
-< effects=5 ready=1 running=1 now=2608 alive=3/3/21/8/1/0/6 Ok(Done) #5a146911bd364c00
-> CreateProcess Bits64 4096 #3939e9100b0596bd
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Ok(Process(Process#3.1@7, Object#21.1@7)) #03546a1c27c45052
-> Complete 7 Io i0 Cancelled 4687293254803 #7af09f0c73a57320
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Io)) #ac02b7895d0c7ae6
-> Receive p3 c0 16 #5bfc166f7695f8f1
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Refused(NotHeld)) #98bea8fd4c28ff92
-> Signal o1 Add 1 #f9b0e3f7bddea043
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Object)) #a434a3e6bcda02aa
-> Wait t3 Any No At 3081 1 o15 #4bc4336aca3aee65
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Refused(NotServicing)) #884ac90e96a7d8ad
-> ReleaseObject p1 o0 #a0259c08d4feb510
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Refused(NotHeld)) #3cb328207b44274f
-> DisarmTimer m1 #2527057edbb93537
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Timer)) #13d4333c0771979e
-> RetainBacking p3 b9 #5d78325446285823
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Ok(Done) #58b014c003c773a8
-> Unmap p1 12288 16383 #5c90fc1803350d0b
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Ok(Count(0)) #0f540befc3ba80e6
-> Complete 7 Io i0 Failed 52 899586930685 #205f49995de2ec5e
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Io)) #69cd0834aeea6aac
-> ContinueThread t0 #453a977ac3702608
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Thread)) #fcf51a7822d057a2
-> PublishIo i0 #7d70b4fa7632ab21
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Io)) #f1263f6b1491cd55
-> PrepareIo p3 o2 o16 #2937abfa1f960779
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/1/6 Ok(Io(Io#0.2@7)) #90a92c1764b600d8
-> CreateThread p2 Ready #5c21aeffe0c6fa86
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/1/6 Err(Stale(Process)) #a7888ab1938e179a
-> CancelIo i1 #403649d0e62ad437
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/1/6 Ok(Cancel(Withdrawn)) #30862288628c90de
-> CreateTimer p4 o21 #47d57199b735bc3c
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Timer(Timer#1.2@7)) #c00ba406ab22634f
-> ArmTimer m0 3177 12724883016968 #d4360e7b5d87ab91
-< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Done) #3056f41fa45e7ee8
-> PollEffect #4c3c674a4db01c97
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Effect(Some(ThreadExited { thread: Thread#0.1@7, process: Process#0.1@7, code: ExitCode(0) }))) #6b6f6fc0c46e1d1e
-> Complete 7 Io i0 Cancelled 16520379034009 #1a47151c5c83dd92
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Io)) #63b04e2547f4c501
-> ReleaseChannel p3 c0 Receive #7521c11f4af094e3
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Refused(NotHeld)) #fd11797ecec4d0db
-> ReleaseChannel p0 c3 Send #14398601decbe88a
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Done) #832ecf8efcaf0a62
-> ReleaseObject p0 o17 #caa0b74371d5d4e0
-< effects=5 ready=1 running=1 now=2608 alive=4/3/21/8/2/1/6 Ok(Done) #17686ca415dd9c5a
-> Send p3 c5 da - #da5fbe7adb1b5b6a
-< effects=5 ready=1 running=1 now=2608 alive=4/3/21/8/2/1/6 Err(Refused(NotHeld)) #3d3b7780ebe64c60
-> Unmap p2 24576 28671 #b7ad5a51e39540ca
-< effects=5 ready=1 running=1 now=2608 alive=4/3/21/8/2/1/6 Err(Stale(Process)) #e753dac5b50cbfa6
-> PollEffect #db2857d786a62199
-< effects=4 ready=1 running=1 now=2608 alive=4/3/21/8/2/1/6 Ok(Effect(Some(BackingReclaimed { backing: Backing#1.1@7 }))) #37e0a086f67d2caa
-> CreateObject p3 Keep 1 2 #db988eee9df5b371
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Object(Object#16.2@7)) #641b86ccc64d54ef
-> ReleaseObject p1 o12 #97566545234fe5ab
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Refused(NotHeld)) #1774e8adc7196f23
-> PreemptThread t0 #fd18b6555f9f86e9
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Thread)) #13dfba49dec1c8f0
-> SetQuota p2 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=8192 #9b7501f596d7b1d7
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Process)) #a481feb6ff14c3b1
-> Protect p4 16384 20479 rw- #9f78b2696519891f
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Refused(NotMapped)) #443c532c7faa9bc3
-> RetainObject p4 o17 #d8f3980e8f382e2b
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Object)) #09340c42bf85c1cf
-> Unmap p2 20480 28671 #59a69ad5aeb8105d
-< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Process)) #19a088421f6910f7
-> CreateThread p4 Suspended #7aeb90900c2d0cf1
-< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/2/1/6 Ok(Thread(Thread#3.1@7, Object#22.1@7)) #d238591f1c0e756e
-> PreemptThread t4 #eaa627eb33b4a34e
-< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/2/1/6 Err(Refused(NotRunning)) #14c710c2c275c69c
-> Map p3 4096 12287 rw- Backing b9 0 #c8da000cfb488263
-< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/2/1/6 Ok(Generation(MapGen(1))) #d39fc1cc24c5d8d6
-> ReleaseBacking p3 b0 #e058c7f61d897ee0
-< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/2/1/6 Err(Stale(Backing)) #65ec6d4bcc68c952
-> CreateTimer p0 o25 #cc22790acddd1b78
-< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/3/1/6 Ok(Timer(Timer#2.1@7)) #ef0453736be6012f
-> CreateTimer p4 o25 #2fbc20307042ffab
-< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/4/1/6 Ok(Timer(Timer#3.1@7)) #555cf1334520d5c6
-> IssueIo i1 #e41da59918639c68
-< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/4/1/6 Err(Refused(IoSettled)) #025d21769d805a6b
-> Advance 2937 #a9a22a6ab3b64259
-< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(2937), more: false })) #c6229033bdecfec2
-> Receive p2 c3 16 #4a1316e2c0272399
-< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Process)) #013336e1cf65b32e
-> DisarmTimer m0 #1e8f31177ef0f369
-< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Ok(WasArmed(true)) #b23f6e7ed8f0e17b
-> TerminateThread t0 0 #c7939a3e067d82e9
-< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Thread)) #a136dc6205320b5b
-> ReleaseObject p2 o15 #e00ed1b55f7e35cb
-< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Process)) #4baad745ee2ff5d4
-> IssueIo i0 #e745038c51a866cb
-< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Io)) #7d61933a7f42e2a5
-> Complete 7 Io i0 Cancelled 4988880320884 #c4adf2e7e8b5bb08
-< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Io)) #ccbf2bccd8096564
-> PollEffect #879538974a69134b
-< effects=3 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Ok(Effect(Some(ProcessExited { process: Process#2.1@7, code: ExitCode(1) }))) #895d41e8bba6fbf7
-> PollEffect #0151526f01d4b2b6
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Ok(Effect(Some(ProcessReclaimed { process: Process#2.1@7 }))) #855629183926e2e0
-> ContinueThread t0 #d72c2d39f7d3aafc
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Thread)) #accc905b1f40cfea
-> PrepareIo p1 o0 - #a6324129d25b1901
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Ok(Io(Io#1.1@7)) #f51e1a8be455a468
-> Complete 7 Io i0 Cancelled 13224149219640 #99539cb26fdd5b97
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Io)) #dbb0e1b686b0e15a
-> PublishIo i0 #17f369679a188a89
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Io)) #7b0a7bd1ca8d30ec
-> CreateObject p2 Consume 1 2 #b3a50430abf3d211
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Process)) #6d827bbf5669f06b
-> PreemptThread t0 #323d382536d5a801
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Thread)) #7dba72f6a31cc310
-> PreemptThread t0 #4ed70e2ce63675f8
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Thread)) #c7ac3a74a18983f3
-> IssueIo i2 #7e0367892db0b1a4
-< effects=3 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Ok(Done) #08bf4880064b1b4b
-> PollEffect #3dd8c9304577ef52
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Ok(Effect(Some(IoCancel { io: Io#0.1@7 }))) #ecb05ee51e719742
-> RetainBacking p2 b6 #9501b89706f0d29b
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Process)) #00de1319d5ba1201
-> Protect p2 16384 20479 rw- #1fa14de6ef5a7241
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Process)) #27c49f7881dd177b
-> SuspendThread t3 #89a87ba20c738411
-< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Ok(Count(1)) #48fd022a3d8ab320
-> CreateProcess Bits32 4096 #b80cdd526234d142
-< effects=2 ready=1 running=1 now=2937 alive=5/4/24/8/4/2/6 Ok(Process(Process#4.1@7, Object#23.1@7)) #6dc7f03a76239929
-> TerminateThread t0 0 #cdf96a491126a7a7
-< effects=2 ready=1 running=1 now=2937 alive=5/4/24/8/4/2/6 Err(Stale(Thread)) #8fa238938351ff02
-> Advance 3046 #aac8c649e153492c
-< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(3046), more: false })) #f71bce0ce3da79ce
-> Complete 7 Io i1 Done 15852118395070 #0f4342bebe5312d0
-< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(IoSettled)) #ca5068fdff22056f
-> ReleaseObject p1 o24 #83475b377dbeaaa4
-< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(NotHeld)) #916c6f257aa5dcb2
-> CreateTimer p4 o6 #a99f288b4b3ac383
-< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(DrivenObject)) #32fba083cc754cb2
-> Wait t3 Any No Never 1 o4 #dce9b0a70ebf1edc
-< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(NotServicing)) #8458138e1c93ebf9
-> Signal o4 Add 1 #4f6d39bc436db32d
-< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(DrivenObject)) #541250c9f8dd96c4
-> Protect p0 4096 8191 rw- #dca123ff6ebee152
-< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(NotMapped)) #002ab592eecbb34c
-> ReleaseObject p3 o1 #5253858b8a0b7ce2
-< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Stale(Object)) #71ae7579490c6bc6
-> CreateProcess Bits32 4096 #cd31c8040fb4bf98
-< effects=2 ready=1 running=1 now=3046 alive=6/4/25/8/4/2/6 Ok(Process(Process#5.1@7, Object#24.1@7)) #eecff70b7f5423dd
-> DropTimer m4 #a9daa16462eb6639
-< effects=2 ready=1 running=1 now=3046 alive=6/4/25/8/3/2/6 Ok(Done) #94b86b052a46fc60
-> Relinquish g0 0 Fault 7914737853892 Reserved #82a0c6f82319c56d
-< effects=2 ready=1 running=0 now=3046 alive=6/4/25/8/3/2/6 Ok(Fate(Servicing)) #b1083766dfc7357e
-> CreateProcess Bits64 4096 #fe107c8023c428df
-< effects=2 ready=1 running=0 now=3046 alive=7/4/26/8/3/2/6 Ok(Process(Process#6.1@7, Object#25.1@7)) #989465b21bb5314c
-> ContinueThread t3 #cd8f38909ff8694f
-< effects=2 ready=1 running=0 now=3046 alive=7/4/26/8/3/2/6 Err(Refused(NotServicing)) #32b5eea0da8070ae
-> CreateChannel p5 Messages 2 16 #3cf4ba5044cde6b8
-< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Ok(Channel(ChannelCreated { channel: Channel#6.1@7, readable: Object#26.1@7, writable: Object#27.1@7 })) #cf8f998ec814b974
-> Send p5 c3 7e7e7e7e7e7e7e - #f5a5b913b5ee7271
-< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Err(Refused(NotHeld)) #b6c6f90da9e218ba
-> RetainChannel p3 c5 Receive #049614dff61f07c9
-< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Ok(Done) #7133fb83be62d6ae
-> Receive p5 c2 16 #4e78d3c7701d0531
-< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Err(Refused(NotHeld)) #98b10fba9c46807a
-> SetQuota p4 threads=4 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=8192 #48a0fded59ef8331
-< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #6db1d4b5f67795aa
-> Grant 2 #6673362d9a75e91b
-< effects=2 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#2.1@7, process: Process#1.1@7, worker: WorkerId(2), run: RunGen(2), map: MapGen(0), budget: Budget(100000) }))) #17b1b55b443f4b33
-> CancelIo i0 #3a99f18766f09b3f
-< effects=2 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Err(Stale(Io)) #87a9ae0f8b737ccb
-> ContinueThread t1 #21547024c05fcb5e
-< effects=2 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Ok(Done) #fc6a211ba603218b
-> PollEffect #280f4e719ea6da12
-< effects=1 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Ok(Effect(Some(ObjectReclaimed { object: Object#16.1@7 }))) #f124abd328761618
-> Signal o14 Set 1 #8eb38f3f9d87750e
-< effects=1 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Err(Refused(DrivenObject)) #49d51a6a4681a2df
-> Relinquish g3 1000000 Trap #8e20bdb677b96084
-< effects=1 ready=0 running=0 now=3046 alive=7/4/28/8/3/2/7 Ok(Fate(Servicing)) #33cbfb3faef9e91e
-> CreateThread p7 Ready #e0bd61ca1ac060c5
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Thread(Thread#4.1@7, Object#28.1@7)) #6d5f03b88a2651f7
-> RetainBacking p4 b6 #e17b5db618b0a1fc
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Done) #b7bd9563856c26f2
-> RetainObject p7 o3 #8fc14004b230c7f8
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Done) #5c12a422d6946c8e
-> PublishIo i0 #51373b234654033d
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Stale(Io)) #007ac87ad1d54836
-> ArmTimer m2 3936 11386784982689 #446ba812a1d12190
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Done) #9f0ce3aabad2cd76
-> PublishIo i0 #dfb52e5addab1db5
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Stale(Io)) #bd8becb114db7c4e
-> ReleaseIo i0 #262aec42e0f1818b
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Stale(Io)) #ef62941304e042c0
-> RetainObject p5 o27 #b65b88e900c32af8
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Done) #d7b20079702dbb8e
-> UnsuspendThread t5 #85d3d6101e392af1
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Refused(NotSuspended)) #7a3111958e6870d1
-> DisarmTimer m4 #661eba353487ee00
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Stale(Timer)) #11058346004aef1c
-> SetQuota p5 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=16384 #8be5311175a3208e
-< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #ec3c102bd39fbf30
-> SuspendThread t5 #1ec70e17c3e54082
-< effects=1 ready=0 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Count(0)) #2babaa4fed40fd21
-> ReleaseIo i1 #cf199cf20fa78c83
-< effects=1 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Done) #94ce4b781e920465
-> CancelIo i2 #4f95bf1c74c7ed6b
-< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Cancel(Requested)) #3f3e0e964ba6093f
-> GrantThread 1 t4 #30fc6874ab4fd82b
-< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotReady)) #9b43e202269c3156
-> CancelIo i2 #f8fd94ddbfa5be0c
-< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Cancel(AlreadyRequested)) #4e6ff84b27a9939c
-> RetainChannel p4 c6 Send #2825256b41554c68
-< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Done) #9cffc662ee448181
-> IssueIo i2 #5a0619e144acca76
-< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(IoAlreadyIssued)) #0e035aaa346d9718
-> Unmap p2 20480 24575 #cad17b3c4ca480e7
-< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Stale(Process)) #e4d160be203c6ac2
-> UnsuspendThread t1 #5eb6554ec02262e1
-< effects=2 ready=1 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Count(1)) #0ac56ca3aefa5666
-> ContinueThread t4 #5e03c4cc475e4922
-< effects=2 ready=1 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotServicing)) #ba3420d3645c8f67
-> ContinueThread t2 #ef542384146f59d5
-< effects=2 ready=2 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Done) #09b19037009a4000
-> ReleaseObject p4 o14 #4d6d6e231df1e231
-< effects=2 ready=2 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotHeld)) #3118cb71729b2758
-> Grant 1 #8a6a7fbf7b12c076
-< effects=2 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#1.1@7, process: Process#0.1@7, worker: WorkerId(1), run: RunGen(2), map: MapGen(0), budget: Budget(100000) }))) #b00392411e220711
-> SuspendThread t5 #b1c5974137781c29
-< effects=2 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Ok(Count(1)) #10450c584adbea69
-> CancelIo i0 #12a469cc85df696d
-< effects=2 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Stale(Io)) #a825d6b84fedc1a9
-> RetainBacking p0 b1 #1d1868cc4d37613d
-< effects=2 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Ok(Done) #aa822e3bc3632e42
-> PollEffect #d2880239ed8e27dd
-< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Ok(Effect(Some(IoSubmit { io: Io#1.1@7 }))) #2bfddf49b41621cc
-> ArmTimer m4 3462 8163195959315 #e83359e13f742745
-< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Stale(Timer)) #351a76cb81571503
-> PublishIo i1 #8ab8e99272af083b
-< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Stale(Io)) #64e7bf1eea34e996
-> Protect p5 8192 12287 r-- #0478e9491185a3c7
-< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotMapped)) #fc0adfd441283d5f
-> InterruptWait t4 #34e4fe3e155e8780
-< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotWaiting)) #15c3a4ecde304df6
-> CreateProcess Bits32 4096 #20736ec863e7fc68
-< effects=1 ready=1 running=1 now=3046 alive=8/5/30/8/3/1/7 Ok(Process(Process#7.1@7, Object#29.1@7)) #42ebf04529d75ca3
-> CreateThread p7 Ready #248e1b5e22f38ed8
-< effects=1 ready=2 running=1 now=3046 alive=8/6/31/8/3/1/7 Ok(Thread(Thread#5.1@7, Object#30.1@7)) #55da9efdfca2b134
-> PublishIo i2 #c8dc68988f3ac351
-< effects=1 ready=2 running=1 now=3046 alive=8/6/31/8/3/1/7 Err(Refused(IoNotPublishable)) #ad263f76ef368ba9
-> CreateObject p8 Keep 0 2 #fb5dd58326cf8c14
-< effects=1 ready=2 running=1 now=3046 alive=8/6/32/8/3/1/7 Ok(Object(Object#31.1@7)) #37a69dcd41adcc23
-> CreateThread p8 Ready #c31c8e5264f6d343
-< effects=1 ready=2 running=1 now=3046 alive=8/6/32/8/3/1/7 Err(Exhausted(Effects)) #6c3cb5d1f0aad115
-> Receive p3 c5 16 #df2225fc4824c78b
-< effects=1 ready=2 running=1 now=3046 alive=8/6/32/8/3/1/7 Ok(Received(Data { bytes: 5, parcel: None })) | 3535353535 #3a9a5c1c4a252c35
-> SuspendThread t0 #4a7ca583e605b164
-< effects=1 ready=2 running=1 now=3046 alive=8/6/32/8/3/1/7 Err(Stale(Thread)) #dc5a566725ce484a
-> Relinquish g4 0 Yielded #d152611f1fb3eb94
-< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Ok(Fate(Ready)) #48b36c8e001aea21
-> ContinueThread t3 #de15963baf9e1c1a
-< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotServicing)) #8f8d10f134d12ee4
-> ReleaseChannel p4 c5 Receive #8bf602698d7b8878
-< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotHeld)) #4a30152c94c4f5cb
-> Signal o10 Set 2 #bcd407d71dc5417c
-< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(DrivenObject)) #e14626c6a8f43f60
-> ReleaseChannel p8 c4 Send #ba524511bb9cd800
-< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotHeld)) #c1b0637930341013
-> Send p1 c3 bfbfbf Backing b9 #e16549ee38a6e557
-< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotHeld)) #179b4d4321a2fb44
-> InterruptWait t6 #816e2c0da7f5e37f
-< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotWaiting)) #d91706309c319206
-> RetainChannel p7 c6 Send #0212204880435ed1
-< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Ok(Done) #4557bbe2e1a14ed2
-> RetainChannel p8 c6 Send #a42611af0b129302
-< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Ok(Done) #7ed1d3019d2874d3
-> Advance 3903 #0cc363a6fe1fb727
-< effects=1 ready=3 running=0 now=3903 alive=8/6/32/8/3/1/7 Ok(Advanced(Advanced { fired: 0, reached: Instant(3903), more: false })) #1d51736f4777d26c
-> CreateChannel p6 Stream 20 #44fee98e16be0df8
-< effects=1 ready=3 running=0 now=3903 alive=8/6/32/8/3/1/7 Err(Exhausted(Effects)) #fbfffd90571df182
-> RetainBacking p6 b2 #b4487654a3133063
-< effects=1 ready=3 running=0 now=3903 alive=8/6/32/8/3/1/7 Err(Stale(Backing)) #17ffd9f11f17d812
-> CreateProcess Bits32 4096 #38e7a83498dec0f4
-< effects=1 ready=3 running=0 now=3903 alive=8/6/32/8/3/1/7 Err(Exhausted(Effects)) #2dac294db609585e
-> Grant 1 #dc536eab9eba1bd0
-< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#1.1@7, process: Process#0.1@7, worker: WorkerId(1), run: RunGen(3), map: MapGen(0), budget: Budget(100000) }))) #762f9b0b61f4810a
-> Unmap p8 24576 28671 #ae7ef569934b2892
-< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Ok(Count(0)) #faad1291efac7bc9
-> ReleaseChannel p8 c3 Receive #99d21af140a32435
-< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Refused(NotHeld)) #d4998a0b1a25e38a
-> CreateThread p5 Ready #f15d06ae3d840947
-< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Exhausted(Effects)) #e17f7a159b6de981
-> Map p0 16384 24575 --- Backing b1 0 #953c13bc78cd2840
-< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Exhausted(MappedBytes)) #31320f72739a37ca
-> ReleaseIo i1 #3d65d110f21d9a7a
-< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Stale(Io)) #77abe4b4cd09a1ac
-> ReleaseIo i2 #c7b18833019eb7ab
-< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Refused(IoInFlight)) #ffa47f5834e530f9
-> PollEffect #f93673b577b7b00c
-< effects=0 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Ok(Effect(Some(IoCancel { io: Io#1.1@7 }))) #ffb75d5cfd21fe9d
-> CreateObject p5 Consume 0 3 #903027eedd02a6d7
-< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/3/1/7 Ok(Object(Object#32.1@7)) #2bfb3f229a960437
-> Complete 7 Io i0 Cancelled 6510544405014 #f8fde27ed7c2828f
-< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/3/1/7 Err(Stale(Io)) #91ce2b2f3157f9a7
-> SuspendThread t4 #97680a1e94b11246
-< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/3/1/7 Ok(Count(1)) #d99de2969ce531ac
-> CreateBacking p3 12288 #70fd074ff3b89050
-< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/3/1/7 Err(Exhausted(Effects)) #b4d10e9f3fe70ae2
-> DropTimer m0 #c9b241b675466204
-< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Ok(Done) #76fb4c335a5d0faa
-> PrepareIo p8 - - #8432dab3ce5826b2
-< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Exhausted(Effects)) #791c198c4ce452a1
-> Grant 1 #973bb4706f16edc3
-< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(WorkerBusy)) #6a7892f125dae824
-> PublishIo i1 #581a2a8876ba3256
-< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Io)) #ff72feb6d105190b
-> RetainChannel p8 c1 Send #e5a9c4cbeb4275f0
-< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(EndClosed)) #9047e2ee49fe390b
-> Relinquish g5 0 Trap #c78d2670d4f03189
-< effects=0 ready=2 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Fate(Servicing)) #5585282ebdd0a539
-> ReleaseObject p6 o7 #a5f1b8c44abf94e2
-< effects=0 ready=2 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotHeld)) #cce242b9b7b5cdd5
-> RetainObject p6 o34 #a6564b8bc6c74ec2
-< effects=0 ready=2 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Done) #c089a9909e6c741b
-> Grant 2 #b771a04eec04ad1e
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#2.1@7, process: Process#1.1@7, worker: WorkerId(2), run: RunGen(3), map: MapGen(0), budget: Budget(100000) }))) #2eee029f2ac53ec3
-> PublishIo i0 #2324236d2b1fb21e
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Io)) #93b6ee1ddea19846
-> IssueIo i0 #7d846d36a2f633dd
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Io)) #04c9f06e1e48d027
-> ContinueThread t2 #f4faa560581b3915
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotServicing)) #4096a35ab99a3e3f
-> Receive p4 c0 16 #7dec8dd9b9440e6d
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotHeld)) #58ebbaf61890cbd4
-> SetQuota p3 threads=6 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=16384 #19163b617aa7e20c
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #f9916de8673cec41
-> Wait t4 All No At 4641 2 o15 o17 #1a410da2cd5abe6b
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotServicing)) #cd4b82703908092d
-> ArmTimer m4 4660 - #be01f420ff9d60c5
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Timer)) #44c35b89dba54352
-> ContinueThread t0 #5297710b8cbb06ea
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Thread)) #1c7bf14a68be035e
-> CreateTimer p7 o5 #1338e5ad55da8329
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Object)) #ea3174cf96dfbb0e
-> CreateThread p2 Ready #fb42147ed6944300
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Process)) #f6dc551c8ca427bb
-> RetainBacking p2 b0 #eb5882807253de04
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Backing)) #3d6e696e620395e7
-> Signal o18 Set 1 #b43f97bb0c7b664f
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Ok(Count(0)) #366e836f3cc97d48
-> Protect p1 8192 12287 rw- #1068d432ccc27e23
-< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotMapped)) #3cfa485321b47a12
-> Relinquish g6 0 Trap #3556f2e74d0f2f8b
-< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Fate(Servicing)) #9bc12c23b234a8c0
-> RetainChannel p8 c5 Send #87262181d7eb45e9
-< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Done) #0444d744245ffe37
-> SetQuota p1 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=32768 #d71176ce70c14799
-< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #0c67e5adc95d83d9
-> ReleaseIo i2 #88782ee743526e94
-< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(IoInFlight)) #c4cc398698ce2169
-> SetQuota p7 threads=6 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=8192 #8b78a39137b6ef93
-< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #9df28e617ffd8f4b
-> CreateThread p3 Ready #1022061ce8f5f794
-< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Exhausted(Effects)) #826308bf1a70e945
-> GrantThread 1 t4 #1d2ae2e7c0f6b98d
-< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotReady)) #fa358166a812ba35
-> ReleaseBacking p2 b7 #8b073bde7b574235
-< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Process)) #5d5f0e6ae625e35b
-> ReleaseIo i2 #51786570a4bf48a2
-< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(IoInFlight)) #cc51a3eecd58e5c7
-> Advance 4229 #670e05c6ac968165
-< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Advanced(Advanced { fired: 1, reached: Instant(4229), more: false })) #a7c32316450b337c
-> ArmTimer m3 5004 617596050574 #33dac848846820c8
-< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Done) #5733498668a193ba
-> ReleaseObject p4 o28 #dbdcda46c67b414a
-< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Err(Refused(NotHeld)) #0cdaeb31e9ec4fcc
-> Protect p4 20480 28671 rw- #9f61921f3a3a3a9c
-< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Err(Refused(NotMapped)) #8d787ae307f8561e
-> RetainObject p3 o35 #0c4142589d21bbad
-< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Done) #e70f304a98906bd9
-> PollEffect #911c233b1e50f56c
-< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Effect(None)) #f11bd0ba08a0ae2a
-> UnsuspendThread t5 #601819159ac0a93d
-< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Count(2)) #9ab1bf7e13817ebd
-> Receive p4 c2 16 #5f82fcb3e5c24421
-< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Err(Refused(NotHeld)) #b606b0c18f69002f
+< effects=0 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#1.1@7, process: Process#0.1@7, worker: WorkerId(0), run: RunGen(2), map: MapGen(0), budget: Budget(100000) }))) #93e03f8e865c82d6
+> PollEffect #7e37e81aa7db0349
+< effects=0 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Ok(Effect(None)) #2089ad07edc35c00
+> InterruptWait t0 #fe0f22bf94257b3d
+< effects=0 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Err(Refused(NotWaiting)) #b3a150b741747f2e
+> ReleaseBacking p0 b0 #6f8a1a53c982dc71
+< effects=1 ready=1 running=1 now=0 alive=1/2/12/0/0/0/4 Ok(Done) #b6aa9cc4e910948e
+> Signal o3 Set 1 #8b7d7d3dc2c79590
+< effects=1 ready=1 running=1 now=0 alive=1/2/12/0/0/0/4 Err(Refused(DrivenObject)) #221dd60da584bf2e
+> CreateBacking p0 12288 #b8674f5365da392d
+< effects=1 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Ok(Backing(Backing#0.2@7)) #df54ccf0eae2c94c
+> PreemptThread t0 #3b280f00b2e40c2c
+< effects=1 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Err(Refused(NotRunning)) #b16fcebc0b725826
+> PreemptThread t1 #55335a7afdb20987
+< effects=2 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Ok(Done) #90f4a728569d0368
+> Signal o3 Add 1 #5e836175c1128763
+< effects=2 ready=1 running=1 now=0 alive=1/2/12/1/0/0/4 Err(Refused(DrivenObject)) #5af514869889ce25
+> Advance 21 #06a3f6189d4494dd
+< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Ok(Advanced(Advanced { fired: 0, reached: Instant(21), more: false })) #ae7605723203cba1
+> Protect p0 12288 16383 r-- #8459a14ef27429dd
+< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Err(Refused(NotMapped)) #dda2aa26d5b835d3
+> InterruptWait t0 #b706c3fd2df9a2d8
+< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Err(Refused(NotWaiting)) #dd9afdc401cd7458
+> SetQuota p0 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=20480 #35ded8ebb8aae7d9
+< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #e445209cefae0187
+> ContinueThread t0 #9cd08dff6578b787
+< effects=2 ready=1 running=1 now=21 alive=1/2/12/1/0/0/4 Err(Refused(NotServicing)) #936c721e36b96468
+> ReleaseObject p0 o5 #bb48f94b73f1cb2f
+< effects=3 ready=1 running=1 now=21 alive=1/2/11/1/0/0/4 Ok(Done) #2cd0278b59e60f7d
+> Map p0 8192 12287 r-x Backing b0 4096 #0e13c2ec39ff6f45
+< effects=3 ready=1 running=1 now=21 alive=1/2/11/1/0/0/4 Err(Stale(Backing)) #25213061eb7c73cf
+> CreateChannel p0 Stream 20 #93727b540d4c6a2b
+< effects=3 ready=1 running=1 now=21 alive=1/2/13/1/0/0/5 Ok(Channel(ChannelCreated { channel: Channel#4.1@7, readable: Object#5.2@7, writable: Object#12.1@7 })) #d7e63c0c7dc3d3a3
+> CreateChannel p0 Stream 20 #faf94c3b963b5687
+< effects=3 ready=1 running=1 now=21 alive=1/2/15/1/0/0/6 Ok(Channel(ChannelCreated { channel: Channel#5.1@7, readable: Object#13.1@7, writable: Object#14.1@7 })) #76492de65a93496b
+> Grant 1 #54b9652dbb6cedb9
+< effects=3 ready=0 running=2 now=21 alive=1/2/15/1/0/0/6 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#0.1@7, process: Process#0.1@7, worker: WorkerId(1), run: RunGen(3), map: MapGen(0), budget: Budget(100000) }))) #f8e8fbf221509a5d
+> CreateThread p0 Ready #396fd02cbac4571d
+< effects=3 ready=0 running=2 now=21 alive=1/2/15/1/0/0/6 Err(Exhausted(ProcessThreads)) #4dc23fbb994ac64c
+> CreateProcess Bits64 4096 #61e23525deefd619
+< effects=3 ready=0 running=2 now=21 alive=2/2/16/1/0/0/6 Ok(Process(Process#1.1@7, Object#15.1@7)) #3e358bc2d7f07dc8
+> ContinueThread t1 #ec8855211e42bcb9
+< effects=3 ready=0 running=2 now=21 alive=2/2/16/1/0/0/6 Err(Refused(NotServicing)) #326971cdbcd3594a
+> Advance 380 #b6b6f0c9f927254e
+< effects=3 ready=0 running=2 now=380 alive=2/2/16/1/0/0/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(380), more: false })) #f3920e64eb18f376
+> SuspendThread t0 #caae849fbf05c685
+< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/0/0/6 Ok(Count(0)) #b73621d1fad9dab2
+> CreateThread p0 Suspended #f574595ef97ada48
+< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/0/0/6 Err(Exhausted(ProcessThreads)) #7ee7e1ffe96cece6
+> CreateTimer p1 o16 #6660ced9486968f3
+< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/1/0/6 Ok(Timer(Timer#0.1@7)) #6c0782c8b6b8098f
+> CreateTimer p1 o2 #c5ea291cb320debd
+< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/2/0/6 Ok(Timer(Timer#1.1@7)) #4aea5fae0614c5ad
+> RetainChannel p1 c2 Send #c187b51473255af6
+< effects=4 ready=0 running=2 now=380 alive=2/2/16/1/2/0/6 Ok(Done) #b4e7fa79295c2425
+> CreateProcess Bits64 4096 #56225b7b8a9d573c
+< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Process(Process#2.1@7, Object#16.1@7)) #941ae38be39434ba
+> SetPriority t1 238 #b3aa0c0766ca1bbb
+< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Priority(Priority(128))) #044f0bcb285eeda3
+> GrantThread 0 t1 #b5d1c326d7976f75
+< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Err(Refused(WorkerBusy)) #d80d113afe087c6b
+> RetainObject p0 o10 #3db62f2455b7ebe4
+< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Done) #c5913e30ed05dd85
+> CreateTimer p1 o9 #623c5763aecea480
+< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Err(Refused(DrivenObject)) #48df7bb38c82c7a4
+> Unmap p1 8192 12287 #0396ab5725e9b495
+< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Count(0)) #8a55f0ef1131f046
+> RetainObject p0 o17 #596c68e0cb02fa1e
+< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Ok(Done) #81f3b2b354c6e5ef
+> Wait t0 Any No Never 1 o17 #9eaaa8d0ae8bf012
+< effects=4 ready=0 running=2 now=380 alive=3/2/17/1/2/0/6 Err(Refused(NotServicing)) #a80f902d0d7a22a4
+> CreateThread p1 Ready #4c2cf09a6c5e9ced
+< effects=4 ready=1 running=2 now=380 alive=3/3/18/1/2/0/6 Ok(Thread(Thread#2.1@7, Object#17.1@7)) #787dcbf96d7efa9f
+> ReleaseChannel p2 c5 Send #565a315bc9148672
+< effects=4 ready=1 running=2 now=380 alive=3/3/18/1/2/0/6 Err(Refused(NotHeld)) #84059a5b9aef438a
+> Advance 679 #5e6ba231821c8803
+< effects=4 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(679), more: false })) #ad97a2de985091d1
+> SetQuota p0 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=20480 #2db0d08e5bb14544
+< effects=4 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Ok(Quota(Quota { threads: 2, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 20480 })) #beadc1438a385793
+> UnsuspendThread t1 #b036f9b905b77ed6
+< effects=4 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Err(Refused(NotSuspended)) #4b55e2f094ecc947
+> PollEffect #e283fcd326e1b1c6
+< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Ok(Effect(Some(BackingReclaimed { backing: Backing#0.1@7 }))) #fa79aee51731defb
+> PreemptThread t1 #748f4be7edfdeaec
+< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Ok(Done) #c52bd5e2fd924252
+> Signal o1 Set 2 #a8e3bd8bb76af64d
+< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/0/6 Err(Refused(SignalOverflow)) #f5a34581709c3d0f
+> PrepareIo p1 - - #fd7ad35f96ca09c8
+< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/1/6 Ok(Io(Io#0.1@7)) #f99dfb9394ff176f
+> InterruptWait t1 #76c27c529080c191
+< effects=3 ready=1 running=2 now=679 alive=3/3/18/1/2/1/6 Err(Refused(NotWaiting)) #f2bc8d94abd1a3b6
+> IssueIo i0 #9c40ba2a7a9b104d
+< effects=4 ready=1 running=2 now=679 alive=3/3/18/1/2/1/6 Ok(Done) #a3ba1804ab81152b
+> CreateBacking p2 8192 #a843e78a6bf39c3b
+< effects=4 ready=1 running=2 now=679 alive=3/3/18/2/2/1/6 Ok(Backing(Backing#1.1@7)) #d945843850dce87b
+> TerminateThread t0 0 #96d86bd359bff5e9
+< effects=4 ready=1 running=2 now=679 alive=3/3/18/2/2/1/6 Ok(Done) #31e96ebe3a776d3e
+> CreateBacking p1 12288 #df8d24c0e70c2804
+< effects=4 ready=1 running=2 now=679 alive=3/3/18/3/2/1/6 Ok(Backing(Backing#2.1@7)) #0e898c49241599c4
+> Relinquish g1 0 Exited 2 #30cf7fc2aa3991a8
+< effects=6 ready=1 running=1 now=679 alive=3/2/17/3/2/1/6 Ok(Fate(Exited(ExitCode(0)))) #7e543357dc9e4004
+> ExitProcess p2 1 #d97bd3542e2818bd
+< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Ok(Done) #7732680127ecc919
+> PublishIo i0 #d68ecc085c6b3c8c
+< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Refused(IoNotPublishable)) #8ae5152477e4069e
+> SuspendThread t1 #861d12a31797fbc8
+< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Ok(Count(0)) #682877b5c1c140c2
+> UnsuspendThread t0 #987337f850afebbc
+< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Stale(Thread)) #d3b2631dfce3cccf
+> PreemptThread t2 #47848bdbd212a7df
+< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Refused(NotRunning)) #39f33aee855883c9
+> Unmap p2 24576 32767 #cd2ef03687c634d2
+< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Stale(Process)) #228a8cf47b799d68
+> ContinueThread t0 #9fa91b8594825794
+< effects=9 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Stale(Thread)) #1bf2f58228759867
+> CancelIo i0 #162edba72c2d1c33
+< effects=10 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Ok(Cancel(Requested)) #34cb5b11fa69bb2a
+> InterruptWait t0 #9dd807e46a3d47ab
+< effects=10 ready=1 running=1 now=679 alive=2/2/17/2/2/1/6 Err(Stale(Thread)) #435df25f9c6095fc
+> CreateBacking p0 8192 #8bba9ebb60bb211a
+< effects=10 ready=1 running=1 now=679 alive=2/2/17/3/2/1/6 Ok(Backing(Backing#1.2@7)) #e345fd7ca3ed359b
+> ReleaseBacking p1 b0 #1410a5eb49347f4d
+< effects=10 ready=1 running=1 now=679 alive=2/2/17/3/2/1/6 Err(Stale(Backing)) #3d911aaffa59b238
+> CreateBacking p0 12288 #5e669b0493f0f9b7
+< effects=10 ready=1 running=1 now=679 alive=2/2/17/4/2/1/6 Ok(Backing(Backing#3.1@7)) #544b1fa7d81bf6ac
+> GrantThread 1 t2 #e52374d9d46d4604
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#2.1@7, process: Process#1.1@7, worker: WorkerId(1), run: RunGen(5), map: MapGen(0), budget: Budget(100000) }))) #6d46471e75a1e421
+> SetQuota p2 threads=3 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=24576 #698024698f740601
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Stale(Process)) #d8f96426db2b3a9d
+> Unmap p0 4096 12287 #8aa3a24d71a15f0a
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Ok(Count(0)) #4e96e3d60291c03a
+> UnsuspendThread t1 #668dec4f899bf219
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Ok(Count(1)) #dabf0023d6b20832
+> Complete 8 Io i0 Done 475892305086 #ec5b5ecb0a69a146
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Foreign) #39ee742841d838ed
+> CreateTimer p2 o1 #abf78cbc3d375651
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Stale(Process)) #3e74d9332b27e04d
+> Receive p1 c2 16 #38c2c60540bbd338
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Refused(NotHeld)) #dfbba68928c23e9e
+> Map p0 4096 8191 --- Backing b2 0 #02ac161b6aba694d
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/4/2/1/6 Err(Stale(Backing)) #f507a03d2b7fee99
+> CreateBacking p1 12288 #1f18ef19de3e3261
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Ok(Backing(Backing#4.1@7)) #735855ef3d04cb70
+> ReleaseIo i0 #728e2ace4a62c96d
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Refused(IoInFlight)) #6e2ae321acb734bb
+> SetQuota p0 threads=5 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=36864 #3d89011f8a57fe3c
+< effects=10 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Ok(Quota(Quota { threads: 2, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 20480 })) #f2086827274b3347
+> PollEffect #891393c622c4a3c6
+< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Ok(Effect(Some(Interrupt { worker: WorkerId(0), thread: Thread#1.1@7, run: RunGen(2) }))) #c5601e3c565d3a3e
+> CreateChannel p2 Stream 20 #dfd0f32b48cfea6e
+< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Stale(Process)) #8be9248bd176a7d5
+> RetainBacking p2 b6 #7d001afd59ca7f64
+< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Stale(Process)) #a0755afa783c09f3
+> RetainChannel p2 c3 Send #0e963509f0600f38
+< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Stale(Process)) #cd5362ea812fd79f
+> CancelIo i0 #71f6ea87f6a1dd7b
+< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Ok(Cancel(AlreadyRequested)) #4d1c9fec26df21a5
+> InterruptWait t2 #eb529ced40540144
+< effects=9 ready=0 running=2 now=679 alive=2/2/17/5/2/1/6 Err(Refused(NotWaiting)) #3b2ab9aa9e22d45d
+> Advance 1462 #620086cf4b132bd9
+< effects=9 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(1462), more: false })) #4e0fd673bc9c816d
+> PollEffect #342cda12c697c2e8
+< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(Effect(Some(ObjectReclaimed { object: Object#5.1@7 }))) #a826eb59f91f6855
+> DisarmTimer m1 #1bccb4e2ca8d01fd
+< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(WasArmed(false)) #802ad673fd41d7ae
+> SuspendThread t1 #91bf4fd4cb622b58
+< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(Count(0)) #e2b0f21fb5a4fcb7
+> ContinueThread t0 #a688e0c4e5edef17
+< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Err(Stale(Thread)) #7e987a53030b89e3
+> Signal o2 Set 0 #d7e68338f271f101
+< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Ok(Count(0)) #5a8f459eab48c318
+> ReleaseIo i0 #2552006035672745
+< effects=8 ready=0 running=2 now=1462 alive=2/2/17/5/2/1/6 Err(Refused(IoInFlight)) #f800ccccd6a6075b
+> CreateThread p0 Suspended #67677859bce4aa91
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/5/2/1/6 Ok(Thread(Thread#0.2@7, Object#1.2@7)) #c0923c76fc50bc25
+> SuspendThread t0 #5ef234f71093e5d4
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/5/2/1/6 Err(Stale(Thread)) #ff3dd94e6ff28882
+> ContinueThread t3 #87dade7ef91e3305
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/5/2/1/6 Err(Refused(NotServicing)) #c4fae6d851686df5
+> CancelIo i0 #4900a3bef75aada9
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/5/2/1/6 Ok(Cancel(AlreadyRequested)) #fb2a1a4659b596ff
+> CreateBacking p1 12288 #bd2e640b2f05bbf7
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Backing(Backing#5.1@7)) #4dd0e8002d111f9a
+> Complete 7 Io i0 Cancelled 3245578595062 #5142d4d817970a52
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Settled(Held(Cancelled { transferred: 3245578595062 }))) #d87dae572583eeb2
+> SetPriority t3 254 #6bae122d9655a19f
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Priority(Priority(128))) #06499c0f0e7e5dbe
+> PreemptThread t3 #123708fb9ef3cd7d
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Err(Refused(NotRunning)) #6e3d2723b8309af5
+> SuspendThread t3 #eaecb18123fad57b
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Count(1)) #56d8071f254e17da
+> GrantThread 1 t2 #6a6e2838ce95d45a
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Err(Refused(WorkerBusy)) #e47ae3de87ea73f9
+> CreateBacking p2 8192 #d812117c5178aa35
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Err(Stale(Process)) #48534b5d390353db
+> SetQuota p0 threads=5 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=4096 #f9ec26e3ac43c618
+< effects=8 ready=0 running=2 now=1462 alive=2/3/18/6/2/1/6 Ok(Quota(Quota { threads: 5, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 36864 })) #ea0b40f8bc6615b6
+> Relinquish g2 0 Fault 6336253867784 Denied #bdd44c05d9ee7ba7
+< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Fate(Servicing)) #b78878ce4ba9cbfb
+> Unmap p1 20480 28671 #f758e0c738c7ecaa
+< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Count(0)) #c3304cdf8dd38391
+> Unmap p1 20480 24575 #c2a3014bcd3202db
+< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Count(0)) #692ecdb5995c00fe
+> RetainBacking p0 b4 #bfda4e472d092dff
+< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Done) #2191e1a10776df14
+> CancelIo i0 #30685da8dd4c2f24
+< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Err(Refused(IoSettled)) #15dbeee6f430e3e2
+> ReleaseObject p2 o19 #c423798dfbffd720
+< effects=8 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Err(Stale(Process)) #f35200398b1707c1
+> PollEffect #4c4b37ae6699fe14
+< effects=7 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Effect(Some(Interrupt { worker: WorkerId(1), thread: Thread#0.1@7, run: RunGen(3) }))) #51dadaee11b4e99a
+> PollEffect #1b58af67750803b5
+< effects=6 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Effect(Some(IoSubmit { io: Io#0.1@7 }))) #649d2f34893a9ed6
+> Grant 1 #b2211d54d12f2f18
+< effects=6 ready=0 running=1 now=1462 alive=2/3/18/6/2/1/6 Ok(Permit(None)) #370793aad352b64d
+> Advance 2275 #c06ebef843edf7ca
+< effects=6 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(2275), more: false })) #8c18c336cacc2cf5
+> CreateBacking p2 4096 #b920605c845dc358
+< effects=6 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Err(Stale(Process)) #0da4f22ab4ebe2a6
+> PollEffect #c4f49eb673f75099
+< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Ok(Effect(Some(ObjectReclaimed { object: Object#1.1@7 }))) #550d9ac0c7cea4de
+> RetainObject p0 o2 #66a1049bdb7fc378
+< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Ok(Done) #c992948685de0985
+> Complete 7 Io i0 Failed 32 15916658916520 #20135a86135c8795
+< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Err(Refused(IoSettled)) #d0dab14ba7588f8f
+> ReleaseObject p2 o3 #12e92a7a67ebfe14
+< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/2/1/6 Err(Stale(Process)) #1d2446f6b8a2f27d
+> DropTimer m1 #4e54252e2e010db8
+< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/1/1/6 Ok(Done) #6360971b96ae1cfc
+> RetainChannel p2 c0 Receive #7b321d1c009ce87d
+< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/1/1/6 Err(Stale(Process)) #cb3ce3fb90ed13ef
+> PublishIo i0 #ba2cc9dcbe9b426a
+< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/1/1/6 Ok(Outcome(Cancelled { transferred: 3245578595062 })) #b87e7ee4b6b364f3
+> Signal o1 Add 1 #cc308ce4d13e37b6
+< effects=5 ready=0 running=1 now=2275 alive=2/3/18/6/1/1/6 Err(Stale(Object)) #1f35fb4bc82a1b8c
+> CreateObject p0 Keep 0 1 #1a4ede82343c7dc8
+< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Ok(Object(Object#18.1@7)) #f6a104ecdcd71f3e
+> PrepareIo p0 - o13 #ac80e189933cddf8
+< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Err(Refused(DrivenObject)) #8e7ac226d5afe9ca
+> ReleaseChannel p1 c0 Send #ed45443849e373f7
+< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Err(Refused(NotHeld)) #3fca1baf1a46e84e
+> RetainChannel p2 c3 Send #691b433cc88a2173
+< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Err(Stale(Process)) #6b7b2df3e064083c
+> SetQuota p2 threads=5 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=36864 #3c514b11d009fb3d
+< effects=5 ready=0 running=1 now=2275 alive=2/3/19/6/1/1/6 Err(Stale(Process)) #363257994038feb6
+> Advance 2608 #68c715710430a6a3
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(2608), more: false })) #a1a8b216be393561
+> Send p1 c0 78 Backing b2 #093e8b2f6829df9e
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Refused(NotHeld)) #8cb67bda88244a53
+> UnsuspendThread t3 #71e3ee3f49f4f99c
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(Count(2)) #5da75ab7109a1553
+> InterruptWait t3 #68222eefe8554eff
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Refused(NotWaiting)) #f1ece66517e35cf4
+> Send p0 c4 0e0e0e0e0e0e0e0e0e Object o10 #37da7b26272582c2
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Refused(ParcelOnStream)) #6a3793fafd51390f
+> DisarmTimer m0 #a8b1cec402320a1a
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(WasArmed(false)) #166db31b3b3c66cb
+> Send p0 c5 3535353535 - #2042631b7b02ae41
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(Sent(Accepted(5))) #23b260b4c130ada4
+> Grant 2 #28c93570255f0f25
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Ok(Permit(None)) #55b2f58d2edf862a
+> ArmTimer m1 2923 12152262341214 #60de6551cfb0f258
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Stale(Timer)) #bc3d86aea2bec557
+> CreateThread p2 Ready #d74c27a35cdb8101
+< effects=5 ready=0 running=1 now=2608 alive=2/3/19/6/1/1/6 Err(Stale(Process)) #11df74072fdfb38a
+> CreateObject p1 Keep 0 1 #fa84f0b7bd890211
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/6/1/1/6 Ok(Object(Object#19.1@7)) #b048befa35a7e34e
+> ReleaseBacking p1 b5 #86f4784ff1cd017f
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/6/1/1/6 Err(Refused(NotHeld)) #a119bf257348a5d2
+> CreateBacking p0 8192 #d979497aa1306c60
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/1/6 Ok(Backing(Backing#6.1@7)) #2d993e94ffd729bc
+> ReleaseIo i0 #75b0aa9b357b6dc9
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Ok(Done) #31a7901388ae9d14
+> Send p1 c3 1e1e1e1e1e - #a77c4d9f909c6ae3
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Err(Refused(NotHeld)) #3685c2d4e6d4010e
+> RetainChannel p0 c2 Receive #55e48c8e61c8ae93
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Ok(Done) #c5c518fb956d2cba
+> DisarmTimer m0 #c9cd97f05f9c4a0d
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Ok(WasArmed(false)) #5419bea0da15b8ec
+> ArmTimer m1 3395 5724371546986 #ece2f91e358bcee3
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Err(Stale(Timer)) #8f8fbd1c0e926368
+> IssueIo i0 #3d36abd9a18b005f
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/7/1/0/6 Err(Stale(Io)) #5d66567a78cabea5
+> CreateBacking p0 8192 #2f968197875cbe9f
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/8/1/0/6 Ok(Backing(Backing#7.1@7)) #184ad0a5b0467a1a
+> Wait t0 All No At 2884 2 o21 o1 #8dbaffabb676a33f
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/8/1/0/6 Err(Stale(Thread)) #d4b2cc0766a08f20
+> Send p2 c2 4e4e4e4e4e Backing b6 #e05828a142cda252
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/8/1/0/6 Err(Stale(Process)) #1ac94d8c0658128e
+> ReleaseObject p2 o19 #b9a61a93756c1004
+< effects=5 ready=0 running=1 now=2608 alive=2/3/20/8/1/0/6 Err(Stale(Process)) #ea66a1d33bd53d1c
+> CreateProcess Bits64 4096 #e7917a50fb371a09
+< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Ok(Process(Process#2.2@7, Object#20.1@7)) #0b31af27586d115a
+> ArmTimer m0 3237 - #c4cb51e6a61253a9
+< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Ok(Done) #420d00ecbcb4b927
+> CreateTimer p1 o5 #40a4d23be1e9a1e6
+< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Err(Stale(Object)) #43750b32c90c7ab4
+> GrantThread 0 t3 #6090f2fdb23aedae
+< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Err(Refused(WorkerBusy)) #6b9cca5bba1322a1
+> DisarmTimer m1 #7cd767f8d349f131
+< effects=5 ready=0 running=1 now=2608 alive=3/3/21/8/1/0/6 Err(Stale(Timer)) #77dc29e411be3aeb
+> ContinueThread t2 #9760ee9d5afc98c9
+< effects=5 ready=1 running=1 now=2608 alive=3/3/21/8/1/0/6 Ok(Done) #7789b44138c10134
+> CreateProcess Bits64 4096 #5ef561f6e7573af1
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Ok(Process(Process#3.1@7, Object#21.1@7)) #a4fb6736331289f6
+> Complete 7 Io i0 Cancelled 4687293254803 #7129f5ceb5329754
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Io)) #121a63b9c4054a22
+> Receive p3 c0 16 #6842b59a5001289d
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Refused(NotHeld)) #2932e3e7d48a8a16
+> Signal o1 Add 1 #3f97564c93968e17
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Object)) #dec2f6abf60370c6
+> Wait t3 Any No At 3081 1 o15 #5676b62bf0e1bcd1
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Refused(NotServicing)) #bac114d3cd6062b1
+> ReleaseObject p1 o0 #a3cfa40e6ff785d4
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Refused(NotHeld)) #1bf2fdf8bcb170ab
+> DisarmTimer m1 #50e867b0aca846cb
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Timer)) #030e9b115fc95e82
+> RetainBacking p3 b9 #5a80f2bca88b03ff
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Ok(Done) #4c7cb9286b22ed1c
+> Unmap p1 12288 16383 #213736a0cbd51bd7
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Ok(Count(0)) #0c092858eb5392aa
+> Complete 7 Io i0 Failed 52 899586930685 #caf1556ff83f4b5a
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Io)) #8151a0a27b4d1a50
+> ContinueThread t0 #173b087f259d878c
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Thread)) #17e285d582d9cdbe
+> PublishIo i0 #8b92da81b3b471ed
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/0/6 Err(Stale(Io)) #04be5f00e0ff37a9
+> PrepareIo p3 o2 o16 #bbde56a4224b383d
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/1/6 Ok(Io(Io#0.2@7)) #7d4a920258f54cb4
+> CreateThread p2 Ready #e62124410c3596b2
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/1/6 Err(Stale(Process)) #820246c94514371e
+> CancelIo i1 #63dfe7404ba3353b
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/1/1/6 Ok(Cancel(Withdrawn)) #310cd9a8f3f8eeb2
+> CreateTimer p4 o21 #a8696bb7ddcafa98
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Timer(Timer#1.2@7)) #2279fac81d1ea093
+> ArmTimer m0 3177 12724883016968 #5e2351df5001d03d
+< effects=5 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Done) #03be906a0043a8ac
+> PollEffect #d092dff3b08f1993
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Effect(Some(ThreadExited { thread: Thread#0.1@7, process: Process#0.1@7, code: ExitCode(0) }))) #d4a6a0e49b09cde2
+> Complete 7 Io i0 Cancelled 16520379034009 #eb87388d7bf512a6
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Io)) #2923344d1a26727d
+> ReleaseChannel p3 c0 Receive #37160783bb0b6cc7
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Refused(NotHeld)) #0ee836a14c7059a7
+> ReleaseChannel p0 c3 Send #d97efa28fe0c074e
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Done) #e125263e6f02226e
+> ReleaseObject p0 o17 #a15f7f826d8a655c
+< effects=5 ready=1 running=1 now=2608 alive=4/3/21/8/2/1/6 Ok(Done) #c5a062a33b7669fe
+> Send p3 c5 da - #aa81579c2dd1b3ce
+< effects=5 ready=1 running=1 now=2608 alive=4/3/21/8/2/1/6 Err(Refused(NotHeld)) #eeaa25550c284ecc
+> Unmap p2 24576 28671 #7ecd66084bf8bd06
+< effects=5 ready=1 running=1 now=2608 alive=4/3/21/8/2/1/6 Err(Stale(Process)) #d658ad6dc1a0ec5a
+> PollEffect #16d9ef670cb7b2f5
+< effects=4 ready=1 running=1 now=2608 alive=4/3/21/8/2/1/6 Ok(Effect(Some(BackingReclaimed { backing: Backing#1.1@7 }))) #57ba4da52f389b06
+> CreateObject p3 Keep 1 2 #aaef73d795334e35
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Ok(Object(Object#16.2@7)) #e62c089c5f8270ab
+> ReleaseObject p1 o12 #78126325fd5e4b1f
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Refused(NotHeld)) #b0209f775cdd96bf
+> PreemptThread t0 #7637ac14653300dd
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Thread)) #5d5de13f4ce1b9bc
+> SetQuota p2 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=8192 #0cdf5a1ca6c146d3
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Process)) #4effb96128fe7455
+> Protect p4 16384 20479 rw- #1a369e76d286b783
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Refused(NotMapped)) #c13540577ae3433f
+> RetainObject p4 o17 #7a79b0edb936ca8f
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Object)) #4404a8efef69d95b
+> Unmap p2 20480 28671 #f82da1795da5b711
+< effects=4 ready=1 running=1 now=2608 alive=4/3/22/8/2/1/6 Err(Stale(Process)) #fb764c06ea8995e3
+> CreateThread p4 Suspended #cfb99bbcd9228c85
+< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/2/1/6 Ok(Thread(Thread#3.1@7, Object#22.1@7)) #e34a3aa90e0c6caa
+> PreemptThread t4 #74897af6de9611aa
+< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/2/1/6 Err(Refused(NotRunning)) #1f545c735b1853b0
+> Map p3 4096 12287 rw- Backing b9 0 #8e83e35f1325f28f
+< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/2/1/6 Ok(Generation(MapGen(1))) #e247bbbf979188c2
+> ReleaseBacking p3 b0 #58515087e42af9f4
+< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/2/1/6 Err(Stale(Backing)) #1dc8e7645e5d41d6
+> CreateTimer p0 o25 #f0ec7a67c7b37254
+< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/3/1/6 Ok(Timer(Timer#2.1@7)) #d83a9bb5cb3532bb
+> CreateTimer p4 o25 #e1eaa049b4ac7537
+< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/4/1/6 Ok(Timer(Timer#3.1@7)) #bbcc789662f5b1aa
+> IssueIo i1 #8d41d4eed92ce5ac
+< effects=4 ready=1 running=1 now=2608 alive=4/4/23/8/4/1/6 Err(Refused(IoSettled)) #0f8c67bf1da4805f
+> Advance 2937 #0fcf8389214ea66d
+< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(2937), more: false })) #dd729f73af7ed6fe
+> Receive p2 c3 16 #36b51423afb422e5
+< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Process)) #0930feaa159a33e2
+> DisarmTimer m0 #bb12636c95393a95
+< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Ok(WasArmed(true)) #086663998709d297
+> TerminateThread t0 0 #22fc2064404f7d8d
+< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Thread)) #b84ee51fee510e67
+> ReleaseObject p2 o15 #44a6f9509c5b9917
+< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Process)) #e41770355908db28
+> IssueIo i0 #f2ac9b222e8bc99f
+< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Io)) #8d01d2d637975f91
+> Complete 7 Io i0 Cancelled 4988880320884 #f803b0c4235636ec
+< effects=4 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Io)) #70bdc0c690be5780
+> PollEffect #039c6bc794ce16ef
+< effects=3 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Ok(Effect(Some(ProcessExited { process: Process#2.1@7, code: ExitCode(1) }))) #f3da3224b49cb8e3
+> PollEffect #89c3999d51de3b4a
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Ok(Effect(Some(ProcessReclaimed { process: Process#2.1@7 }))) #c6ad4975655927ec
+> ContinueThread t0 #3f7243b772a53fc8
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/1/6 Err(Stale(Thread)) #9b40af571144d556
+> PrepareIo p1 o0 - #c1a33014809335d5
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Ok(Io(Io#1.1@7)) #b1f2aff8ff2a731c
+> Complete 7 Io i0 Cancelled 13224149219640 #0a9df010fd84e12b
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Io)) #33804d263e24dc5e
+> PublishIo i0 #698de3241373280d
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Io)) #5e42c1ee252e7e40
+> CreateObject p2 Consume 1 2 #72101cf68fd432dd
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Process)) #86394eea48a518f7
+> PreemptThread t0 #8b0fbc79da54f9e5
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Thread)) #3d7f0e71e7a6b994
+> PreemptThread t0 #b2fad65326f98da4
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Thread)) #e5e306db6e9861ff
+> IssueIo i2 #6713c55e8c9e2b80
+< effects=3 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Ok(Done) #8c034b673bf8a357
+> PollEffect #926688926b1dcb96
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Ok(Effect(Some(IoCancel { io: Io#0.1@7 }))) #8ac840c6873397a6
+> RetainBacking p2 b6 #ba83451255e26f2f
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Process)) #7df8204c4cd8cac5
+> Protect p2 16384 20479 rw- #763311373259a5fd
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Err(Stale(Process)) #ebf590a4fd036557
+> SuspendThread t3 #ddbe55565e6c06d5
+< effects=2 ready=1 running=1 now=2937 alive=4/4/23/8/4/2/6 Ok(Count(1)) #8d855bccf9edc424
+> CreateProcess Bits32 4096 #2bda3068e0c25246
+< effects=2 ready=1 running=1 now=2937 alive=5/4/24/8/4/2/6 Ok(Process(Process#4.1@7, Object#23.1@7)) #defe8113390a0b15
+> TerminateThread t0 0 #54968655726df9ab
+< effects=2 ready=1 running=1 now=2937 alive=5/4/24/8/4/2/6 Err(Stale(Thread)) #e079b7e84d39285e
+> Advance 3046 #9de227026e8f8260
+< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Ok(Advanced(Advanced { fired: 0, reached: Instant(3046), more: false })) #4b250d586ddffb4a
+> Complete 7 Io i1 Done 15852118395070 #917acdcb8550d1b4
+< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(IoSettled)) #cb2fff943e2804db
+> ReleaseObject p1 o24 #cd0f1e3e448985f0
+< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(NotHeld)) #8b30c3c4c47c69ae
+> CreateTimer p4 o6 #c48bb0da15d440c7
+< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(DrivenObject)) #bee371fefc835f66
+> Wait t3 Any No Never 1 o4 #038fac0350508130
+< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(NotServicing)) #949dde2c4d9c8edd
+> Signal o4 Add 1 #848838e93fa9a359
+< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(DrivenObject)) #aa3100d57553e290
+> Protect p0 4096 8191 rw- #cab4477e27e62a46
+< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Refused(NotMapped)) #5228bafd12fbf620
+> ReleaseObject p3 o1 #cabca1f97ff47ad6
+< effects=2 ready=1 running=1 now=3046 alive=5/4/24/8/4/2/6 Err(Stale(Object)) #e2cba06e7a48d1da
+> CreateProcess Bits32 4096 #765546ee8580888c
+< effects=2 ready=1 running=1 now=3046 alive=6/4/25/8/4/2/6 Ok(Process(Process#5.1@7, Object#24.1@7)) #ffe225854eb5a9e9
+> DropTimer m4 #0e6ddc83edc26e55
+< effects=2 ready=1 running=1 now=3046 alive=6/4/25/8/3/2/6 Ok(Done) #38239af3d3cb5a14
+> Relinquish g0 0 Fault 7914737853892 Reserved #1be31625f1eba821
+< effects=2 ready=1 running=0 now=3046 alive=6/4/25/8/3/2/6 Ok(Fate(Servicing)) #6988a51d8280942a
+> CreateProcess Bits64 4096 #9b852e38dd710abb
+< effects=2 ready=1 running=0 now=3046 alive=7/4/26/8/3/2/6 Ok(Process(Process#6.1@7, Object#25.1@7)) #37d3a551d1a657c8
+> ContinueThread t3 #7e91715fb4f100cb
+< effects=2 ready=1 running=0 now=3046 alive=7/4/26/8/3/2/6 Err(Refused(NotServicing)) #20bffaaa28ca4692
+> CreateChannel p5 Messages 2 16 #0a423d88ae1666cc
+< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Ok(Channel(ChannelCreated { channel: Channel#6.1@7, readable: Object#26.1@7, writable: Object#27.1@7 })) #9434503f7b320de8
+> Send p5 c3 7e7e7e7e7e7e7e - #663f7d8cf57744ed
+< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Err(Refused(NotHeld)) #7f5d92bb81f4e0a6
+> RetainChannel p3 c5 Receive #6a7531a45dfbb315
+< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Ok(Done) #65a78e16e723432a
+> Receive p5 c2 16 #053cab83fcecf4a5
+< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Err(Refused(NotHeld)) #ed166996a5104a1e
+> SetQuota p4 threads=4 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=8192 #14e6486a1fc3cac5
+< effects=2 ready=1 running=0 now=3046 alive=7/4/28/8/3/2/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #f21c673c3fcfb63e
+> Grant 2 #06b2d8ddd64157f7
+< effects=2 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#2.1@7, process: Process#1.1@7, worker: WorkerId(2), run: RunGen(9), map: MapGen(0), budget: Budget(100000) }))) #d8e74959037fa3fc
+> CancelIo i0 #d547befb71b9695c
+< effects=2 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Err(Stale(Io)) #086ceff00b1635ea
+> ContinueThread t1 #fbd13567a10295ef
+< effects=2 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Ok(Done) #4361d964cf6079ac
+> PollEffect #af9251e9a7b8c693
+< effects=1 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Ok(Effect(Some(ObjectReclaimed { object: Object#16.1@7 }))) #6d7e46483504e7f1
+> Signal o14 Set 1 #b4874ccba95095fd
+< effects=1 ready=0 running=1 now=3046 alive=7/4/28/8/3/2/7 Err(Refused(DrivenObject)) #dd8346a6236a3542
+> Relinquish g3 1000000 Trap #0340e3d424156367
+< effects=1 ready=0 running=0 now=3046 alive=7/4/28/8/3/2/7 Ok(Fate(Servicing)) #f75cbddf6474b571
+> CreateThread p7 Ready #f02098310aee9d0a
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Thread(Thread#4.1@7, Object#28.1@7)) #dfac8310ec19bdc0
+> RetainBacking p4 b6 #b3cf43d6d3d63b2f
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Done) #1f2d15cc5010eacb
+> RetainObject p7 o3 #3013beb4079cb46f
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Done) #a4cd1c3fdcfb890b
+> PublishIo i0 #8e4f3cae763900f6
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Stale(Io)) #6b82729be884ddd7
+> ArmTimer m2 3936 11386784982689 #3f5fa7c1df097ad5
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Done) #ac0e781ce40dfd75
+> PublishIo i0 #06b76b6383a060c8
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Stale(Io)) #d2c08dd97100e855
+> ReleaseIo i0 #c79daa4afe8218ba
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Stale(Io)) #3d691c5cf314f76b
+> RetainObject p5 o27 #b0d4fcee2c8d401b
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Done) #339ce6dce8a7c317
+> UnsuspendThread t5 #4fc654cb6abba62e
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Refused(NotSuspended)) #17c26de04b93d150
+> DisarmTimer m4 #e70223d9502cb16f
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Err(Stale(Timer)) #e7c191314698149f
+> SetQuota p5 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=16384 #c05468575966338d
+< effects=1 ready=1 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #5fa35aa9e9c5f6bb
+> SuspendThread t5 #d6a1221058c38957
+< effects=1 ready=0 running=0 now=3046 alive=7/5/29/8/3/2/7 Ok(Count(0)) #f9730b5c4dc7186a
+> ReleaseIo i1 #a120392a783b299a
+< effects=1 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Done) #f17e62c54d1c7b2a
+> CancelIo i2 #8afc73be40b6b580
+< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Cancel(Requested)) #b0d613e808afa034
+> GrantThread 1 t4 #40163635506337aa
+< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotReady)) #30f68ac4f47e1a79
+> CancelIo i2 #eedaa5ac4b7c5eef
+< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Cancel(AlreadyRequested)) #4af86247c74f5f79
+> RetainChannel p4 c6 Send #d3a917d553083abf
+< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Done) #b8436ff6d2202808
+> IssueIo i2 #27e9aaaf6772d64d
+< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(IoAlreadyIssued)) #b8e03a8df448bf77
+> Unmap p2 20480 24575 #a5e0f576d1f022b6
+< effects=2 ready=0 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Stale(Process)) #b852f0453f259803
+> UnsuspendThread t1 #14dd2fcbc3251f66
+< effects=2 ready=1 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Count(1)) #b0c4bd34c2bd4053
+> ContinueThread t4 #d32354fee9311fa7
+< effects=2 ready=1 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotServicing)) #51a394653bc83c90
+> ContinueThread t2 #182766063589e9c6
+< effects=2 ready=2 running=0 now=3046 alive=7/5/29/8/3/1/7 Ok(Done) #8f43dc40ba20262d
+> ReleaseObject p4 o14 #c3cb4775184e0a16
+< effects=2 ready=2 running=0 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotHeld)) #8aff42c598a1b73f
+> Grant 1 #10adfc30baa91855
+< effects=2 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#1.1@7, process: Process#0.1@7, worker: WorkerId(1), run: RunGen(14), map: MapGen(0), budget: Budget(100000) }))) #136a4a5297beb231
+> SuspendThread t5 #4380bcd5571da4c9
+< effects=2 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Ok(Count(1)) #174b5a1bf6814189
+> CancelIo i0 #d40b30e8fb40648d
+< effects=2 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Stale(Io)) #01437dc1bb188b89
+> RetainBacking p0 b1 #bc316f1a7a52009d
+< effects=2 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Ok(Done) #801ddf324260e022
+> PollEffect #8a6557798ed87e3d
+< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Ok(Effect(Some(IoSubmit { io: Io#1.1@7 }))) #4cfcdc43b8828bec
+> ArmTimer m4 3462 8163195959315 #7ad3bb90fae546e5
+< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Stale(Timer)) #7dcacde6ea8c8063
+> PublishIo i1 #8977d9549129609b
+< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Stale(Io)) #40b767bebb0cc1b6
+> Protect p5 8192 12287 r-- #49c2067ead43c927
+< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotMapped)) #a463a86a2d7541bf
+> InterruptWait t4 #6d4fb88db5dec860
+< effects=1 ready=1 running=1 now=3046 alive=7/5/29/8/3/1/7 Err(Refused(NotWaiting)) #704bf4d20a96e9d6
+> CreateProcess Bits32 4096 #a5e1a8b11f2bbc08
+< effects=1 ready=1 running=1 now=3046 alive=8/5/30/8/3/1/7 Ok(Process(Process#7.1@7, Object#29.1@7)) #e173c3d4649f7343
+> CreateThread p7 Ready #eb19226d5e7592b8
+< effects=1 ready=2 running=1 now=3046 alive=8/6/31/8/3/1/7 Ok(Thread(Thread#5.1@7, Object#30.1@7)) #32826a7e381d6e94
+> PublishIo i2 #ea3f8390689bfe31
+< effects=1 ready=2 running=1 now=3046 alive=8/6/31/8/3/1/7 Err(Refused(IoNotPublishable)) #68ab4aa9ae3ee149
+> CreateObject p8 Keep 0 2 #8474218973a0f4f4
+< effects=1 ready=2 running=1 now=3046 alive=8/6/32/8/3/1/7 Ok(Object(Object#31.1@7)) #40a69e831ea06683
+> CreateThread p8 Ready #2d7f9de28a413a63
+< effects=1 ready=2 running=1 now=3046 alive=8/6/32/8/3/1/7 Err(Exhausted(Effects)) #237f3ab63acce175
+> Receive p3 c5 16 #86d6e2b69ccf49ab
+< effects=1 ready=2 running=1 now=3046 alive=8/6/32/8/3/1/7 Ok(Received(Data { bytes: 5, parcel: None })) | 3535353535 #a39739631d0142d5
+> SuspendThread t0 #6685ef91ab532384
+< effects=1 ready=2 running=1 now=3046 alive=8/6/32/8/3/1/7 Err(Stale(Thread)) #3216fa5b3c8e8eaa
+> Relinquish g4 0 Yielded #d86e47bf793fe974
+< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Ok(Fate(Ready)) #ceca1996f14da541
+> ContinueThread t3 #78e43a3cdfb68dba
+< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotServicing)) #d13ec00ff709d704
+> ReleaseChannel p4 c5 Receive #af4deb5801f477d8
+< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotHeld)) #a4ddc6f93cb2a2ab
+> Signal o10 Set 2 #9c8e94eca04bf95c
+< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(DrivenObject)) #9c27c3e431c6a9c0
+> ReleaseChannel p8 c4 Send #2c0dff0ba85cf120
+< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotHeld)) #a35364ad3e136133
+> Send p1 c3 bfbfbf Backing b9 #7f02436f1bc71677
+< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotHeld)) #f1eed3c21391ab64
+> InterruptWait t6 #3e636e86f8c2651f
+< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Err(Refused(NotWaiting)) #ad87bde25643dea6
+> RetainChannel p7 c6 Send #a8ba320664f0a731
+< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Ok(Done) #04a6f7ef30b454b2
+> RetainChannel p8 c6 Send #3472153a1e640522
+< effects=1 ready=3 running=0 now=3046 alive=8/6/32/8/3/1/7 Ok(Done) #e2d4530690353773
+> Advance 3903 #246367f38245ab87
+< effects=1 ready=3 running=0 now=3903 alive=8/6/32/8/3/1/7 Ok(Advanced(Advanced { fired: 0, reached: Instant(3903), more: false })) #75f3412d386f994c
+> CreateChannel p6 Stream 20 #1ce586fca2505c98
+< effects=1 ready=3 running=0 now=3903 alive=8/6/32/8/3/1/7 Err(Exhausted(Effects)) #1f2ac437bd3819e2
+> RetainBacking p6 b2 #11ce3ba3be51dc43
+< effects=1 ready=3 running=0 now=3903 alive=8/6/32/8/3/1/7 Err(Stale(Backing)) #fcbb8a381f42e332
+> CreateProcess Bits32 4096 #e02c328ed1338b54
+< effects=1 ready=3 running=0 now=3903 alive=8/6/32/8/3/1/7 Err(Exhausted(Effects)) #40b8a27b6a1622fe
+> Grant 1 #aec770cfdfcfb730
+< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#1.1@7, process: Process#0.1@7, worker: WorkerId(1), run: RunGen(17), map: MapGen(0), budget: Budget(100000) }))) #d3e5612ced8ffae3
+> Unmap p8 24576 28671 #9a4aa5332c966025
+< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Ok(Count(0)) #fa14bf5dc0bfa9b8
+> ReleaseChannel p8 c3 Receive #0681c6553a199dae
+< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Refused(NotHeld)) #fab5bd55872c3bc9
+> CreateThread p5 Ready #904b65742b5564ec
+< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Exhausted(Effects)) #4246de9bebe798a6
+> Map p0 16384 24575 --- Backing b1 0 #4569acec2b8ae6ab
+< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Exhausted(MappedBytes)) #a16d021bff9254a9
+> ReleaseIo i1 #29fe88e786dca95b
+< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Stale(Io)) #e496b2819612d6cb
+> ReleaseIo i2 #1244558a5f06f232
+< effects=1 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Err(Refused(IoInFlight)) #de48737680e1fcb2
+> PollEffect #afce3e82b2878ccd
+< effects=0 ready=2 running=1 now=3903 alive=8/6/32/8/3/1/7 Ok(Effect(Some(IoCancel { io: Io#1.1@7 }))) #8abebdac7293b3e4
+> CreateObject p5 Consume 0 3 #d661c3ce9558c29a
+< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/3/1/7 Ok(Object(Object#32.1@7)) #65fe5501b9525d66
+> Complete 7 Io i0 Cancelled 6510544405014 #13638b77180ffc14
+< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/3/1/7 Err(Stale(Io)) #cc1bb3797fdc214e
+> SuspendThread t4 #a87060472b707099
+< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/3/1/7 Ok(Count(1)) #790c1f11c1306eb5
+> CreateBacking p3 12288 #7853698150bb361f
+< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/3/1/7 Err(Exhausted(Effects)) #e68e6a1bf6355549
+> DropTimer m0 #efb70271782dd6c1
+< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Ok(Done) #1867ee35a43b3d6d
+> PrepareIo p8 - - #a9e3770307f56703
+< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Exhausted(Effects)) #41e97ca35c8437f0
+> Grant 1 #0091bc3c662a353e
+< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(WorkerBusy)) #4cb534b9055845d7
+> PublishIo i1 #7a5d74cda8b49e7f
+< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Io)) #535076ecc45fa8dc
+> RetainChannel p8 c1 Send #b56e3de0d60c94b9
+< effects=0 ready=2 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(EndClosed)) #62cc6971b3836a26
+> Relinquish g5 0 Trap #79c221220db91e4e
+< effects=0 ready=2 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Fate(Servicing)) #cbe637104ffe4422
+> ReleaseObject p6 o7 #5ef66760995c287d
+< effects=0 ready=2 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotHeld)) #030af176afb6061a
+> RetainObject p6 o34 #0fd064d9a2eda79d
+< effects=0 ready=2 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Done) #fd83f0e59f178466
+> Grant 2 #0f2fb91118a3790f
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Ok(Permit(Some(RunPermit { instance: InstanceId(7), thread: Thread#2.1@7, process: Process#1.1@7, worker: WorkerId(2), run: RunGen(18), map: MapGen(0), budget: Budget(100000) }))) #a8196278b0260c86
+> PublishIo i0 #cc673a8e4d5738c5
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Io)) #9094da33d03c72df
+> IssueIo i0 #96f968de310f9b0a
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Io)) #b2b3350ad374841a
+> ContinueThread t2 #d93d9b5325594d98
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotServicing)) #1b0b812a16933a7c
+> Receive p4 c0 16 #10ac67e37a879c68
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotHeld)) #92f83a4de6b706fd
+> SetQuota p3 threads=6 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=16384 #e4143f62033828e5
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #17483c437c7d84c0
+> Wait t4 All No At 4641 2 o15 o17 #15b5c13744617918
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotServicing)) #10b530eecc38d0fc
+> ArmTimer m4 4660 - #8e273e45064e9f8a
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Timer)) #1f44d47cf641d951
+> ContinueThread t0 #8aa15d7413267eb5
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Thread)) #2538fe256f9592cf
+> CreateTimer p7 o5 #6917d307d68bb428
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Object)) #7b3c34b9fa7a1ccd
+> CreateThread p2 Ready #63aa2caa8dfba81b
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Process)) #fc52ee446fc48c10
+> RetainBacking p2 b0 #b44b2589985ec85f
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Backing)) #6ae69d788c74cf58
+> Signal o18 Set 1 #7bafeef16bf088f2
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Ok(Count(0)) #8994e557b6904c33
+> Protect p1 8192 12287 rw- #48115f0527daa014
+< effects=0 ready=1 running=1 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotMapped)) #8de1b4e4622f090d
+> Relinquish g6 0 Trap #4babf0e6668bce82
+< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Fate(Servicing)) #1d0cb4c18b7f9aad
+> RetainChannel p8 c5 Send #78b153de09fc665a
+< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Done) #f4dd42c6a30d71e6
+> SetQuota p1 threads=2 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=32768 #707f081099a2f81c
+< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #54d82185ef5b3d44
+> ReleaseIo i2 #5cd063049d0225b3
+< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(IoInFlight)) #e2fb60177990c320
+> SetQuota p7 threads=6 ios=4294967295 holdings=4294967295 mappings=4294967295 mapped_bytes=8192 #941f14cba13e5238
+< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Ok(Quota(Quota { threads: 4294967295, ios: 4294967295, holdings: 4294967295, mappings: 4294967295, mapped_bytes: 18446744073709551615 })) #80b26b7f437a8708
+> CreateThread p3 Ready #b5aecf3fc01ea06f
+< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Exhausted(Effects)) #bd4b6df85135ea0a
+> GrantThread 1 t4 #7e111415a980009c
+< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(NotReady)) #6f1e3877f41b48a6
+> ReleaseBacking p2 b7 #57c676f89f7348e0
+< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Stale(Process)) #8ce17b5725f140e2
+> ReleaseIo i2 #ecc78830cc03d4ad
+< effects=0 ready=1 running=0 now=3903 alive=8/6/33/8/2/1/7 Err(Refused(IoInFlight)) #efbff396d068a22a
+> Advance 4229 #84d7c6c76ca924d2
+< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Advanced(Advanced { fired: 1, reached: Instant(4229), more: false })) #146b9af5d1e11dcd
+> ArmTimer m3 5004 617596050574 #e816aa8f1888e28d
+< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Done) #4c360964d4af2239
+> ReleaseObject p4 o28 #78ccd6a1b7dc8433
+< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Err(Refused(NotHeld)) #c271b4c17b31074d
+> Protect p4 20480 28671 rw- #9bec4eddaad7b803
+< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Err(Refused(NotMapped)) #5ece621e24947de9
+> RetainObject p3 o35 #2e27601848d259e2
+< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Done) #e35e3ffb9db47c38
+> PollEffect #5be74f80a6cc2867
+< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Effect(None)) #e06fd1b44944df7b
+> UnsuspendThread t5 #62dfaae75ba824b2
+< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Ok(Count(2)) #3cba47c27053e390
+> Receive p4 c2 16 #70d954857cbbb1fa
+< effects=0 ready=1 running=0 now=4229 alive=8/6/33/8/2/1/7 Err(Refused(NotHeld)) #4ef98bd71f71ab5c

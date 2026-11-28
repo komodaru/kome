@@ -9,12 +9,13 @@ use kome::{
     Deadline, Duration, Effect, End, Error, ExitCode, GuestAddr, GuestRange, HostError, InstanceId, Instant, Interruptible, IoId, IoLinks,
     IoOutcome, IoPhase, Kernel, Limits, MapSource, MemFault, MemFaultKind, NotRelinquished, ObjectId, PageSize, Parcel, Period, Priority, ProcessId, ProcessPhase, Prot, Quota,
     Received, Refusal, Resource, RunPermit, Sent, SignalMode, SignalOp, SignalSpec, Start, Stop, Tag, ThreadId, ThreadPhase, ThreadFate, TimerId, WaitMode, WaitOutcome,
-    WaitStart, WorkerId, guest_read, guest_write, map_observed, protect_observed, unmap_observed,
+    WaitStart, WorkerId, guest_read, guest_write_watched, map_observed, protect_observed, unmap_observed,
 };
+use kome_host_std::InterruptSlot;
 
 use crate::pages::{Expect, Pages, Perm, Touch};
 use crate::pipes::{Got, Pipe, Put, Shape};
-use crate::shadow::{Shadow, Store};
+use crate::shadow::{Dropped, Flaky, Shadow, Store};
 
 /// シミュレーションのページの大きさ。
 pub const PAGE: u64 = 0x1000;
@@ -174,6 +175,11 @@ struct Sim {
     /// 生きている通信路の独立したモデルと、その通知の資源 (読める、書ける)。
     pipes: BTreeMap<ChannelId, (Pipe<ProcessId, Parcel>, ObjectId, ObjectId)>,
     held: Vec<Held>,
+    /// worker ごとの、中断の求めの置き場。参照ホストが使うものと同じ表現で、`Effect::Interrupt` を
+    /// 受け取るたびに求めを立てる。前の実行への求めは、消さずに残す (参照ホストも消さない)。
+    slots: Vec<InterruptSlot>,
+    /// worker ごとの、最後に中断を求めた実行のスレッド。
+    asked: BTreeMap<WorkerId, ThreadId>,
     /// 自分で設定した優先度。設定していないスレッドは既定の値。
     ranks: BTreeMap<ThreadId, u8>,
     /// 貸せる状態 (実行待ちで、停止要求が無い) のスレッドと、その状態になった操作の番号。
@@ -253,6 +259,8 @@ impl Sim {
             channels: Vec::new(),
             pipes: BTreeMap::new(),
             held: Vec::new(),
+            slots: (0..WORKERS).map(|_| InterruptSlot::new()).collect(),
+            asked: BTreeMap::new(),
             ranks: BTreeMap::new(),
             since: BTreeMap::new(),
             steps: 0,
@@ -326,6 +334,9 @@ impl Sim {
                     return Err(format!("RUN-1: 一度の実行へ中断を二度要求した: {effect:?}"));
                 }
                 held.interrupted = true;
+                let slot = usize::try_from(worker.get()).ok().and_then(|at| self.slots.get(at));
+                slot.ok_or(format!("置き場の無い worker への中断: {effect:?}"))?.ask(run);
+                self.asked.insert(worker, thread);
             }
             Effect::WaitDone { thread, outcome } => {
                 let targets =
@@ -516,9 +527,39 @@ impl Sim {
                 }
             }
         }
+        // 前の実行への中断の求めが置き場に残ったまま、同じ worker が次の実行を借りた。
+        match self.asked.get(&permit.worker()) {
+            Some(earlier) if *earlier == picked => self.reached.insert("run:again-after-interrupt"),
+            Some(_) => self.reached.insert("run:other-thread-after-interrupt"),
+            None => false,
+        };
         let backings = self.spaces.get(&process).map(|space| space.backings().collect()).unwrap_or_default();
         self.held.push(Held { permit, backings, stale: false, interrupted: false });
         Ok(())
+    }
+
+    /// 参照ホストの表現で見た中断の求めが、Kernel がその実行へ中断を要求したかと一致するか。
+    /// 別のスレッドや前の実行への求めを、今の実行への求めと取り違えない。
+    fn check_interrupts(&self) -> Result<(), String> {
+        for held in &self.held {
+            let slot = usize::try_from(held.permit.worker().get()).ok().and_then(|at| self.slots.get(at));
+            let seen = slot.ok_or("置き場の無い worker へ貸した")?.watch().requested(&held.permit);
+            if seen != held.interrupted {
+                return Err(format!("RUN-1: {:?} への中断の求めが、ホストから見ると {seen}、Kernel の要求は {}", held.permit, held.interrupted));
+            }
+        }
+        Ok(())
+    }
+
+    /// 実体の `places` のバイトを、実行できる権限で見せている (プロセス, アドレス) の全て。モデルのページから引く。
+    fn shown_as_code(&self, places: &[(BackingId, u64)]) -> BTreeSet<(ProcessId, u64)> {
+        let mut shown = BTreeSet::new();
+        for (process, model) in &self.spaces {
+            for (backing, offset) in places {
+                shown.extend(model.executes(*backing, *offset, PAGE).map(|addr| (*process, addr)));
+            }
+        }
+        shown
     }
 
     /// モデルとカーネルで、すべての通信路の中身の量、次の長さ、読める・書けるの通知を比べる。
@@ -747,10 +788,15 @@ impl Sim {
                     Stop::Interrupted if !held.interrupted => Some((Refusal::NotInterrupted, "run:not-interrupted")),
                     Stop::BudgetExhausted | Stop::Yielded | Stop::Interrupted | Stop::Trap | Stop::Fault(_) | Stop::Exited(_) => None,
                 };
-                // 届け先を間違えても実行権は失われない: 別の実行インスタンスは受け取らずに返す。
+                // 届け先を間違えても実行権は失われない: 別の実行インスタンスは、実行を始める前に
+                // 受け取らずに返す。返すときも同じ。
                 let mut stranger = Kernel::new(InstanceId::new(u64::MAX), Limits::DEFAULT.with_effects(1))
                     .map_err(|error| format!("別の実行インスタンスを作れない: {error:?}"))?;
-                let permit = match stranger.relinquish(held.permit, stop, consumed) {
+                let permit = match kome::start_run(&mut stranger, held.permit, &mut kome::Contexts::<()>::new()) {
+                    Err(kome::NotRun::Rejected { permit, loaded: None, error: Error::Foreign }) => permit,
+                    other => return Err(format!("RUN-1: 別の実行インスタンスが実行を始めた、または実行権を返さなかった: {other:?}")),
+                };
+                let permit = match stranger.relinquish(permit, stop, consumed) {
                     Err(NotRelinquished::Rejected(permit, Error::Foreign)) => permit,
                     other => return Err(format!("RUN-1: 別の実行インスタンスが実行権を受理した、または返さなかった: {other:?}")),
                 };
@@ -1064,13 +1110,48 @@ impl Sim {
                 let mut read = vec![0u8; size];
                 let expected = self.reach(process, start, len, if writing { Touch::Write } else { Touch::Read });
                 let before = self.store.clone();
+                // 書き込みは監視つきの経路を通す。8 回に 1 回は、backend が途中のバイトで失敗する。
+                let breaks = if writing { Some(r.byte()).filter(|byte| byte & 7 == 7).map(|byte| u64::from(byte >> 3) % len.max(1)) } else { None };
+                let breaks = breaks.filter(|_| len != 0);
+                let mut dropped = Dropped::default();
                 let result = if writing {
-                    guest_write(&self.k, &mut self.store, process, GuestAddr::new(start), &data)
+                    let mut flaky = Flaky { store: &mut self.store, left: breaks };
+                    guest_write_watched(&self.k, &mut flaky, &mut dropped, process, GuestAddr::new(start), &data)
                 } else {
                     guest_read(&self.k, &self.store, process, GuestAddr::new(start), &mut read)
                 };
+                // 捨てさせるコードは、書いた実体を実行できる権限で見せている場所の全てで、それ以外は無い。
+                // 書き込み先とは別の範囲や別のプロセス (別名) も入る。途中で失敗しても、範囲の全体について捨てさせる。
+                let code = match &expected {
+                    Ok(places) if writing => self.shown_as_code(places),
+                    Ok(_) | Err(_) => BTreeSet::new(),
+                };
+                if dropped.bytes != code || dropped.forgotten != 0 {
+                    return Err(format!("{start:#x} へ {len} バイト書いて捨てさせたコードが {:?}、モデルでは {code:?}", dropped.bytes));
+                }
+                if writing && expected.is_ok() {
+                    let alias = code.iter().any(|(shown_in, addr)| *shown_in != process || *addr < start || *addr >= start.saturating_add(len));
+                    self.reached.insert(match (code.is_empty(), alias, breaks.is_some()) {
+                        (true, _, _) => "code:kept",
+                        (false, _, true) => "code:dropped-after-failure",
+                        (false, true, false) => "code:dropped-alias",
+                        (false, false, false) => "code:dropped",
+                    });
+                }
                 match (result, expected) {
-                    (Ok(()), Ok(places)) => {
+                    (Err(AccessError::Host(error)), Ok(places)) if breaks.is_some() && error == Flaky::BROKE => {
+                        // 失敗する前に書いたバイトだけが変わっている。
+                        let wrote = usize::try_from(breaks.unwrap_or(0)).map_err(|e| e.to_string())?;
+                        for (at, (backing, offset)) in places.iter().enumerate().take(wrote) {
+                            self.content.set(*backing, *offset, data.get(at).copied().ok_or("書くバイト")?);
+                        }
+                        if self.store != self.content {
+                            return Err(format!("MEM-2: {start:#x} への途中で失敗した書き込みの後、実体の内容がモデルと違う"));
+                        }
+                        self.reached.insert("mem:write-broke");
+                        Outcome::Accepted
+                    }
+                    (Ok(()), Ok(places)) if breaks.is_none() => {
                         for (at, (backing, offset)) in places.iter().enumerate() {
                             if writing {
                                 self.content.set(*backing, *offset, data.get(at).copied().ok_or("書くバイト")?);
@@ -1505,6 +1586,7 @@ impl Sim {
         }
         self.k.audit().map_err(|violation| format!("{}: {}", violation.invariant().code(), violation.detail()))?;
         self.observe(seen)?;
+        self.check_interrupts()?;
         self.check_pipes()?;
         self.note_ready();
         self.steps = self.steps.saturating_add(1);

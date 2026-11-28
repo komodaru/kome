@@ -29,10 +29,14 @@
 | ゲストのアドレスでのアクセスの基準は、`translate` で引いた結果である | `guest_read`、`guest_write` | 決定的シミュレーションが、結果と失敗の位置をモデルと比べる |
 | アドレス空間の変更は、受理した直後に、一度だけ知らせる | `SpaceObserver`、`map_observed`、`unmap_observed`、`protect_observed` | 通知だけから組み立てたアドレス空間 (`kome-testkit` の `shadow`) がモデルと一致する |
 | 変換済みのコードは、外した範囲と権限を変えた範囲で捨てる | `CodeCache`、`CodeWatch`、`MapChange::invalidates_code` | 試験 `every_accepted_space_change_is_told_once_and_drops_the_code_it_must` |
-| 実行できる範囲への書き込みは、その範囲のコードを捨てさせる | `guest_write_watched` | 同じ試験 |
+| 書き込みは、書いた実体を実行できる権限で見せている全ての場所のコードを捨てさせる。書き込み先とは別の範囲、別のプロセスが同じ実体を見せている場合 (別名) も含む | `guest_write_watched`、`Kernel::executable_views` | 決定的シミュレーションが、捨てさせた範囲をモデルのページから引いたものと操作のたびに比べる。試験 `a_write_through_another_view_drops_the_code_of_every_executable_view` |
+| backend が書き込みの途中で失敗しても、範囲の全体についてコードを捨てさせてから失敗を返す (内容は一部変わっているかもしれない)。何も書かずに失敗したとき (範囲のどこかが書けない) は捨てない | `guest_write_watched` | 決定的シミュレーション (途中のバイトで失敗する backend)。試験 `a_write_that_fails_partway_still_drops_the_code_it_may_have_changed` |
 
 速い経路 (アドレスを直接使う、引いた結果を覚えておく) は、通知を受けて自分の表を直し、基準の経路と
-同じ結果を返す。実行器が自分の速い経路で実行できる範囲へ書くときは、実行器がコードを捨てる。
+同じ結果を返す。実行器が自分の速い経路でゲストのメモリへ書くときは、実行器がコードを捨てる
+(書き込み先に実行の権限が無くても、同じ実体を別の場所からコードとして見せていることがある。
+`Kernel::executable_views` で引ける)。`executable_views` は全てのプロセスのマッピングを見るので、
+手数はマッピングの総数に比例する。
 通知を受けても、実体の内容は `Effect::BackingReclaimed` が出るまで手放さない (台帳 MEM-1)。
 検査: lint `backend-boundary`。
 

@@ -19,7 +19,7 @@ mod sync;
 use std::time::Duration;
 
 use kome::{
-    Contexts, Effect, Error, Executor, Instant, Kernel, Ran, Refusal, RunPermit, WorkerId, finish_run, start_run,
+    Contexts, Effect, Error, Executor, Instant, Kernel, Ran, Refusal, RunGen, RunPermit, WorkerId, finish_run, start_run,
 };
 
 pub use store::{FlatStore, fault};
@@ -53,6 +53,13 @@ pub enum HostFault {
     NoWorker,
 }
 
+/// 実行権は、このホストの `Kernel` から借りて同じ `Kernel` へ返す。拒否されるのは内部の誤りである。
+impl<C> From<kome::NotRun<C>> for HostFault {
+    fn from(refused: kome::NotRun<C>) -> HostFault {
+        HostFault::Kernel(refused.error())
+    }
+}
+
 impl From<Error> for HostFault {
     fn from(error: Error) -> HostFault {
         HostFault::Kernel(error)
@@ -75,8 +82,43 @@ pub struct State<C, P> {
     watchers: u32,
 }
 
-/// 割り込みが求められていないことを表す値 (実行の世代はここまで進まない)。
+/// 割り込みが求められていないことを表す値 (実行の番号はここまで進まない)。
 const NO_INTERRUPT: u64 = u64::MAX;
+
+/// 一つの worker への割り込みの求めの置き場。
+///
+/// 求めは実行の番号 ([`RunGen`]) を名指しする。番号は `Kernel` の中でスレッドをまたいで一意なので、
+/// 前の実行への求めが残っていても、同じ worker が次に実行する別のスレッドを止めることは無い。
+/// 決定的シミュレーション (`kome-testkit`) も、この置き場を通して同じ表現を確かめる。
+#[derive(Debug)]
+pub struct InterruptSlot {
+    wanted: Arc<AtomicU64>,
+}
+
+impl InterruptSlot {
+    /// 何も求められていない置き場。
+    #[must_use]
+    pub fn new() -> InterruptSlot {
+        InterruptSlot { wanted: Arc::new(AtomicU64::new(NO_INTERRUPT)) }
+    }
+
+    /// 実行 `run` を止めるよう求める ([`Effect::Interrupt`] を受け取ったとき)。
+    pub fn ask(&self, run: RunGen) {
+        self.wanted.store(run.get(), Ordering::SeqCst);
+    }
+
+    /// 求めを見る口。実行器に持たせる。
+    #[must_use]
+    pub fn watch(&self) -> Interrupt {
+        Interrupt { wanted: Arc::clone(&self.wanted) }
+    }
+}
+
+impl Default for InterruptSlot {
+    fn default() -> InterruptSlot {
+        InterruptSlot::new()
+    }
+}
 
 /// worker への割り込みの求め。実行器が、ゲストを実行しながら錠を取らずに見る。
 #[derive(Clone, Debug)]
@@ -85,9 +127,7 @@ pub struct Interrupt {
 }
 
 impl Interrupt {
-    /// この実行権での実行を止めるよう求められているか。
-    ///
-    /// 求めは実行の世代を名指しするので、前の実行への求めが次の実行を止めることは無い。
+    /// この実行権での実行を止めるよう求められているか。前の実行への求めには、偽を返す。
     #[must_use]
     pub fn requested(&self, permit: &RunPermit) -> bool {
         self.wanted.load(Ordering::SeqCst) == permit.run().get()
@@ -100,7 +140,7 @@ struct Inner<C, P> {
     work: Condvar,
     /// [`Host::wait_until`] で待っている者を起こす。
     watch: Condvar,
-    interrupts: Vec<Arc<AtomicU64>>,
+    interrupts: Vec<InterruptSlot>,
     clock: Box<dyn Fn() -> Instant + Send + Sync>,
 }
 
@@ -126,7 +166,7 @@ impl<C, P: Personality<C>> Host<C, P> {
         clock: impl Fn() -> Instant + Send + Sync + 'static,
     ) -> Host<C, P> {
         let state = State { kernel, contexts: Contexts::new(), personality, closed: false, idle: 0, watchers: 0 };
-        let interrupts = (0..workers).map(|_| Arc::new(AtomicU64::new(NO_INTERRUPT))).collect();
+        let interrupts = (0..workers).map(|_| InterruptSlot::new()).collect();
         Host { inner: Arc::new(Inner { state: Mutex::new(state), work: Condvar::new(), watch: Condvar::new(), interrupts, clock: Box::new(clock) }) }
     }
 
@@ -137,7 +177,7 @@ impl<C, P: Personality<C>> Host<C, P> {
     /// worker への割り込みの求めを見る口。実行器に持たせる。
     pub fn interrupt(&self, worker: WorkerId) -> Result<Interrupt, HostFault> {
         let wanted = usize::try_from(worker.get()).ok().and_then(|at| self.inner.interrupts.get(at));
-        Ok(Interrupt { wanted: Arc::clone(wanted.ok_or(HostFault::NoWorker)?) })
+        Ok(wanted.ok_or(HostFault::NoWorker)?.watch())
     }
 
     /// 時刻を進め、kome が外へ頼んだ仕事を全て処理する。錠の中で、状態を変えた後に必ず呼ぶ。
@@ -156,7 +196,7 @@ impl<C, P: Personality<C>> Host<C, P> {
             changed = true;
             if let Effect::Interrupt { worker, run, .. } = effect {
                 let wanted = usize::try_from(worker.get()).ok().and_then(|at| self.inner.interrupts.get(at));
-                wanted.ok_or(HostFault::NoWorker)?.store(run.get(), Ordering::SeqCst);
+                wanted.ok_or(HostFault::NoWorker)?.ask(run);
                 continue;
             }
             if let Effect::ThreadExited { thread, .. } = effect {
@@ -267,6 +307,12 @@ impl<C, P: Personality<C>> Host<C, P> {
                 }
                 let before = guard.kernel.next_deadline();
                 let settled = self.settle(&mut guard)?;
+                // 仕事が全て終わったことは settle が見つける。眠る前に確かめ直さないと、起こす者の
+                // いない眠りに入る (最初から終わっているホスト、最後の仕事を自分で片付けた worker)。
+                if guard.closed {
+                    self.wake(&guard, before);
+                    return Ok(());
+                }
                 let state = &mut *guard;
                 if let Some(permit) = state.kernel.grant(worker)? {
                     // 実行中になったことも状態の変化なので、待っている者に知らせる。

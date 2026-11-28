@@ -10,6 +10,8 @@ description = "kome の決定的シミュレーション: バイト列から操�
 
 [dependencies]
 kome = { path = "../kome" }
+# 中断の求めの表現は、参照ホストが実際に使うものを通して確かめる。
+kome-host-std = { path = "../kome-host-std" }
 
 [dev-dependencies]
 proptest = "1.12"

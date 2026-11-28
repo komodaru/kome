@@ -4,14 +4,16 @@
 #[cfg(test)]
 mod support;
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::thread;
 use std::time::Instant as StdInstant;
 
 use kome::{
-    AddrWidth, BackingOffset, Contents, Contexts, Effect, Error, Executor, InstanceId, Instant, Kernel, Limits,
-    PageSize, Ran, RunPermit, SignalMode, SignalSpec, Start, Stop, Stopped, ThreadPhase, WorkerId,
+    AddrWidth, BackingOffset, Contents, InstanceId, Instant, Kernel, Limits, PageSize, SignalMode, SignalSpec, Start,
+    ThreadPhase, WorkerId,
 };
-use kome_host_std::{FlatStore, Host, HostFault, Interrupt, Personality, fault};
+use kome_host_std::{FlatStore, Host, HostFault, fault};
 
 fn clock() -> impl Fn() -> Instant + Send + Sync + 'static {
     let origin = StdInstant::now();
@@ -39,30 +41,19 @@ fn workers_run_every_thread_to_its_end() {
     }
 }
 
-/// 割り込みが求められるまでゲストを実行し続ける実行器。
-struct Spinner {
-    interrupt: Interrupt,
-}
-
-impl Executor for Spinner {
-    type Context = support::Guest;
-
-    fn run(&mut self, permit: &RunPermit, guest: &mut support::Guest) -> Stopped {
-        guest.steps = guest.steps.saturating_add(1);
-        while !self.interrupt.requested(permit) {
-            thread::yield_now();
-        }
-        Stopped::new(Stop::Interrupted, permit.budget())
-    }
-}
-
 #[test]
 fn an_interrupt_reaches_the_running_worker_without_the_lock() {
     let (host, _, made) = support::host(1, 1, 0, clock());
     let guest = made[0];
     thread::scope(|scope| {
         let worker = WorkerId::new(0);
-        let mut spinner = Spinner { interrupt: host.interrupt(worker).unwrap() };
+        let mut spinner = support::Spinner {
+            interrupt: host.interrupt(worker).unwrap(),
+            asked: Arc::new(AtomicU64::new(u64::MAX)),
+            stale: Arc::default(),
+            stops: 0,
+            pause: thread::yield_now,
+        };
         let running = {
             let host = host.clone();
             scope.spawn(move || host.work(worker, &mut spinner))
@@ -117,32 +108,12 @@ fn an_idle_worker_wakes_for_the_next_deadline() {
     .unwrap();
 }
 
-/// プロセスが終了したら仕事が終わったと答える Personality。
-#[derive(Default)]
-struct UntilExit {
-    watch: support::Watch,
-}
-
-impl Personality<support::Guest> for UntilExit {
-    fn stopped(&mut self, kernel: &mut Kernel, contexts: &mut Contexts<support::Guest>, ran: &Ran) -> Result<(), Error> {
-        self.watch.stopped(kernel, contexts, ran)
-    }
-
-    fn effect(&mut self, kernel: &mut Kernel, effect: Effect) -> Result<(), Error> {
-        self.watch.effect(kernel, effect)
-    }
-
-    fn finished(&self) -> bool {
-        self.watch.process_exited
-    }
-}
-
 #[test]
 fn the_host_closes_itself_when_the_personality_is_finished() {
     let mut kernel = Kernel::new(InstanceId::new(1), Limits::DEFAULT.with_workers(3)).unwrap();
     let (process, _) = kernel.create_process(AddrWidth::Bits32, PageSize::new(4096).unwrap()).unwrap();
     let threads: Vec<_> = (0..5).map(|_| kernel.create_thread(process, Start::Ready).unwrap().0).collect();
-    let host: Host<support::Guest, UntilExit> = Host::new(kernel, UntilExit::default(), 3, clock());
+    let host: Host<support::Guest, support::UntilExit> = Host::new(kernel, support::UntilExit::default(), 3, clock());
     host.with(|state| {
         for thread in &threads {
             state.contexts.insert(*thread, support::Guest { left: 40, steps: 0 }).unwrap();
@@ -165,6 +136,29 @@ fn the_host_closes_itself_when_the_personality_is_finished() {
     .unwrap();
     // 閉じた後に待っても、待ち続けない。
     host.wait_until(|_| false).unwrap();
+}
+
+#[test]
+fn a_host_finished_from_the_start_lets_its_workers_go() {
+    // 仕事が最初から終わっているホストでは、誰も閉じず、誰も起こさない。worker は眠らずに戻る。
+    let host = support::finished_host(2, clock());
+    let (done, wait) = std::sync::mpsc::channel();
+    for worker in 0..2 {
+        let (host, done) = (host.clone(), done.clone());
+        thread::spawn(move || done.send(host.work(WorkerId::new(worker), &mut support::Stepper)));
+    }
+    for _ in 0..2 {
+        assert_eq!(wait.recv_timeout(std::time::Duration::from_secs(20)), Ok(Ok(())), "worker が、起こす者のいない眠りに入った");
+    }
+    host.wait_until(|_| false).unwrap();
+}
+
+#[test]
+fn an_interrupt_for_one_run_never_stops_the_next_thread_on_the_same_worker() {
+    support::interrupt_names_one_run(clock(), thread::yield_now, |work| {
+        let running = thread::spawn(work);
+        Box::new(move || running.join().unwrap())
+    });
 }
 
 #[test]

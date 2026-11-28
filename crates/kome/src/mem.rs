@@ -683,6 +683,48 @@ impl Kernel {
         Ok(Some(MappingInfo { range, prot: mapping.prot, source: mapping.source }))
     }
 
+    /// 実体 `backing` の `offset` から `len` バイトのどこかを、実行できる権限で見せているマッピングを
+    /// 全て `visit` へ渡す。渡すのは、プロセスと、その部分を見せているゲストの範囲である。
+    ///
+    /// 同じ実体は、複数の範囲と複数のプロセスへ見せられる (別名)。書き込んだ側の範囲に実行の権限が
+    /// 無くても、別の範囲から実行されるコードが変わる。変換済みのコードを捨てる側は、これで全ての
+    /// 見せ方を知る。全てのプロセスのマッピングを見るので、手数はマッピングの総数に比例する。
+    pub fn executable_views(
+        &self,
+        backing: BackingId,
+        offset: BackingOffset,
+        len: u64,
+        mut visit: impl FnMut(ProcessId, GuestRange),
+    ) -> Result<(), Error> {
+        self.backings.find(backing, &self.lineage)?;
+        let Some(written_last) = len.checked_sub(1).and_then(|tail| offset.get().checked_add(tail)) else {
+            return Ok(());
+        };
+        for (process, entry) in self.processes.iter() {
+            for mapping in entry.space.maps.iter() {
+                let MapSource::Backing { backing: shown, offset: shown_from } = mapping.source else { continue };
+                if shown != backing || !mapping.prot.allows(Access::Execute) {
+                    continue;
+                }
+                let size = mapping.last.checked_sub(mapping.start).ok_or(Error::Broken(Invariant::MemLayout))?;
+                let shown_last = shown_from.get().checked_add(size).ok_or(Error::Broken(Invariant::MemLayout))?;
+                let (first, last) = (shown_from.get().max(offset.get()), shown_last.min(written_last));
+                if first > last {
+                    continue;
+                }
+                // 実体の中の位置を、このマッピングのゲストのアドレスへ戻す。
+                let at = |position: u64| {
+                    position.checked_sub(shown_from.get()).and_then(|skipped| mapping.start.checked_add(skipped))
+                };
+                let range = at(first).zip(at(last)).and_then(|(start, last)| {
+                    GuestRange::spanning(GuestAddr::new(start), GuestAddr::new(last))
+                });
+                visit(process, range.ok_or(Error::Broken(Invariant::MemLayout))?);
+            }
+        }
+        Ok(())
+    }
+
     /// `within` の中で、`len` バイトが入る最も低い空き範囲の先頭。`align` と空間の粒度の
     /// 大きい方に揃える。置く方針 (下から、上から、決まった基底) は Personality が
     /// `within` で表す。

@@ -175,7 +175,8 @@ fn threads_run_in_fifo_order_and_a_preempted_thread_goes_to_the_back() {
     let second = ok!(k, k.grant(W0)).unwrap();
     assert_eq!(second.thread(), b);
     let third = ok!(k, k.grant(W1)).unwrap();
-    assert_eq!((third.thread(), third.run().get()), (a, 2));
+    assert_eq!(third.thread(), a);
+    assert!(third.run() > second.run(), "実行の番号は Kernel の中で増え続ける");
     assert_eq!(k.grant(WorkerId::new(2)), Err(Error::Exhausted(Resource::Workers)));
     let _ = k.relinquish(second, Stop::Trap, Budget::new(0));
     let _ = k.relinquish(third, Stop::Trap, Budget::new(0));
@@ -3126,6 +3127,7 @@ fn a_foreign_id_is_refused_in_every_position() {
     assert_eq!(k.find_free(fp, PAGE, unit, range(0, 0x10_0000)), Err(Error::Foreign));
     assert_eq!(k.map_generation(fp), Err(Error::Foreign));
     assert_eq!(k.mapping_count(fp), Err(Error::Foreign));
+    assert_eq!(k.executable_views(fb, BackingOffset::new(0), 1, |_, _| panic!("別の実行インスタンスの実体を見せた")), Err(Error::Foreign));
     // 自分の ID は、同じ引数の位置で受理される (拒否の理由が ID であることの対照)。
     ok!(own.k, own.k.retain_backing(p, b));
     ok!(own.k, own.k.arm_timer(timer, at(5), None));
@@ -3633,14 +3635,14 @@ fn a_run_that_cannot_proceed_still_returns_its_permit() {
     let mut contexts = Contexts::new();
     let mut executor = Counter { stops: Vec::new(), runs: Vec::new() };
     // 文脈の無いスレッド: 実行せず、実行権を返してサービス中にし、失敗を返す。
-    assert_eq!(run_once(&mut k, W0, &mut executor, &mut contexts), Err(Error::Refused(Refusal::NoContext)));
+    assert_eq!(run_once(&mut k, W0, &mut executor, &mut contexts).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::NoContext)));
     assert_eq!((k.running_count(), k.thread_phase(t), executor.runs.len()), (0, Ok(ThreadPhase::Servicing), 0));
     k.audit().unwrap();
     // 状況と合わない理由を返した実行器: 文脈は戻っており、実行権も返っている。
     contexts.insert(t, 7).unwrap();
     ok!(k, k.continue_thread(t));
     executor.stops = vec![Stop::Interrupted];
-    assert_eq!(run_once(&mut k, W0, &mut executor, &mut contexts), Err(Error::Refused(Refusal::NotInterrupted)));
+    assert_eq!(run_once(&mut k, W0, &mut executor, &mut contexts).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::NotInterrupted)));
     assert_eq!((k.running_count(), k.thread_phase(t)), (0, Ok(ThreadPhase::Servicing)));
     k.audit().unwrap();
     // 実行の途中でスレッドの文脈を取り除くと、後から戻した文脈は捨てられる。
@@ -3651,6 +3653,158 @@ fn a_run_that_cannot_proceed_still_returns_its_permit() {
     assert_eq!(contexts.save(loaded), Err(Error::Refused(Refusal::NoContext)));
     assert!(contexts.is_empty());
     let _ = k.relinquish(permit, Stop::Trap, Budget::new(0));
+}
+
+/// 書き込みの途中で失敗する内容の置き場。`left` バイト書いたところで失敗する。
+struct Flaky {
+    bytes: Bytes,
+    left: usize,
+}
+
+impl Contents for Flaky {
+    fn read(&self, backing: BackingId, offset: BackingOffset, out: &mut [u8]) -> Result<(), HostError> {
+        self.bytes.read(backing, offset, out)
+    }
+
+    fn write(&mut self, backing: BackingId, offset: BackingOffset, data: &[u8]) -> Result<(), HostError> {
+        let done = data.len().min(self.left);
+        self.left = self.left.saturating_sub(done);
+        self.bytes.write(backing, offset, &data[..done])?;
+        if done < data.len() { Err(HostError::new(9)) } else { Ok(()) }
+    }
+}
+
+#[test]
+fn a_write_through_another_view_drops_the_code_of_every_executable_view() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (q, _) = process(&mut k);
+    let b = ok!(k, k.create_backing(p, 2 * PAGE));
+    ok!(k, k.retain_backing(q, b));
+    let mut bytes = Bytes::default();
+    bytes.0.insert(b, vec![0; 2 * SIZE]);
+    let exec = Prot::new(true, false, true);
+    // 同じ実体を、p では書ける範囲 (0x1000) と実行できる範囲 (0x8000)、q では 2 ページ目だけを実行できる範囲に見せる。
+    ok!(k, k.map(p, range(0x1000, 2 * PAGE), backed(b, 0), Prot::READ_WRITE));
+    ok!(k, k.map(p, range(0x8000, 2 * PAGE), backed(b, 0), exec));
+    ok!(k, k.map(q, range(0x4000, PAGE), backed(b, PAGE), exec));
+    let mut code = Seen::default();
+    // 書ける側から書く。書いた範囲に実行の権限は無いが、同じ内容を見せている実行できる範囲のコードを捨てる。
+    assert_eq!(guest_write_watched(&k, &mut bytes, &mut code, p, GuestAddr::new(0x1010), b"code"), Ok(()));
+    assert_eq!(code.dropped, vec![(p, range(0x8010, 4))]);
+    // ページをまたぐ書き込みは、別のプロセスの見せ方にも届く。それぞれ、見せている部分だけを捨てる。
+    code.dropped.clear();
+    assert_eq!(guest_write_watched(&k, &mut bytes, &mut code, p, GuestAddr::new(0x1ffe), b"over"), Ok(()));
+    assert_eq!(code.dropped, vec![(p, range(0x8ffe, 4)), (q, range(0x4000, 2))]);
+    // 実行できる見せ方が無くなれば、捨てるものも無い。
+    ok!(k, k.unmap(p, range(0x8000, 2 * PAGE)));
+    ok!(k, k.unmap(q, range(0x4000, PAGE)));
+    code.dropped.clear();
+    assert_eq!(guest_write_watched(&k, &mut bytes, &mut code, p, GuestAddr::new(0x1ffe), b"over"), Ok(()));
+    assert_eq!(code.dropped, vec![]);
+    // 見せ方を数える操作は、長さ 0 と古い実体でも状態を変えずに答える。
+    let mut none = 0;
+    assert_eq!(k.executable_views(b, BackingOffset::new(0), 0, |_, _| none += 1), Ok(()));
+    assert_eq!(k.executable_views(b, BackingOffset::new(u64::MAX), 2, |_, _| none += 1), Ok(()));
+    ok!(k, k.unmap(p, range(0x1000, 2 * PAGE)));
+    ok!(k, k.release_backing(p, b));
+    ok!(k, k.release_backing(q, b));
+    assert_eq!(k.executable_views(b, BackingOffset::new(0), 1, |_, _| none += 1), Err(Error::Stale(Tag::Backing)));
+    assert_eq!(none, 0);
+}
+
+#[test]
+fn a_write_that_fails_partway_still_drops_the_code_it_may_have_changed() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let b = ok!(k, k.create_backing(p, 2 * PAGE));
+    let c = ok!(k, k.create_backing(p, PAGE));
+    let mut flaky = Flaky { bytes: Bytes::default(), left: 3 };
+    flaky.bytes.0.insert(b, vec![0; 2 * SIZE]);
+    flaky.bytes.0.insert(c, vec![0; SIZE]);
+    let rwx = Prot::new(true, true, true);
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(b, 0), rwx));
+    ok!(k, k.map(p, range(0x2000, PAGE), backed(c, 0), rwx));
+    let mut code = Seen::default();
+    // 3 バイト書いたところで backend が失敗する。内容は変わっているので、範囲の全体のコードを捨ててから失敗を返す。
+    let failed = guest_write_watched(&k, &mut flaky, &mut code, p, GuestAddr::new(0x1ffc), b"12345678");
+    assert_eq!(failed, Err(AccessError::Host(HostError::new(9))));
+    assert_eq!(&flaky.bytes.0[&b][SIZE - 4..SIZE], b"123\0");
+    assert_eq!(code.dropped, vec![(p, range(0x1ffc, 4)), (p, range(0x2000, 4))]);
+    // 書く前に分かる失敗 (書けない範囲) は、何も書かず、何も捨てない。
+    code.dropped.clear();
+    flaky.left = usize::MAX;
+    let fault = guest_write_watched(&k, &mut flaky, &mut code, p, GuestAddr::new(0x2ffe), b"over");
+    assert!(matches!(fault, Err(AccessError::Fault(_))));
+    assert_eq!((code.dropped.len(), &flaky.bytes.0[&c][SIZE - 2..]), (0, &[0u8, 0][..]));
+}
+
+#[test]
+fn a_permit_of_another_kernel_never_runs_and_comes_back_whole() {
+    // 同じ形の Kernel を二つ作る。スロットも世代も同じなので、実行インスタンスだけが違う。
+    let setup = |instance: u64| {
+        let mut k = Kernel::new(InstanceId::new(instance), Limits::DEFAULT.with_workers(2)).unwrap();
+        let (p, _) = process(&mut k);
+        let (t, _) = thread(&mut k, p);
+        (k, t)
+    };
+    let (mut ours, _) = setup(1);
+    let (mut theirs, t) = setup(2);
+    let mut contexts = Contexts::new();
+    contexts.insert(t, 5).unwrap();
+    let mut executor = Counter { stops: vec![Stop::Yielded], runs: Vec::new() };
+    let permit = ok!(theirs, theirs.grant(W0)).unwrap();
+    assert_eq!(ours.lent(&permit), Err(Error::Foreign));
+    assert_eq!(theirs.lent(&permit), Ok(()));
+    // 別の Kernel へ渡すと、実行器は一度も動かず、実行権がそのまま返ってくる。
+    let before = ours.snapshot().unwrap();
+    let Err(NotRun::Rejected { permit, loaded: None, error: Error::Foreign }) = run_permit(&mut ours, permit, &mut executor, &mut contexts) else {
+        panic!("別の Kernel の実行権を受け取った");
+    };
+    assert_eq!((executor.runs.len(), theirs.running_count(), ours == before), (0, 1, true));
+    // 実行の後半を別の Kernel へ渡しても、実行権と文脈の両方が返ってくる。
+    let (permit, loaded) = start_run(&mut theirs, permit, &mut contexts).unwrap();
+    let stopped = Stopped::new(Stop::Yielded, Budget::new(1));
+    let Err(NotRun::Rejected { permit, loaded: Some(loaded), error: Error::Foreign }) = finish_run(&mut ours, permit, loaded, stopped, &mut contexts) else {
+        panic!("別の Kernel の実行権を受け取った");
+    };
+    assert_eq!((theirs.running_count(), ours == before), (1, true));
+    // 返ってきたものを、貸した Kernel へ返せる。
+    let ran = ok!(theirs, finish_run(&mut theirs, permit, loaded, stopped, &mut contexts));
+    assert_eq!((ran.fate(), theirs.running_count(), contexts.remove(t)), (ThreadFate::Ready, 0, Ok(Some(5))));
+    // 取り戻す口も同じものを返す。
+    let permit = ok!(theirs, theirs.grant(W0)).unwrap();
+    let refused = start_run(&mut ours, permit, &mut contexts).unwrap_err();
+    assert_eq!(refused.error(), Error::Foreign);
+    let permit = refused.into_permit().unwrap();
+    assert_eq!(ok!(theirs, theirs.relinquish(permit, Stop::Yielded, Budget::new(0))), ThreadFate::Ready);
+    assert_eq!(NotRun::<u8>::Failed(Error::Foreign).into_permit(), None);
+}
+
+#[test]
+fn a_run_number_names_one_run_of_one_thread() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (a, _) = thread(&mut k, p);
+    let (b, _) = thread(&mut k, p);
+    // a の最初の実行に中断を求める。同じ worker が次に b の最初の実行をしても、求めの番号とは合わない。
+    let first = ok!(k, k.grant_thread(W0, a));
+    ok!(k, k.preempt_thread(a));
+    let wanted = drain(&mut k);
+    assert_eq!(wanted, vec![Effect::Interrupt { worker: W0, thread: a, run: first.run() }]);
+    let asked = first.run();
+    assert_eq!(ok!(k, k.relinquish(first, Stop::Interrupted, Budget::new(0))), ThreadFate::Ready);
+    let next = ok!(k, k.grant_thread(W0, b));
+    assert_ne!(next.run(), asked, "別のスレッドの実行が、前の実行と同じ番号になった");
+    assert_eq!(ok!(k, k.relinquish(next, Stop::Yielded, Budget::new(0))), ThreadFate::Ready);
+    // どのスレッドのどの実行も、番号が重ならない。
+    let mut seen = alloc::collections::BTreeSet::from([asked]);
+    for round in 0..rounds(200) {
+        let worker = if round % 2 == 0 { W0 } else { W1 };
+        let permit = ok!(k, k.grant(worker)).unwrap();
+        assert!(seen.insert(permit.run()), "実行の番号が重なった");
+        assert_eq!(ok!(k, k.relinquish(permit, Stop::Yielded, Budget::new(0))), ThreadFate::Ready);
+    }
 }
 
 #[test]
@@ -3865,7 +4019,8 @@ fn every_accepted_space_change_is_told_once_and_drops_the_code_it_must() {
     assert_eq!(guest_write_watched(&k, &mut bytes, code.cache(), p, GuestAddr::new(0x2010), b"data"), Ok(()));
     assert_eq!(code.cache().dropped, vec![]);
     assert_eq!(guest_write_watched(&k, &mut bytes, code.cache(), p, GuestAddr::new(0x2ffe), b"code"), Ok(()));
-    assert_eq!(code.cache().dropped, vec![(p, range(0x2ffe, 4))]);
+    // 捨てるのは、実行できる権限で見せている部分だけ (0x3000 からの 2 バイト)。
+    assert_eq!(code.cache().dropped, vec![(p, range(0x3000, 2))]);
     // 書けなかった書き込みは、何も捨てない。
     let fault = guest_write_watched(&k, &mut bytes, code.cache(), p, GuestAddr::new(0x3ffe), b"over");
     assert!(matches!(fault, Err(AccessError::Fault(_))));

@@ -264,6 +264,7 @@ name = "kome-testkit"
 version = "0.1.0"
 dependencies = [
  "kome",
+ "kome-host-std",
  "proptest",
 ]
 

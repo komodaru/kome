@@ -122,3 +122,52 @@ impl Contents for Store {
         Ok(())
     }
 }
+
+/// 途中で失敗する backend。`left` バイトを書いたところで、残りを書かずに失敗を返す。
+#[derive(Debug)]
+pub struct Flaky<'a> {
+    /// 書き込み先。
+    pub store: &'a mut Store,
+    /// あと何バイト書けるか。`None` なら失敗しない。
+    pub left: Option<u64>,
+}
+
+impl Flaky<'_> {
+    /// 途中で失敗したときに返す値。
+    pub const BROKE: HostError = HostError::new(7);
+}
+
+impl Contents for Flaky<'_> {
+    fn read(&self, backing: BackingId, offset: BackingOffset, out: &mut [u8]) -> Result<(), HostError> {
+        self.store.read(backing, offset, out)
+    }
+
+    fn write(&mut self, backing: BackingId, offset: BackingOffset, data: &[u8]) -> Result<(), HostError> {
+        for (at, value) in (offset.get()..).zip(data) {
+            if let Some(left) = &mut self.left {
+                *left = left.checked_sub(1).ok_or(Flaky::BROKE)?;
+            }
+            self.store.set(backing, at, *value);
+        }
+        Ok(())
+    }
+}
+
+/// 捨てるよう言われたコードの範囲を、言われたとおりに覚えるだけのコードキャッシュ。
+#[derive(Debug, Default)]
+pub struct Dropped {
+    /// 捨てるよう言われた (プロセス, アドレス)。
+    pub bytes: std::collections::BTreeSet<(ProcessId, u64)>,
+    /// プロセスごと捨てるよう言われた回数。
+    pub forgotten: u64,
+}
+
+impl kome::CodeCache for Dropped {
+    fn invalidate(&mut self, process: ProcessId, range: GuestRange) {
+        self.bytes.extend((range.start().get()..=range.last().get()).map(|addr| (process, addr)));
+    }
+
+    fn forget(&mut self, _process: ProcessId) {
+        self.forgotten = self.forgotten.saturating_add(1);
+    }
+}

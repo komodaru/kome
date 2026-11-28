@@ -246,6 +246,46 @@ impl Ran {
     }
 }
 
+/// 実行を始められなかった、または終えられなかった理由。
+///
+/// 実行権は複製できないだけでなく、失敗を返すときに失ってもならない。この型は、`Kernel` が
+/// 受け取らなかった実行権と文脈を、呼び出した側へそのまま返す。
+#[must_use = "拒否された実行権は into_permit で取り戻す"]
+#[derive(Debug)]
+pub enum NotRun<C> {
+    /// この `Kernel` が貸している実行権ではなかった (別の実行インスタンスのもの、返し済みのもの)。
+    /// 何も変えておらず、実行器も動かしていない。
+    Rejected {
+        /// 受け取らなかった実行権。貸した `Kernel` へ返す。
+        permit: RunPermit,
+        /// 実行のために取り出していた文脈 ([`finish_run`] が拒否したとき)。
+        loaded: Option<Loaded<C>>,
+        /// 理由。
+        error: Error,
+    },
+    /// 実行権はこの `Kernel` へ返した (スレッドはサービス中)。または、受理した後に内部の障害を見つけた。
+    Failed(Error),
+}
+
+impl<C> NotRun<C> {
+    /// 理由。
+    #[must_use]
+    pub const fn error(&self) -> Error {
+        match self {
+            NotRun::Rejected { error, .. } | NotRun::Failed(error) => *error,
+        }
+    }
+
+    /// 受け取らなかった実行権を取り戻す。`Kernel` へ返し済みなら `None`。
+    #[must_use]
+    pub fn into_permit(self) -> Option<RunPermit> {
+        match self {
+            NotRun::Rejected { permit, .. } => Some(permit),
+            NotRun::Failed(_) => None,
+        }
+    }
+}
+
 /// worker の一回ぶん: 実行権を借り、文脈を載せ、実行し、文脈を降ろし、実行権を返す。
 /// 貸せるスレッドが無ければ `None`。
 pub fn run_once<E: Executor>(
@@ -253,8 +293,8 @@ pub fn run_once<E: Executor>(
     worker: WorkerId,
     executor: &mut E,
     contexts: &mut Contexts<E::Context>,
-) -> Result<Option<Ran>, Error> {
-    match kernel.grant(worker)? {
+) -> Result<Option<Ran>, NotRun<E::Context>> {
+    match kernel.grant(worker).map_err(NotRun::Failed)? {
         Some(permit) => run_permit(kernel, permit, executor, contexts).map(Some),
         None => Ok(None),
     }
@@ -262,21 +302,22 @@ pub fn run_once<E: Executor>(
 
 /// 借りた実行権で一回実行する。スレッドを名指しして借りた実行権 ([`Kernel::grant_thread`]) にも使う。
 ///
-/// 失敗を返すときも、実行権は必ず返している: 文脈が無い、または実行器が状況と合わない理由を
-/// 返したときは、スレッドをサービス中にして ([`Stop::Trap`])、その失敗を返す。スレッドが終了したら
-/// 文脈を取り除く。
+/// `kernel` が貸している実行権でなければ、実行器を動かさずに、実行権をそのまま返す
+/// ([`NotRun::Rejected`])。それ以外の失敗を返すときは、実行権を必ず `kernel` へ返している: 文脈が
+/// 無い、または実行器が状況と合わない理由を返したときは、スレッドをサービス中にして ([`Stop::Trap`])、
+/// その失敗を返す。スレッドが終了したら文脈を取り除く。
 pub fn run_permit<E: Executor>(
     kernel: &mut Kernel,
     permit: RunPermit,
     executor: &mut E,
     contexts: &mut Contexts<E::Context>,
-) -> Result<Ran, Error> {
+) -> Result<Ran, NotRun<E::Context>> {
     let (permit, mut loaded) = start_run(kernel, permit, contexts)?;
     let stopped = executor.run(&permit, loaded.context());
     finish_run(kernel, permit, loaded, stopped, contexts)
 }
 
-/// 実行の前半: 実行権に合う文脈を置き場から取り出す。
+/// 実行の前半: 実行権が `kernel` の貸しているものであることを確かめ、合う文脈を置き場から取り出す。
 ///
 /// [`run_permit`] を二つに分けたもの。ゲストを実行している間は `Kernel` を借りないので、
 /// 複数の worker が一つの `Kernel` を順番に使いながら、ゲストは並行に実行できる。
@@ -285,48 +326,53 @@ pub fn start_run<C>(
     kernel: &mut Kernel,
     permit: RunPermit,
     contexts: &mut Contexts<C>,
-) -> Result<(RunPermit, Loaded<C>), Error> {
-    let loaded = match contexts.load(&permit) {
-        Ok(loaded) => loaded,
-        Err(error) => return Err(hand_back(kernel, permit, Budget::new(0)).err().unwrap_or(error)),
-    };
-    Ok((permit, loaded))
+) -> Result<(RunPermit, Loaded<C>), NotRun<C>> {
+    if let Err(error) = kernel.lent(&permit) {
+        return Err(NotRun::Rejected { permit, loaded: None, error });
+    }
+    match contexts.load(&permit) {
+        Ok(loaded) => Ok((permit, loaded)),
+        Err(error) => Err(hand_back(kernel, permit, Budget::new(0), error)),
+    }
 }
 
 /// 実行の後半: 文脈を置き場へ戻し、止まった理由を添えて実行権を返す。
 ///
-/// 失敗を返すときも、実行権は必ず返している ([`run_permit`] と同じ)。
+/// 失敗を返すときの実行権の行き先は [`run_permit`] と同じ。
 pub fn finish_run<C>(
     kernel: &mut Kernel,
     permit: RunPermit,
     loaded: Loaded<C>,
     stopped: Stopped,
     contexts: &mut Contexts<C>,
-) -> Result<Ran, Error> {
+) -> Result<Ran, NotRun<C>> {
+    if let Err(error) = kernel.lent(&permit) {
+        return Err(NotRun::Rejected { permit, loaded: Some(loaded), error });
+    }
     let thread = permit.thread();
     if let Err(error) = contexts.save(loaded) {
-        return Err(hand_back(kernel, permit, stopped.consumed).err().unwrap_or(error));
+        return Err(hand_back(kernel, permit, stopped.consumed, error));
     }
     let fate = match kernel.relinquish(permit, stopped.stop, stopped.consumed) {
         Ok(fate) => fate,
-        Err(NotRelinquished::Rejected(permit, error)) => {
-            return Err(hand_back(kernel, permit, stopped.consumed).err().unwrap_or(error));
-        }
-        Err(NotRelinquished::Failed(error)) => return Err(error),
+        Err(NotRelinquished::Rejected(permit, error)) => return Err(hand_back(kernel, permit, stopped.consumed, error)),
+        Err(NotRelinquished::Failed(error)) => return Err(NotRun::Failed(error)),
     };
     match fate {
         ThreadFate::Exited(_) => {
-            contexts.remove(thread)?;
+            contexts.remove(thread).map_err(NotRun::Failed)?;
         }
         ThreadFate::Ready | ThreadFate::Servicing => {}
     }
     Ok(Ran { thread, stopped, fate })
 }
 
-/// 続きを実行できなくなった実行権を返し、スレッドをサービス中にする。
-fn hand_back(kernel: &mut Kernel, permit: RunPermit, consumed: Budget) -> Result<(), Error> {
+/// 続きを実行できなくなった実行権を返し、スレッドをサービス中にして、元の失敗 `why` を返す。
+/// ここでも受け取られなかった実行権は、失わずに呼び出した側へ返す。
+fn hand_back<C>(kernel: &mut Kernel, permit: RunPermit, consumed: Budget, why: Error) -> NotRun<C> {
     match kernel.relinquish(permit, Stop::Trap, consumed) {
-        Ok(_) => Ok(()),
-        Err(refused) => Err(refused.error()),
+        Ok(_) => NotRun::Failed(why),
+        Err(NotRelinquished::Rejected(permit, error)) => NotRun::Rejected { permit, loaded: None, error },
+        Err(NotRelinquished::Failed(error)) => NotRun::Failed(error),
     }
 }

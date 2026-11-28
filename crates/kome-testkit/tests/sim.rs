@@ -127,7 +127,8 @@ fn the_generator_reaches_every_channel_outcome() {
 }
 
 /// 実行権の貸し借りが空回りしていないこと: 止まる理由の全て、状況と合わない理由の拒否、
-/// 優先度が待ち順を追い越す貸し出し、名指しの貸し出し、譲らせる要求に到達する。
+/// 優先度が待ち順を追い越す貸し出し、名指しの貸し出し、譲らせる要求、前の実行への中断の求めが
+/// 置き場に残ったままの worker への次の貸し出し (同じスレッドの次の実行と、別のスレッド) に到達する。
 #[test]
 fn the_generator_reaches_every_scheduling_outcome() {
     let mut reached = BTreeSet::new();
@@ -146,6 +147,8 @@ fn the_generator_reaches_every_scheduling_outcome() {
         "run:outranked",
         "run:named",
         "run:preempted",
+        "run:again-after-interrupt",
+        "run:other-thread-after-interrupt",
     ];
     assert_eq!(reached, BTreeSet::from(all));
 }
@@ -162,14 +165,27 @@ fn the_generator_reaches_every_quota() {
 }
 
 /// ゲストのアドレスでの読み書きが空回りしていないこと: 書き込み、読み出し、ページの境界をまたぐ
-/// 読み出し、先頭での失敗、範囲の途中での失敗に到達する。
+/// 読み出し、先頭での失敗、範囲の途中での失敗、backend が途中のバイトで失敗する書き込みに到達する。
 #[test]
 fn the_generator_reaches_every_guest_access() {
     let mut reached = BTreeSet::new();
     for seed in 0..200 {
         reached.extend(drive(&noise(seed, 3000)).unwrap().reached.into_iter().filter(|tag| tag.starts_with("mem:")));
     }
-    assert_eq!(reached, BTreeSet::from(["mem:written", "mem:read", "mem:read-across", "mem:fault", "mem:fault-inside"]));
+    assert_eq!(reached, BTreeSet::from(["mem:written", "mem:read", "mem:read-across", "mem:fault", "mem:fault-inside", "mem:write-broke"]));
+}
+
+/// 書き込みの監視が空回りしていないこと: コードを見せていない実体への書き込み、書き込み先そのものが
+/// コード、別の範囲や別のプロセスが同じ実体をコードとして見せている (別名)、途中で失敗した
+/// 書き込みの後にコードを捨てさせる、の全てに到達する。捨てさせた範囲がモデルと同じことは、操作のたびに確かめている。
+#[test]
+fn the_generator_reaches_every_watched_write() {
+    let mut reached = BTreeSet::new();
+    for seed in 0..200 {
+        reached.extend(drive(&noise(seed, 3000)).unwrap().reached.into_iter().filter(|tag| tag.starts_with("code:")));
+    }
+    let all = ["code:kept", "code:dropped", "code:dropped-alias", "code:dropped-after-failure"];
+    assert_eq!(reached, BTreeSet::from(all));
 }
 
 #[test]
