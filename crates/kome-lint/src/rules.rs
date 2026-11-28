@@ -377,7 +377,8 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(HOST_RS, |text| text.replace("        guard.idle = guard.idle.saturating_add(1);\n", "")),
             |repo| repo.edit(HOST_RS, |text| text.replace("            guard.watchers = guard.watchers.saturating_add(1);\n", "")),
             |repo| repo.edit(HOST_RS, |text| text.replace("                guard = self.sleep(guard)?;", "                drop(guard);\n                guard = self.lock()?;")),
-            |repo| repo.edit(LOOM_RS, |text| text.replace("    explore(2, 2, 0, Some(5));", "    explore(1, 2, 0, Some(5));")),
+            |repo| repo.edit(LOOM_RS, |text| text.replace("    explore(2, 2, 0, Some(7));", "    explore(1, 2, 0, Some(7));")),
+            |repo| repo.edit(LOOM_RS, |text| text.replace("    explore(2, 1, 1, Some(7));", "    explore(2, 1, 1, Some(5));")),
             |repo| repo.edit(LOOM_RS, |text| text.replace("        host.with(|state| state.kernel.unsuspend_thread(guest)).unwrap().unwrap();\n        host.wait_until", "        host.wait_until")),
             |repo| repo.edit(LOOM_RS, |text| text.replace("        support::check(&host, &made, yields);\n", "")),
             |repo| repo.edit(LOOM_SH, |text| text.replace("--cfg loom_broken", "")),
@@ -1718,8 +1719,8 @@ fn host_single_writer(repo: &Repo, report: &mut Report) {
     let loom = repo.text(LOOM_RS);
     for needed in [
         "    explore(1, 1, 1, None);",
-        "    explore(2, 1, 1, Some(5));",
-        "    explore(2, 2, 0, Some(5));",
+        "    explore(2, 1, 1, Some(7));",
+        "    explore(2, 2, 0, Some(7));",
         "        host.with(|state| state.kernel.unsuspend_thread(guest)).unwrap().unwrap();",
         "        host.wait_until(|state| state.personality.process_exited).unwrap();",
         "            assert_eq!(worker.join().unwrap(), Ok(()));",

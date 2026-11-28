@@ -42,12 +42,12 @@ fn one_worker_and_the_waiter_never_miss_each_other() {
 
 #[test]
 fn two_workers_share_one_thread() {
-    explore(2, 1, 1, Some(5));
+    explore(2, 1, 1, Some(7));
 }
 
 #[test]
 fn two_workers_run_two_threads_to_their_ends() {
-    explore(2, 2, 0, Some(5));
+    explore(2, 2, 0, Some(7));
 }
 
 /// 眠っている worker が、外からの操作でできた仕事のために起こされる。
