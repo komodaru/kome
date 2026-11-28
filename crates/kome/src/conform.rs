@@ -224,6 +224,45 @@ fn drain(k: &mut Kernel) -> Vec<Effect> {
     core::iter::from_fn(|| k.poll_effect()).collect()
 }
 
+/// 操作を受け付けたか。拒否と、もう無い相手への操作は「その動きは無い」で、他の失敗は試験の誤りである。
+fn taken(result: Result<(), Error>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(Error::Refused(_) | Error::Stale(_)) => false,
+        Err(other) => panic!("操作が {other:?} で失敗した"),
+    }
+}
+
+/// 実行権を返す理由。
+#[derive(Clone, Copy, Debug)]
+enum Back {
+    Yielded,
+    BudgetExhausted,
+    Interrupted,
+    Trap,
+    Exited,
+}
+
+/// 終了しない筋書きで試す、返す理由の全て。
+const BACKS: [Back; 4] = [Back::Yielded, Back::BudgetExhausted, Back::Interrupted, Back::Trap];
+
+/// 実行権を、この理由で返す。受理したかを返す。拒否されるのは、要求していない中断に応じたと
+/// 言ったときだけである。
+fn give_back(k: &mut Kernel, permit: RunPermit, back: Back) -> bool {
+    let (stop, consumed) = match back {
+        Back::Yielded => (Stop::Yielded, Budget::new(1)),
+        Back::BudgetExhausted => (Stop::BudgetExhausted, permit.budget()),
+        Back::Interrupted => (Stop::Interrupted, Budget::new(1)),
+        Back::Trap => (Stop::Trap, Budget::new(1)),
+        Back::Exited => (Stop::Exited(CODE), Budget::new(1)),
+    };
+    match k.relinquish(permit, stop, consumed) {
+        Ok(_) => true,
+        Err(NotRelinquished::Rejected(_, Error::Refused(Refusal::NotInterrupted))) => false,
+        Err(other) => panic!("実行権を返すのが {other:?} で失敗した"),
+    }
+}
+
 // ---- WaitRace ----
 
 const OBJECTS: [&str; 2] = ["a", "b"];
@@ -441,15 +480,10 @@ impl Driven for IoLifecycle {
         let mut msgs = 0u32;
         let (mut resent, mut written, mut woken) = (false, false, false);
         let mut settled = 0u32;
-        let refused = |result: Result<(), Error>| match result {
-            Ok(()) => true,
-            Err(Error::Refused(_) | Error::Stale(_)) => false,
-            Err(other) => panic!("I/O の操作が {other:?} で失敗した"),
-        };
         for (op, last) in path.iter().zip((1..=path.len()).rev().map(|left| left == 1)) {
             let accepted = match op {
-                IoOp::Issue => refused(k.issue_io(io)),
-                IoOp::Cancel => refused(k.cancel_io(io).map(|reply| match reply {
+                IoOp::Issue => taken(k.issue_io(io)),
+                IoOp::Cancel => taken(k.cancel_io(io).map(|reply| match reply {
                     CancelReply::Withdrawn => settled = settled.checked_add(1).unwrap(),
                     CancelReply::Requested | CancelReply::AlreadyRequested => {}
                 })),
@@ -460,8 +494,8 @@ impl Driven for IoLifecycle {
                     can
                 }
                 // 出力を書く前に公開しないのは、Personality の規則。
-                IoOp::Publish => written && refused(k.publish_io(io).map(|_| ())),
-                IoOp::Release => refused(k.release_io(io)),
+                IoOp::Publish => written && taken(k.publish_io(io).map(|_| ())),
+                IoOp::Release => taken(k.release_io(io)),
                 IoOp::HostTake => {
                     let can = submit && host == "idle";
                     if can {
@@ -488,13 +522,13 @@ impl Driven for IoLifecycle {
                     msgs > 0 && {
                         msgs = msgs.checked_sub(1).unwrap();
                         let completion = Completion::new(k.instance(), CompletionKind::Io { io, outcome: DONE });
-                        if refused(k.complete(completion).map(|_| ())) {
+                        if taken(k.complete(completion).map(|_| ())) {
                             settled = settled.checked_add(1).unwrap();
                         }
                         true
                     }
                 }
-                IoOp::OwnerExit => refused(k.exit_process(p, CODE)),
+                IoOp::OwnerExit => taken(k.exit_process(p, CODE)),
             };
             if !accepted {
                 assert!(last, "受け付けたはずの操作を、やり直したら受け付けなかった: {path:?}");
@@ -556,15 +590,6 @@ fn the_io_model_and_the_kernel_take_the_same_steps() {
 // ---- ProcessExit ----
 
 #[derive(Clone, Copy, Debug)]
-enum Back {
-    Yielded,
-    BudgetExhausted,
-    Interrupted,
-    Trap,
-    Exited,
-}
-
-#[derive(Clone, Copy, Debug)]
 enum ExitOp {
     Grant(usize),
     /// 実行権を、この理由で返す。
@@ -611,11 +636,6 @@ impl Driven for ProcessExit {
         let mut io: Option<IoId> = None;
         let mut exits = 0u32;
         let (mut late_grant, mut drained) = (false, false);
-        let refused = |result: Result<(), Error>| match result {
-            Ok(()) => true,
-            Err(Error::Refused(_) | Error::Stale(_)) => false,
-            Err(other) => panic!("操作が {other:?} で失敗した"),
-        };
         for (op, last) in path.iter().zip((1..=path.len()).rev().map(|left| left == 1)) {
             // Personality が I/O を扱うのは、サービス中のスレッドがあるときだけ。
             let serviced = made.iter().any(|thread| k.thread_phase(*thread) == Ok(ThreadPhase::Servicing));
@@ -632,33 +652,17 @@ impl Driven for ProcessExit {
                         Err(other) => panic!("実行権を貸すのが {other:?} で失敗した"),
                     }
                 }
-                ExitOp::Return(at, back) => match permits[at].take() {
-                    None => false,
-                    Some(permit) => {
-                        let (stop, consumed) = match back {
-                            Back::Yielded => (Stop::Yielded, Budget::new(1)),
-                            Back::BudgetExhausted => (Stop::BudgetExhausted, permit.budget()),
-                            Back::Interrupted => (Stop::Interrupted, Budget::new(1)),
-                            Back::Trap => (Stop::Trap, Budget::new(1)),
-                            Back::Exited => (Stop::Exited(CODE), Budget::new(1)),
-                        };
-                        match k.relinquish(permit, stop, consumed) {
-                            Ok(_) => true,
-                            Err(NotRelinquished::Rejected(_, Error::Refused(_))) => false,
-                            Err(other) => panic!("実行権を返すのが {other:?} で失敗した"),
-                        }
-                    }
-                },
-                ExitOp::Continue(at) => refused(k.continue_thread(made[at])),
-                ExitOp::Block(at) => refused(
+                ExitOp::Return(at, back) => permits[at].take().is_some_and(|permit| give_back(&mut k, permit, back)),
+                ExitOp::Continue(at) => taken(k.continue_thread(made[at])),
+                ExitOp::Block(at) => taken(
                     k.wait(made[at], &[gates[at]], WaitMode::Any, Deadline::Never, Interruptible::No)
                         .map(|started| assert_eq!(started, WaitStart::Blocked)),
                 ),
                 // 待機中のスレッドだけを起こす。待っていない相手への通知は、この筋書きでは行わない。
                 ExitOp::Wake(at) => {
-                    k.thread_phase(made[at]) == Ok(ThreadPhase::Blocked) && refused(k.signal(gates[at], SignalOp::Add(1)).map(|_| ()))
+                    k.thread_phase(made[at]) == Ok(ThreadPhase::Blocked) && taken(k.signal(gates[at], SignalOp::Add(1)).map(|_| ()))
                 }
-                ExitOp::Terminate(at) => refused(k.terminate_thread(made[at], CODE)),
+                ExitOp::Terminate(at) => taken(k.terminate_thread(made[at], CODE)),
                 ExitOp::IoPrepare => {
                     serviced && io.is_none() && {
                         match k.prepare_io(p, IoLinks::NONE) {
@@ -671,20 +675,20 @@ impl Driven for ProcessExit {
                         }
                     }
                 }
-                ExitOp::IoIssue => serviced && io.is_some_and(|io| refused(k.issue_io(io))),
-                ExitOp::IoCancel => serviced && io.is_some_and(|io| refused(k.cancel_io(io).map(|_| ()))),
-                ExitOp::IoPublish => serviced && io.is_some_and(|io| refused(k.publish_io(io).map(|_| ()))),
+                ExitOp::IoIssue => serviced && io.is_some_and(|io| taken(k.issue_io(io))),
+                ExitOp::IoCancel => serviced && io.is_some_and(|io| taken(k.cancel_io(io).map(|_| ()))),
+                ExitOp::IoPublish => serviced && io.is_some_and(|io| taken(k.publish_io(io).map(|_| ()))),
                 ExitOp::IoRelease => {
-                    let released = serviced && io.is_some_and(|io| refused(k.release_io(io)));
+                    let released = serviced && io.is_some_and(|io| taken(k.release_io(io)));
                     if released {
                         io = None;
                     }
                     released
                 }
-                ExitOp::ExitProcess => refused(k.exit_process(p, CODE)),
+                ExitOp::ExitProcess => taken(k.exit_process(p, CODE)),
                 ExitOp::HostComplete => io.is_some_and(|io| {
                     let completion = Completion::new(k.instance(), CompletionKind::Io { io, outcome: DONE });
-                    refused(k.complete(completion).map(|settled| match settled {
+                    taken(k.complete(completion).map(|settled| match settled {
                         IoSettled::Held(_) => {}
                         IoSettled::Orphaned(_) => drained = true,
                     }))
@@ -795,9 +799,7 @@ impl Driven for RunPermits {
         }
         for thread in 0..3 {
             ops.extend([Continue(thread), Preempt(thread), Suspend(thread), Unsuspend(thread)]);
-            for back in [Back::Yielded, Back::BudgetExhausted, Back::Interrupted, Back::Trap] {
-                ops.push(Return(thread, back));
-            }
+            ops.extend(BACKS.map(|back| Return(thread, back)));
         }
         ops
     }
@@ -815,11 +817,6 @@ impl Driven for RunPermits {
         let mut permits: [Option<RunPermit>; 3] = [None, None, None];
         let mut sent = [0u32; 3];
         let (mut lent_suspended, mut overtaken) = (false, false);
-        let refused = |result: Result<(), Error>| match result {
-            Ok(()) => true,
-            Err(Error::Refused(_)) => false,
-            Err(other) => panic!("操作が {other:?} で失敗した"),
-        };
         for (op, last) in path.iter().zip((1..=path.len()).rev().map(|left| left == 1)) {
             let accepted = match *op {
                 PermitOp::Grant(worker) => {
@@ -847,37 +844,21 @@ impl Driven for RunPermits {
                     Err(Error::Refused(Refusal::WorkerBusy | Refusal::NotReady) | Error::Exhausted(Resource::Workers)) => false,
                     Err(other) => panic!("実行権を名指しで貸すのが {other:?} で失敗した"),
                 },
-                PermitOp::Return(at, back) => match permits[at].take() {
-                    None => false,
-                    Some(permit) => {
-                        let (stop, consumed) = match back {
-                            Back::Yielded => (Stop::Yielded, Budget::new(1)),
-                            Back::BudgetExhausted => (Stop::BudgetExhausted, permit.budget()),
-                            Back::Interrupted => (Stop::Interrupted, Budget::new(1)),
-                            Back::Trap => (Stop::Trap, Budget::new(1)),
-                            Back::Exited => panic!("この筋書きでは、スレッドは終了しない"),
-                        };
-                        match k.relinquish(permit, stop, consumed) {
-                            Ok(_) => {
-                                assert!(!matches!(back, Back::Interrupted) || sent[at] != 0, "要求していない中断に応じた返却を受理した");
-                                sent[at] = 0;
-                                true
-                            }
-                            // 中断に応じたと言えるのは、中断を要求した実行だけである。
-                            Err(NotRelinquished::Rejected(_, Error::Refused(Refusal::NotInterrupted))) => {
-                                assert!(matches!(back, Back::Interrupted) && sent[at] == 0);
-                                false
-                            }
-                            Err(other) => panic!("実行権を返すのが {other:?} で失敗した"),
-                        }
+                PermitOp::Return(at, back) => permits[at].take().is_some_and(|permit| {
+                    let accepted = give_back(&mut k, permit, back);
+                    // 中断に応じたと言えるのは、中断を要求した実行だけである。
+                    assert!(!matches!(back, Back::Interrupted) || accepted == (sent[at] != 0), "中断に応じた返却の受理が、要求の有無と合わない");
+                    if accepted {
+                        sent[at] = 0;
                     }
-                },
-                PermitOp::Continue(at) => refused(k.continue_thread(made[at])),
-                PermitOp::Preempt(at) => refused(k.preempt_thread(made[at])),
+                    accepted
+                }),
+                PermitOp::Continue(at) => taken(k.continue_thread(made[at])),
+                PermitOp::Preempt(at) => taken(k.preempt_thread(made[at])),
                 PermitOp::Suspend(at) => {
-                    k.suspend_count(made[at]).unwrap() < MAX_SUSPEND && refused(k.suspend_thread(made[at]).map(|_| ()))
+                    k.suspend_count(made[at]).unwrap() < MAX_SUSPEND && taken(k.suspend_thread(made[at]).map(|_| ()))
                 }
-                PermitOp::Unsuspend(at) => refused(k.unsuspend_thread(made[at]).map(|_| ())),
+                PermitOp::Unsuspend(at) => taken(k.unsuspend_thread(made[at]).map(|_| ())),
             };
             if !accepted {
                 assert!(last, "受け付けたはずの操作を、やり直したら受け付けなかった: {path:?}");
@@ -941,6 +922,146 @@ impl Driven for RunPermits {
 #[test]
 fn the_permit_model_and_the_kernel_take_the_same_steps() {
     conform::<RunPermits>();
+}
+
+// ---- MemBarrier ----
+
+#[derive(Clone, Copy, Debug)]
+enum BarrierOp {
+    Grant(usize),
+    /// 実行権を、この理由で返す。
+    Return(usize, Back),
+    Continue(usize),
+    Unmap,
+    Narrow,
+    Widen,
+    Map,
+    Release,
+}
+
+struct MemBarrier;
+
+impl Driven for MemBarrier {
+    type Op = BarrierOp;
+    const NAME: &'static str = "MemBarrier";
+
+    fn ops() -> Vec<BarrierOp> {
+        use BarrierOp::*;
+        let mut ops = vec![Unmap, Narrow, Widen, Map, Release];
+        for thread in 0..3 {
+            ops.extend([Grant(thread), Continue(thread)]);
+            ops.extend(BACKS.map(|back| Return(thread, back)));
+        }
+        ops
+    }
+
+    fn run(path: &[BarrierOp]) -> Option<String> {
+        let mut k = kernel(3);
+        // スレッド二つのプロセス P と、一つのプロセス Q。
+        let p = process(&mut k);
+        let q = process(&mut k);
+        let [first, second]: [ThreadId; 2] = threads(&mut k, p);
+        let [other]: [ThreadId; 1] = threads(&mut k, q);
+        let made = [first, second, other];
+        let place = GuestRange::new(GuestAddr::new(PAGE.checked_mul(16).unwrap()), PAGE.checked_mul(4).unwrap()).unwrap();
+        let backing = k.create_backing(p, PAGE.checked_mul(4).unwrap()).unwrap();
+        let source = MapSource::Backing { backing, offset: BackingOffset::new(0) };
+        k.map(p, place, source, Prot::READ_WRITE).unwrap();
+        drain(&mut k);
+        let mut permits: [Option<RunPermit>; 3] = [None, None, None];
+        let mut lent_behind = false;
+        let mut reclaimed = 0u32;
+        for (op, last) in path.iter().zip((1..=path.len()).rev().map(|left| left == 1)) {
+            let accepted = match *op {
+                BarrierOp::Grant(at) => {
+                    let barred = at < 2 && k.processes.get(p).unwrap().stale_runners != 0;
+                    match k.grant_thread(WorkerId::new(u32::try_from(at).unwrap()), made[at]) {
+                        Ok(permit) => {
+                            lent_behind |= barred;
+                            permits[at] = Some(permit);
+                            true
+                        }
+                        // worker はスレッドごとに決めてあるので、塞がっているのは、そのスレッドが実行中のときである。
+                        Err(Error::Refused(Refusal::NotReady | Refusal::Barrier | Refusal::WorkerBusy)) => false,
+                        Err(other) => panic!("実行権を貸すのが {other:?} で失敗した"),
+                    }
+                }
+                BarrierOp::Return(at, back) => permits[at].take().is_some_and(|permit| give_back(&mut k, permit, back)),
+                BarrierOp::Continue(at) => taken(k.continue_thread(made[at])),
+                // 何も外さなかった解除は、モデルの動きではない。
+                BarrierOp::Unmap => match k.unmap(p, place) {
+                    Ok(bytes) => bytes != 0,
+                    Err(other) => panic!("解除が {other:?} で失敗した"),
+                },
+                BarrierOp::Narrow => taken(k.protect(p, place, Prot::READ).map(|_| ())),
+                BarrierOp::Widen => taken(k.protect(p, place, Prot::READ_WRITE).map(|_| ())),
+                BarrierOp::Map => taken(k.map(p, place, source, Prot::READ_WRITE).map(|_| ())),
+                BarrierOp::Release => taken(k.release_backing(p, backing)),
+            };
+            if !accepted {
+                assert!(last, "受け付けたはずの操作を、やり直したら受け付けなかった: {path:?}");
+                return None;
+            }
+            for effect in drain(&mut k) {
+                match effect {
+                    Effect::Interrupt { thread, .. } => {
+                        assert!(thread == first || thread == second, "別のプロセスのスレッドへ中断を要求した");
+                    }
+                    Effect::BackingReclaimed { backing: gone } => {
+                        assert_eq!(gone, backing);
+                        reclaimed = reclaimed.checked_add(1).unwrap();
+                    }
+                    Effect::WaitDone { .. }
+                    | Effect::ThreadExited { .. }
+                    | Effect::ProcessExited { .. }
+                    | Effect::ProcessReclaimed { .. }
+                    | Effect::ObjectReclaimed { .. }
+                    | Effect::IoSubmit { .. }
+                    | Effect::IoCancel { .. } => panic!("この筋書きで出るはずのない出力: {effect:?}"),
+                }
+            }
+        }
+        k.audit().unwrap();
+        let entry = |at: usize| k.threads.get(made[at]).unwrap();
+        let run: Vec<&str> = (0..3)
+            .map(|at| match entry(at).run {
+                Run::Ready => "Ready",
+                Run::Running { .. } => "Running",
+                Run::Servicing => "Servicing",
+                Run::Blocked(_) => panic!("この筋書きでは、スレッドは待たない"),
+            })
+            .collect();
+        let stale: Vec<bool> = (0..3).map(|at| matches!(entry(at).run, Run::Running { stale: true, .. })).collect();
+        let asked: Vec<bool> = (0..3).map(|at| matches!(entry(at).run, Run::Running { interrupted: true, .. })).collect();
+        let owner = k.processes.get(p).unwrap();
+        assert_eq!(usize::try_from(owner.stale_runners).unwrap(), stale.iter().filter(|old| **old).count(), "古い世代の実行の数が合わない");
+        let map = match k.mapping_at(p, place.start()).unwrap().map(|mapping| mapping.prot()) {
+            None => "Off",
+            Some(Prot::READ_WRITE) => "ReadWrite",
+            Some(Prot::READ) => "Read",
+            Some(other) => panic!("この筋書きに無い権限: {other:?}"),
+        };
+        let live = k.backings.get(backing).is_some();
+        assert_eq!(reclaimed, u32::from(!live), "回収の通知の数が、実体の有無と合わない");
+        // P が持つ実体はこの一つだけである。
+        let hold = !owner.backings.is_empty();
+        Some(state_text(vec![
+            format!("run = {}", per_thread(&run, |name| quoted(name))),
+            format!("stale = {}", per_thread(&stale, |on| truth(*on).to_owned())),
+            format!("asked = {}", per_thread(&asked, |on| truth(*on).to_owned())),
+            format!("map = {}", quoted(map)),
+            format!("hold = {}", truth(hold)),
+            format!("limbo = {}", truth(!owner.space.limbo.is_empty())),
+            format!("backing = {}", quoted(if live { "Live" } else { "Gone" })),
+            format!("lentBehind = {}", truth(lent_behind)),
+        ]))
+    }
+}
+
+/// tla/MemBarrier.tla の状態と遷移は、`Kernel` の、権限を減らす変更と実行中のスレッドの扱いそのものである。
+#[test]
+fn the_barrier_model_and_the_kernel_take_the_same_steps() {
+    conform::<MemBarrier>();
 }
 
 #[test]

@@ -27,3 +27,10 @@ RunPermitsAskAgain.cfg	RunPermits	InterruptOnce
 RunPermitsNoInterrupt.cfg	RunPermits	SuspendedRunnerAsked
 RunPermitsLifo.cfg	RunPermits	NoOvertake
 RunPermitsReach.cfg	RunPermits	ReachBusy
+MemBarrier.cfg	MemBarrier	ok
+MemBarrierLendBehind.cfg	MemBarrier	NoLendBehindBarrier
+MemBarrierFreeAtOnce.cfg	MemBarrier	NoFreeInUse
+MemBarrierNoAsk.cfg	MemBarrier	StaleAreAsked
+MemBarrierKeepLimbo.cfg	MemBarrier	LimboOnlyBehind
+MemBarrierForgetReclaim.cfg	MemBarrier	NothingLeaks
+MemBarrierReach.cfg	MemBarrier	ReachOthersRun

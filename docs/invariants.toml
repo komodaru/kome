@@ -218,7 +218,14 @@ tests = [
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
 ]
 proofs = []
-models = []
+models = [
+    "MemBarrier:NoFreeInUse",
+    "MemBarrier:LimboOnlyBehind",
+    "MemBarrier:NothingLeaks",
+]
+modelled = "MemBarrier は、実体一つ・対応づけ一か所・スレッド 3 つ (同じプロセスに二つ、別のプロセスに一つ) について、解除・権限の変更・再びの対応づけ・保持の解放と、実行権の貸し出しと返却の全ての順序を調べる。調べるのは設計であり、Rust のコードではない。"
+tied = "生成した表は使わない。状態と遷移の全体を、scripts/ci/tla.sh が TLC の状態グラフと実際の Kernel の動きを突き合わせて、過不足なく一致することを確かめる (crates/kome/src/conform.rs、docs/tla-conformance.md)。複数の実体、複数のプロセスからの保持、通信路で運ばれている間の保持 (transit) はこのモデルに無い。"
+tested = "参照の数が実際の参照と一致することが実装で成り立つことは、audit の数え直し、tests の試験、決定的シミュレーションが見る。"
 scope = "保持・マッピング・古い実行が見ている間の猶予の三つを数える。実体のバイトそのものは Host が持つ。"
 
 [[invariant]]
@@ -263,7 +270,13 @@ tests = [
     "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
 ]
 proofs = []
-models = []
+models = [
+    "MemBarrier:NoLendBehindBarrier",
+    "MemBarrier:StaleAreAsked",
+]
+modelled = "MemBarrier は、同じプロセスのスレッド二つと別のプロセスのスレッド一つについて、権限を減らす変更 (解除、狭める変更)・増やす変更と、実行権の貸し出しと返却の全ての順序を調べる。活性 BarrierLifts も調べる: worker が中断に応じれば、古い世代の実行は必ず無くなり、貸し出しが再開する。調べるのは設計であり、Rust のコードではない。"
+tied = "生成した表は使わない。状態と遷移の全体を、scripts/ci/tla.sh が TLC の状態グラフと実際の Kernel の動きを突き合わせて、過不足なく一致することを確かめる (crates/kome/src/conform.rs、docs/tla-conformance.md)。停止要求と優先度 (RunPermits が見る)、スレッドの終了はこのモデルに無い。"
+tested = "古い世代の実行の数え方、列からの退避と元の順番での復帰が実装で成り立つことは、audit の数え直し、tests の試験、決定的シミュレーションが見る。"
 scope = "減らす変更とは、解除と、権限を狭める変更。実行中のスレッドには中断を出し、全て戻るまで実体を生かす。実行中のコードが変換済みの内容を捨てることは実行系 (kome の外) が行う。"
 
 [[invariant]]

@@ -277,6 +277,7 @@ pub const RULES: &[Rule] = &[
             |repo| repo.append("tla/ProcessExit.tla", "ExitFinish == <<>>"),
             |repo| repo.edit(EXPECT, |text| text.replace("ProcessExitKeepHandles.cfg\tProcessExit\tReleasedAtExit\n", "")),
             |repo| repo.edit(EXPECT, |text| text.replace("RunPermitsLifo.cfg\tRunPermits\tNoOvertake\n", "")),
+            |repo| repo.edit(EXPECT, |text| text.replace("MemBarrierFreeAtOnce.cfg\tMemBarrier\tNoFreeInUse\n", "")),
         ],
     },
     Rule {
@@ -456,6 +457,7 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("tla/ProcessExit.tla", |text| text.replace("    drained    \\* ", "    extra,\n    drained    \\* ")),
             |repo| repo.edit(CONFORM_MD, |text| text.replace("### IoLifecycle", "### I/O")),
             |repo| repo.edit(CONFORM_RS, |text| text.replace("format!(\"overtaken = {}\"", "format!(\"passed = {}\"")),
+            |repo| repo.edit(CONFORM_RS, |text| text.replace("format!(\"limbo = {}\"", "format!(\"kept = {}\"")),
             |repo| repo.edit(CONFORM_MD, |text| text.replace("| `queue` | `Kernel::ready`", "| `seats` | `Kernel::ready`")),
         ],
     },
