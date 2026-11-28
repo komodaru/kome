@@ -113,6 +113,15 @@ impl Pages {
         self.pages.values().filter(|page| matches!(page, Page::Backed { .. })).fold(0u64, |count, _| count.saturating_add(1))
     }
 
+    /// 実体のあるページのうち、番号の小さい方から `nth` 番目 (数を超えたら折り返す)。無ければ `None`。
+    #[must_use]
+    pub fn nth_backed(&self, nth: u64) -> Option<u64> {
+        let backed = || self.pages.iter().filter(|(_, page)| matches!(page, Page::Backed { .. })).map(|(number, _)| *number);
+        let count = backed().fold(0u64, |count, _| count.saturating_add(1));
+        let skip = usize::try_from(nth.checked_rem(count)?).ok()?;
+        backed().nth(skip)
+    }
+
     /// 範囲のすべてが実体のあるページか。
     #[must_use]
     pub fn all_backed(&self, first: u64, count: u64) -> bool {

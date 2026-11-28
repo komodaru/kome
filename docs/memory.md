@@ -40,6 +40,57 @@
 通知を受けても、実体の内容は `Effect::BackingReclaimed` が出るまで手放さない (台帳 MEM-1)。
 検査: lint `backend-boundary`。
 
+### 速い経路 (ソフト TLB)
+
+変換したコード (JIT) がゲストのメモリを読むたびに `guest_read` を呼ぶと、実行時間の大半がその
+呼び出しになる。`fast.rs` は、同じ結果を、表を一度引くだけで得るための部品を持つ (台帳 MEM-4)。
+
+| 部品 | 役割 |
+| --- | --- |
+| `LinearLayout` | 実体を、ホストの一つの連続した領域 (Wasm なら線形メモリ) の中へ重ならないように置く台帳。空きは先頭から探す。内容は持たない |
+| `LinearContents` | その領域を、台帳のとおりに `Contents` として見せる。基準の経路と速い経路が同じバイトを読み書きする |
+| `SoftTlb<W>` | プロセスごとの、ゲストの頁から領域の中の位置への覚え書き (直接写像)。`W` は語の幅で、`u32` (Wasm32) か `u64` |
+| `TlbEntry<W>` | 表の一項目。`#[repr(C)]` で `read`、`write`、`addend` の三語。`u32` なら 12 バイト |
+| `CodePages` | 変換したコードの元になった実体の頁の集まり |
+
+変換したコードが行う照合は、頁の大きさを `P`、項目の数を `N` として次のとおりである。
+
+1. 項目を選ぶ: `entries[(a / P) & (N - 1)]`。
+2. 読み出しなら `read`、書き込みなら `write` を、`a & !(P - 1)` と比べる。
+3. 同じなら、位置は `a + addend` (折り返しの足し算)。違えば遅い経路 (`SoftTlb::fill`) を呼ぶ。
+
+許可の無い側と空の項目には 1 (`TlbWord::NEVER`) が入っている。頁の先頭の番地は `P` の倍数
+(`P` は 2 以上) なので、1 とは決して一致しない。だから一度の比較で、頁の一致と許可を同時に
+確かめられる。頁をまたぐアクセスは、変換したコードの側で遅い経路へ落とす。`SoftTlb::probe` は、
+同じ照合を Rust で書いたものである。
+
+| 約束 | kome が用意するもの | 検査 |
+| --- | --- | --- |
+| 項目は、埋めた頁にだけ、許した側でだけ当たる。位置は回り込まない | `TlbEntry`、`SoftTlb::probe` | Kani の証明 `a_tlb_entry_of_u32_hits_exactly_its_page`、`a_tlb_entry_of_u64_hits_exactly_its_page` (頁の大きさ、アドレス、位置、許可の全ての値) |
+| 埋める判定は基準の経路と同じである。許されないアクセスは、基準の経路と同じ失敗を返す | `SoftTlb::fill` (中で `Kernel::translate` を呼ぶ) | 決定的シミュレーションが、成功した読み書きと同じバイトを速い経路でもたどり、結果を頁ごとのモデルと比べる |
+| アドレス空間が変わったら、その範囲の項目を消す | `SoftTlb` は `SpaceObserver` である。`map_observed`、`unmap_observed`、`protect_observed` へ渡す | 決定的シミュレーションが、操作のたびに、全てのプロセスの全ての頁について、表に当たるアドレスをモデルと比べる。試験 `a_table_that_missed_a_change_is_caught` |
+| 項目の列は、作る時に一度だけ確保し、その後は動かさない (変換したコードが番地を埋め込む) | `SoftTlb::entries` | lint `fast-path` (列の数を変える呼び出しが無い) |
+| 変換したコードの頁へは、速い経路で書かせない。どの別名から書いても遅い経路へ落ちる | `SoftTlb::protect_code`、`SoftTlb::bar_writes`、`CodePages` | 決定的シミュレーション (同じ実体を別の範囲や別のプロセスが見せている場合を含む)。試験 `a_write_to_translated_code_through_the_table_is_caught` |
+| 速い経路で書けるようにした頁は、「書かれた頁」として取り出せる (頁ごとの変更の追跡) | `SoftTlb::take_dirty` | 決定的シミュレーションが、取り出した頁を、書けるようにした頁・実際に書いた頁と比べる |
+| 載せられないものは遅い経路へ落とす: 線形領域に置いていない実体、位置が語の幅に収まらない頁、頁の全体が一つのマッピングと実体の中に無い頁 | `NotFast::Slow` | 試験 `what_the_table_cannot_hold_goes_to_the_slow_path` |
+
+Host が守ること:
+
+- アドレス空間を変える操作は、通知つきの口で呼び、その受け取り手に全ての表を入れる。
+  写しから復元した後と、線形領域の中で実体を動かした後は `SoftTlb::flush` を呼ぶ。
+  プロセスが終了したら (`Effect::ProcessExited`) `SpaceObserver::cleared` を呼ぶ。
+- コードを変換する前に `SoftTlb::protect_code` を呼ぶ。同じ実体を見せている他のプロセスの表が
+  あれば、返ってきた頁で `SoftTlb::bar_writes` を呼ぶ。
+- コードの頁への書き込み (遅い経路) は `guest_write_watched` で行い、捨てさせたコードの頁を
+  `CodePages::release` で外す。
+- 実体が解放されたら (`Effect::BackingReclaimed`) `LinearLayout::release` と `CodePages::forget` を呼ぶ。
+- 遅い経路 (`guest_write`) で書いた範囲は「書かれた頁」に入らない。変更の追跡が要る Host は、
+  自分が書いた範囲を合わせて扱う。
+
+表の頁の大きさは、プロセスの頁の大きさと同じにする。違っていても誤った項目は作らない
+(頁の全体が一つのマッピングの中に無ければ載せない) が、載る頁が減る。
+検査: lint `fast-path`。
+
 ### 権限の変更と実体の寿命
 
 権限を減らす変更 (実体のあるマッピングを外す、権限を狭める) では、二つの条件を別々に守る。

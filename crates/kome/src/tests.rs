@@ -3974,6 +3974,8 @@ fn guest_access_crosses_mappings_and_fails_as_a_whole() {
     let (q, _) = process(&mut k);
     ok!(k, k.exit_process(q, ExitCode::new(0)));
     assert_eq!(guest_read(&k, &bytes, q, GuestAddr::new(0x1000), &mut out), Err(AccessError::Kernel(Error::Stale(Tag::Process))));
+    // 長さ 0 でも、古い ID は成功にしない。
+    assert_eq!(guest_read(&k, &bytes, q, GuestAddr::new(0x1000), &mut []), Err(AccessError::Kernel(Error::Stale(Tag::Process))));
     bytes.0.remove(&b);
     assert_eq!(guest_read(&k, &bytes, p, GuestAddr::new(0x2000), &mut out), Err(AccessError::Host(HostError::new(1))));
 }

@@ -13,6 +13,7 @@ use core::num::NonZeroU32;
 use crate::addr::{GuestAddr, GuestRange, PageSize};
 use crate::effect::{Effect, Effects, Seats};
 use crate::error::{Error, Refusal};
+use crate::fast::{TlbEntry, TlbWord, landing, page_base};
 use crate::id::{Arena, IoId, kind};
 use crate::ipc::ChannelSpec;
 use crate::io::{HostError, IoEmit, IoEvent, IoOutcome, IoState, io_step};
@@ -405,4 +406,47 @@ fn the_lending_order_is_a_strict_total_order() {
     if a.0 == b.0 {
         assert!(lent_before(a, b) == (a.1 < b.1));
     }
+}
+
+/// 表の項目の照合 (変換したコードが行うもの) を、語の幅 `W` について確かめる。
+///
+/// 頁の先頭の番地と、頁の全体の位置が `W` に収まる項目について:
+/// 許した側は、その頁の全てのアドレスで当たり、位置は「頁の位置 + 頁の中の位置」で、回り込まない。
+/// 許していない側は、どのアドレスでも当たらない。別の頁のアドレスは、どちらの側でも当たらない。
+fn a_tlb_entry_hits_exactly_its_page<W: TlbWord>() {
+    let shift: u32 = kani::any();
+    kani::assume(shift >= 1 && shift <= 63);
+    let page = PageSize::new(1u64 << shift).unwrap();
+    let addr: u64 = kani::any();
+    let base = page_base(page, addr);
+    let position: u64 = kani::any();
+    let last = position.checked_add(page.bytes() - 1);
+    let (Some(tag), Some(start), Some(_)) = (W::narrow(base), W::narrow(position), last.and_then(W::narrow)) else { return };
+    let readable: bool = kani::any();
+    let writable: bool = kani::any();
+    let entry = TlbEntry::<W>::filled(tag, start, readable, writable);
+    let expected = Some(position + (addr - base));
+    for (allowed, side) in [(readable, entry.read()), (writable, entry.write())] {
+        let got = landing(page, side, entry.addend(), addr).map(W::widen);
+        assert!(got == if allowed { expected } else { None });
+        let other: u64 = kani::any();
+        kani::assume(page_base(page, other) != base);
+        assert!(landing(page, side, entry.addend(), other).is_none());
+    }
+    // 空の項目は、どのアドレスにも当たらない。
+    let empty = TlbEntry::<W>::EMPTY;
+    assert!(landing(page, empty.read(), empty.addend(), addr).is_none());
+    assert!(landing(page, empty.write(), empty.addend(), addr).is_none());
+}
+
+/// 32 ビットの語 (Wasm32 の変換したコード) の項目は、埋めた頁にだけ、許した側でだけ当たる。
+#[kani::proof]
+fn a_tlb_entry_of_u32_hits_exactly_its_page() {
+    a_tlb_entry_hits_exactly_its_page::<u32>();
+}
+
+/// 64 ビットの語の項目は、埋めた頁にだけ、許した側でだけ当たる。
+#[kani::proof]
+fn a_tlb_entry_of_u64_hits_exactly_its_page() {
+    a_tlb_entry_hits_exactly_its_page::<u64>();
 }

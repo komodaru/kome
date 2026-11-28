@@ -55,6 +55,10 @@ fn walk(
     access: Access,
     mut visit: impl FnMut(Span, usize, usize) -> Result<(), HostError>,
 ) -> Result<(), AccessError> {
+    if len == 0 {
+        // 長さ 0 のアクセスも、プロセスの ID は確かめる (古い ID での呼び出しを成功にしない)。
+        kernel.map_generation(process).map_err(AccessError::Kernel)?;
+    }
     let mut done = 0usize;
     while done < len {
         let rest = len.saturating_sub(done);

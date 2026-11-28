@@ -251,6 +251,32 @@ models = []
 scope = "減らす変更とは、解除と、権限を狭める変更。実行中のスレッドには中断を出し、全て戻るまで実体を生かす。実行中のコードが変換済みの内容を捨てることは実行系 (kome の外) が行う。"
 
 [[invariant]]
+id = "MEM-4"
+variant = "MemFastPath"
+statement = "速い経路の表に当たるアクセスは、基準の経路でも許され、同じ実体の同じ位置に届く。"
+owner = "crates/kome/src/fast.rs"
+caught = "crates/kome-testkit/src/fast.rs::a_table_that_missed_a_change_is_caught"
+tests = [
+    "crates/kome/src/fast.rs::a_filled_page_is_hit_with_the_position_of_the_reference_path",
+    "crates/kome/src/fast.rs::a_fill_fails_exactly_as_the_reference_path_does",
+    "crates/kome/src/fast.rs::what_the_table_cannot_hold_goes_to_the_slow_path",
+    "crates/kome/src/fast.rs::a_change_of_the_address_space_empties_exactly_the_pages_it_covers",
+    "crates/kome/src/fast.rs::a_page_holding_translated_code_is_never_written_through_the_table",
+    "crates/kome/src/fast.rs::the_layout_places_first_fit_on_the_alignment_and_reuses_a_gap",
+    "crates/kome/src/fast.rs::linear_contents_read_and_write_inside_the_backing_only",
+    "crates/kome-testkit/src/fast.rs::a_write_to_translated_code_through_the_table_is_caught",
+    "crates/kome-testkit/tests/sim.rs::every_property_holds_for_any_operation_sequence",
+    "crates/kome-testkit/tests/sim.rs::the_generator_reaches_every_fast_path_outcome",
+]
+proofs = [
+    "a_tlb_entry_of_u32_hits_exactly_its_page",
+    "a_tlb_entry_of_u64_hits_exactly_its_page",
+]
+models = []
+proved = "一つの項目の照合について、頁の大きさ (2 の冪の全て)、アドレスと位置 (u64 の全ての値)、許可の全ての組。項目が埋めた頁にだけ、許した側でだけ当たり、位置が回り込まないことを示す。表の全体 (アドレス空間が変わった後に古い項目が残らないこと、コードの頁、書かれた頁) は示していない (決定的シミュレーションが見る)。"
+scope = "表は Kernel の外にあり、audit は数え直さない。決定的シミュレーションが、操作のたびに全てのプロセスの全ての頁について、表に当たるアドレスを頁ごとの独立したモデルと比べる。アドレス空間の変更を表へ知らせること (通知つきの口を使う、復元の後に空にする) は Host の責任で、知らせなかった表は古い項目を持ち続ける。変換したコードが項目を読む命令列そのものは kome の外にある。"
+
+[[invariant]]
 id = "FX-1"
 variant = "EffectsKept"
 statement = "キューが満杯でも、受理済み操作の Effect を失わない (予約数が一致する)。"

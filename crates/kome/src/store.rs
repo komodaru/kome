@@ -42,6 +42,17 @@ impl<T> List<T> {
         List { items: Vec::new() }
     }
 
+    /// `count` 個の `value` を並べた列。この後に要素を足さなければ、列の番地は変わらない。
+    pub(crate) fn filled(value: T, count: usize) -> Result<List<T>, Error>
+    where
+        T: Clone,
+    {
+        let mut list = List::new();
+        list.reserve_total(count)?;
+        list.items.resize(count, value);
+        Ok(list)
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.items.len()
     }

@@ -177,6 +177,8 @@ pub enum Invariant {
     MemLayout,
     /// MEM-3: 権限を減らす変更の後、古い世代の実行が残る間はそのプロセスへ実行権を貸さない。
     MemBarrier,
+    /// MEM-4: 速い経路の表に当たるアクセスは、基準の経路でも許され、同じ実体の同じ位置に届く。
+    MemFastPath,
     /// FX-1: キューが満杯でも、受理済み操作の `Effect` を失わない (予約数が一致する)。
     EffectsKept,
     /// OBJ-1: 資源の参照数と固定数は、実際の保持者の数と一致する。
@@ -193,7 +195,7 @@ pub enum Invariant {
 
 impl Invariant {
     /// すべての不変条件。台帳との照合に使う。
-    pub const ALL: [Invariant; 15] = [
+    pub const ALL: [Invariant; 16] = [
         Invariant::RunOnePermit,
         Invariant::RunQueue,
         Invariant::IdFresh,
@@ -203,6 +205,7 @@ impl Invariant {
         Invariant::MemBackingAlive,
         Invariant::MemLayout,
         Invariant::MemBarrier,
+        Invariant::MemFastPath,
         Invariant::EffectsKept,
         Invariant::ObjectRefs,
         Invariant::TimeOrder,
@@ -224,6 +227,7 @@ impl Invariant {
             Invariant::MemBackingAlive => "MEM-1",
             Invariant::MemLayout => "MEM-2",
             Invariant::MemBarrier => "MEM-3",
+            Invariant::MemFastPath => "MEM-4",
             Invariant::EffectsKept => "FX-1",
             Invariant::ObjectRefs => "OBJ-1",
             Invariant::TimeOrder => "TIME-1",

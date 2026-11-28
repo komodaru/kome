@@ -3,9 +3,9 @@
 use std::thread;
 
 use kome::{
-    Access, AddrWidth, BackingOffset, Budget, Contexts, Deadline, Effect, Error, Executor, ExitCode, GuestAddr,
-    GuestRange, InstanceId, Instant, Interruptible, Kernel, Limits, MapSource, PageSize, ProcessId, Prot, Ran,
-    RunPermit, SignalMode, SignalOp, SignalSpec, Start, Stop, Stopped, ThreadFate, ThreadId, WaitMode, WaitStart,
+    Access, AddrWidth, BackingOffset, Budget, CodePages, Contexts, Deadline, Effect, Error, Executor, ExitCode, GuestAddr,
+    GuestRange, InstanceId, Instant, Interruptible, Kernel, Limits, LinearLayout, MapSource, PageSize, ProcessId, Prot, Ran,
+    RunPermit, SignalMode, SignalOp, SignalSpec, SoftTlb, Start, Stop, Stopped, ThreadFate, ThreadId, WaitMode, WaitStart,
     WorkerId, guest_read, run_once,
 };
 use kome_bench::{Bench, must, some};
@@ -118,6 +118,25 @@ fn memory(bench: &Bench) {
     bench.measure("ゲストのアドレスで 4096 バイト読む (二つのマッピングをまたぐ)", || {
         must(guest_read(&k, &store, p, start, &mut buffer))
     });
+    // 速い経路: 同じアドレス空間の一バイトを、表に当てて読む。外れた項目を埋める。
+    let mut layout = LinearLayout::new(1024 * PAGE, some(PageSize::new(PAGE)));
+    must(layout.place(backing, 256 * PAGE));
+    let code = CodePages::new();
+    let mut tlb: SoftTlb<u32> = must(SoftTlb::new(p, some(PageSize::new(PAGE)), 1024));
+    // 一回の照合は 1 ns ほどで、単独では測定の粒度に近い。別々の頁の 64 バイトをまとめて測る。
+    let hits: Vec<GuestAddr> = (0..64u64).map(|page| GuestAddr::new((16 + page) * PAGE + 100 + page)).collect();
+    for hit in &hits {
+        must(tlb.fill(&k, &layout, &code, *hit, Access::Read));
+    }
+    bench.measure("表に当たる 64 バイトの位置を得る (速い経路)", || {
+        let mut sum = 0u64;
+        for hit in &hits {
+            sum = sum.wrapping_add(some(tlb.probe(std::hint::black_box(*hit), Access::Read)).get());
+        }
+        sum
+    });
+    let miss = GuestAddr::new((16 + 77) * PAGE + 100);
+    bench.measure("表の項目を埋める (マッピング 128 個)", || must(tlb.fill(&k, &layout, &code, miss, Access::Read)));
 }
 
 fn timers(bench: &Bench) {

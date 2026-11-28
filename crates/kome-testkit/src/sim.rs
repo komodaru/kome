@@ -13,6 +13,7 @@ use kome::{
 };
 use kome_host_std::InterruptSlot;
 
+use crate::fast::{Fast, Reached};
 use crate::pages::{Expect, Pages, Perm, Touch};
 use crate::pipes::{Got, Pipe, Put, Shape};
 use crate::shadow::{Dropped, Flaky, Shadow, Store};
@@ -205,6 +206,8 @@ struct Sim {
     spaces: BTreeMap<ProcessId, Pages>,
     /// 通知だけから組み立てたアドレス空間。
     shadow: Shadow,
+    /// 速い経路の表と、そのモデル。
+    fast: Fast,
     /// ゲストのアドレスでの読み書きが使う、実体の内容。
     store: Store,
     /// モデルのページから自分で引いて書いた、あるはずの内容。
@@ -278,6 +281,7 @@ impl Sim {
             gone_backings: BTreeSet::new(),
             spaces: BTreeMap::new(),
             shadow: Shadow::new(PAGE),
+            fast: Fast::new(PAGE)?,
             store: Store::default(),
             content: Store::default(),
             effects: Vec::new(),
@@ -388,7 +392,7 @@ impl Sim {
             Effect::ProcessExited { process, .. } => {
                 // 通信路の端は、observe が先に外している。
                 self.spaces.remove(&process);
-                kome::SpaceObserver::cleared(&mut self.shadow, process);
+                kome::SpaceObserver::cleared(&mut (&mut self.shadow, &mut self.fast), process);
                 let phase = self.k.process_phase(process);
                 if !matches!(phase, Ok(ProcessPhase::Draining) | Err(Error::Stale(Tag::Process))) {
                     return Err(format!("PROC-1: 終了を通知したプロセスが {phase:?}"));
@@ -420,6 +424,7 @@ impl Sim {
             }
             Effect::BackingReclaimed { backing } => {
                 retire(&mut self.gone_backings, backing)?;
+                self.fast.backing_reclaimed(backing)?;
                 if self.pipes.values().any(|(pipe, ..)| pipe.parcels().any(|parcel| parcel == Parcel::Backing(backing))) {
                     return Err(format!("IPC-1: 通信路が運んでいる実体を解放した: {backing:?}"));
                 }
@@ -687,6 +692,67 @@ impl Sim {
         Ok(places)
     }
 
+    /// 基準の経路で済ませた読み書きと同じバイトを、一バイトずつ速い経路でたどる。表に当たった
+    /// バイトは、位置から逆に引いた実体の内容を読み書きし、モデルの内容と比べる。書き込みは、基準の
+    /// 経路が書いた値を反転した値を書く (速い経路の書き込みが、内容に現れる)。失敗したら、そこで止まる。
+    fn fast_pass(&mut self, process: ProcessId, start: u64, len: u64, writing: bool, data: &[u8]) -> Result<(), String> {
+        let touch = if writing { Touch::Write } else { Touch::Read };
+        for (at, addr) in (start..start.saturating_add(len)).enumerate() {
+            let expected = self.spaces.get(&process).map_or(Expect::Unmapped, |model| model.expect(addr / PAGE, addr % PAGE, touch));
+            let reached = self.fast.access(&self.k, process, addr, writing, expected)?;
+            match (reached, expected) {
+                (Reached::At(backing, offset), Expect::Reaches(model_backing, model_offset)) => {
+                    if writing {
+                        let value = !data.get(at).copied().ok_or("書くバイト")?;
+                        self.store.set(backing, offset, value);
+                        self.content.set(model_backing, model_offset, value);
+                        self.reached.insert("fast:written");
+                    } else if self.store.byte(backing, offset) != self.content.byte(model_backing, model_offset) {
+                        return Err(format!("MEM-4: {addr:#x} から速い経路で読んだ内容が、モデルと違う"));
+                    } else {
+                        self.reached.insert("fast:read");
+                    }
+                }
+                (Reached::At(..), expected) => return Err(format!("MEM-4: {addr:#x} が表に当たったが、モデルは {expected:?}")),
+                (Reached::Slow, _) => {
+                    self.reached.insert(if writing { "fast:slow-write" } else { "fast:slow-read" });
+                }
+                (Reached::Barred, _) => {
+                    self.reached.insert("fast:code-not-written");
+                }
+                (Reached::Fault, _) => {
+                    self.reached.insert("fast:fault");
+                    break;
+                }
+            }
+        }
+        if self.store != self.content {
+            return Err(format!("MEM-4: {start:#x} への速い経路の書き込みの後、実体の内容がモデルと違う"));
+        }
+        Ok(())
+    }
+
+    /// 成功したアクセスに重ねた、速い経路の手入れ。入力のバイトを新しく使わず、アクセスの長さで選ぶ:
+    /// `start` のコードを変換する、書かれた頁を取り出す、変換したコードを捨てる。
+    fn fast_upkeep(&mut self, process: ProcessId, start: u64, len: u64) -> Result<(), String> {
+        match len % 4 {
+            0 => {
+                let expected = self.spaces.get(&process).map_or(Expect::Unmapped, |model| model.expect(start / PAGE, start % PAGE, Touch::Execute));
+                let translated = self.fast.translate_code(&self.k, process, start, expected)?;
+                self.reached.insert(if translated { "fast:code-translated" } else { "fast:code-fault" });
+            }
+            1 => {
+                let taken = self.fast.take_dirty(process)?;
+                self.reached.insert(if taken == 0 { "fast:dirty-none" } else { "fast:dirty-taken" });
+            }
+            _ if self.fast.release_code(start / PAGE)? => {
+                self.reached.insert("fast:code-released");
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// 権限を変えた範囲とその両隣に、一つにまとめられる項目が分かれたまま残っていないか。
     /// 変更を繰り返しても、項目の数は見え方の違いの数を超えない。
     fn check_merged(&self, process: ProcessId, first: u64, count: u64) -> Result<(), String> {
@@ -729,6 +795,7 @@ impl Sim {
                         self.processes.push(process);
                         self.objects.push(exit);
                         self.spaces.insert(process, Pages::default());
+                        self.fast.process_created(process)?;
                         Outcome::Accepted
                     }
                     Err(error) => Outcome::Refused(error),
@@ -1101,9 +1168,12 @@ impl Sim {
             }
             38 => {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
-                match self.k.create_backing(process, r.below(4).saturating_add(1).saturating_mul(PAGE)) {
+                let len = r.below(4).saturating_add(1).saturating_mul(PAGE);
+                match self.k.create_backing(process, len) {
                     Ok(backing) => {
                         fresh(&self.gone_backings, backing)?;
+                        let placed = self.fast.backing_created(backing, len)?;
+                        self.reached.insert(if placed { "fast:placed" } else { "fast:not-placed" });
                         self.backings.push(backing);
                         Outcome::Accepted
                     }
@@ -1121,7 +1191,10 @@ impl Sim {
             44 => {
                 // ゲストのアドレスでの読み書き。ページの境界をまたぎやすい位置を選ぶ。
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
-                let start = r.below(PAGES).saturating_add(1).saturating_mul(PAGE).saturating_sub(r.below(4));
+                // 4 回に 3 回は、実体のあるページを狙う (でたらめな位置は、ほとんどがマッピングの無い所になる)。
+                let raw = r.below(PAGES);
+                let aimed = if raw.is_multiple_of(4) { None } else { self.spaces.get(&process).and_then(|model| model.nth_backed(raw)) };
+                let start = aimed.unwrap_or(raw).saturating_add(1).saturating_mul(PAGE).saturating_sub(r.below(4));
                 let len = r.below(7);
                 let size = usize::try_from(len).map_err(|e| e.to_string())?;
                 let writing = r.flag();
@@ -1181,6 +1254,8 @@ impl Sim {
                         if self.store != self.content {
                             return Err(format!("MEM-2: {start:#x} への書き込みの後、実体の内容がモデルと違う"));
                         }
+                        self.fast_pass(process, start, len, writing, &data)?;
+                        self.fast_upkeep(process, start, len)?;
                         let across = len != 0 && start / PAGE != start.saturating_add(len).saturating_sub(1) / PAGE;
                         self.reached.insert(match (writing, across) {
                             (true, _) => "mem:written",
@@ -1194,6 +1269,7 @@ impl Sim {
                             return Err(format!("MEM-2: 失敗した {start:#x} へのアクセスが内容を変えた"));
                         }
                         self.reached.insert(if addr == start { "mem:fault" } else { "mem:fault-inside" });
+                        self.fast_pass(process, start, len, writing, &data)?;
                         Outcome::Accepted
                     }
                     (Err(AccessError::Kernel(error)), _) => Outcome::Refused(error),
@@ -1211,7 +1287,7 @@ impl Sim {
                 };
                 let range = pages(first, count).ok_or("範囲")?;
                 let overlap = self.spaces.get(&process).is_some_and(|space| space.any(first, count));
-                let result = map_observed(&mut self.k, &mut self.shadow, process, range, map_source, prot);
+                let result = map_observed(&mut self.k, &mut (&mut self.shadow, &mut self.fast), process, range, map_source, prot);
                 if source.is_some() {
                     let used = self.spaces.get(&process).map_or(0, Pages::backed_pages);
                     let after = used.saturating_add(count).saturating_mul(PAGE);
@@ -1235,7 +1311,7 @@ impl Sim {
                 let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
                 let (first, count) = (r.below(PAGES), r.below(6).saturating_add(1));
                 let range = pages(first, count).ok_or("範囲")?;
-                match unmap_observed(&mut self.k, &mut self.shadow, process, range) {
+                match unmap_observed(&mut self.k, &mut (&mut self.shadow, &mut self.fast), process, range) {
                     Ok(bytes) => {
                         let space = self.spaces.get_mut(&process).ok_or("モデルに無いプロセスの unmap を受理した")?;
                         let (removed, backed) = space.unmap(first, count);
@@ -1256,7 +1332,7 @@ impl Sim {
                 let coverable = self.spaces.get(&process).is_some_and(|space| space.all_backed(first, count));
                 let before = self.k.map_generation(process);
                 let pending = self.k.pending_effects();
-                match protect_observed(&mut self.k, &mut self.shadow, process, range, prot) {
+                match protect_observed(&mut self.k, &mut (&mut self.shadow, &mut self.fast), process, range, prot) {
                     Ok(_) if !coverable => {
                         return Err(format!("実体の無い部分を含む範囲の権限変更を受理した: {range:?}"));
                     }
@@ -1303,6 +1379,7 @@ impl Sim {
                             return Err("復元した状態が写しと違う".to_owned());
                         }
                         self.k = restored;
+                        self.fast.restored();
                         self.restores = self.restores.saturating_add(1);
                         Outcome::Accepted
                     }
@@ -1592,6 +1669,7 @@ impl Sim {
         self.observe(seen)?;
         self.check_interrupts()?;
         self.check_pipes()?;
+        self.fast.check(&self.spaces, PAGES.saturating_add(4))?;
         self.note_ready();
         self.steps = self.steps.saturating_add(1);
         // 実行権を返したスレッドの古い世代の印は、Held ごと消えている。

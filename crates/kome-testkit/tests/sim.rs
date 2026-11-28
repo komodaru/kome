@@ -200,3 +200,30 @@ fn saved_inputs_still_pass() {
     }
     assert!(replayed > 0, "{dir} に入力が無い");
 }
+
+/// 速い経路の確認が空回りしていないこと: 表に当たる読み出しと書き込み、基準の経路と同じ失敗、
+/// 速い経路に載せない読み出しと書き込み (置けなかった実体)、変換したコードの頁への書き込み、実体を置けた場合と
+/// 置けなかった場合、コードの変換とその失敗と破棄、書かれた頁の取り出し (ある、無い) の全てに到達する。
+#[test]
+fn the_generator_reaches_every_fast_path_outcome() {
+    let mut reached = BTreeSet::new();
+    for seed in 0..200 {
+        reached.extend(drive(&noise(seed, 3000)).unwrap().reached.into_iter().filter(|tag| tag.starts_with("fast:")));
+    }
+    let all = [
+        "fast:read",
+        "fast:written",
+        "fast:fault",
+        "fast:slow-read",
+        "fast:slow-write",
+        "fast:placed",
+        "fast:not-placed",
+        "fast:code-translated",
+        "fast:code-fault",
+        "fast:code-released",
+        "fast:code-not-written",
+        "fast:dirty-taken",
+        "fast:dirty-none",
+    ];
+    assert_eq!(reached, BTreeSet::from(all));
+}

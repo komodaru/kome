@@ -47,6 +47,8 @@ const BENCH_GATE: &str = "docs/bench-gate.tsv";
 const BENCH_LIB: &str = "crates/kome-bench/src/lib.rs";
 const BENCH_SH: &str = "scripts/ci/bench-gate.sh";
 const HOST_TESTS_RS: &str = "crates/kome-host-std/tests/host.rs";
+const FAST_RS: &str = "crates/kome/src/fast.rs";
+const FAST_MODEL_RS: &str = "crates/kome-testkit/src/fast.rs";
 const SIM_TESTS_RS: &str = "crates/kome-testkit/tests/sim.rs";
 const EXEC_RS: &str = "crates/kome/src/exec.rs";
 const VERUS_TSV: &str = "docs/verus.tsv";
@@ -558,13 +560,13 @@ pub const RULES: &[Rule] = &[
             Keep { path: BACKEND_RS, needle: "    if bytes != 0 {\n        observer.changed(", why: "外したものがあるときだけ知らせる", broken: "    if false {\n        observer.changed(" },
             Keep { path: SIM_RS, needle: "if dropped.bytes != code || dropped.forgotten != 0 {", why: "捨てさせたコードの範囲を、モデルのページから引いたものと比べる", broken: "if dropped.forgotten != 0 {" },
             Keep { path: SIM_RS, needle: "let mut flaky = Flaky { store: &mut self.store, left: breaks };", why: "backend が途中のバイトで失敗する書き込みを試す", broken: "let mut flaky = Flaky { store: &mut self.store, left: None };" },
-            Keep { path: SIM_RS, needle: "let result = map_observed(&mut self.k, &mut self.shadow, process, range, map_source, prot);", why: "map を通知つきで呼ぶ", broken: "let result = self.k.map(process, range, map_source, prot);" },
-            Keep { path: SIM_RS, needle: "match unmap_observed(&mut self.k, &mut self.shadow, process, range) {", why: "unmap を通知つきで呼ぶ", broken: "match self.k.unmap(process, range) {" },
-            Keep { path: SIM_RS, needle: "match protect_observed(&mut self.k, &mut self.shadow, process, range, prot) {", why: "protect を通知つきで呼ぶ", broken: "match self.k.protect(process, range, prot) {" },
+            Keep { path: SIM_RS, needle: "let result = map_observed(&mut self.k, &mut (&mut self.shadow, &mut self.fast), process, range, map_source, prot);", why: "map を通知つきで呼ぶ", broken: "let result = self.k.map(process, range, map_source, prot);" },
+            Keep { path: SIM_RS, needle: "match unmap_observed(&mut self.k, &mut (&mut self.shadow, &mut self.fast), process, range) {", why: "unmap を通知つきで呼ぶ", broken: "match self.k.unmap(process, range) {" },
+            Keep { path: SIM_RS, needle: "match protect_observed(&mut self.k, &mut (&mut self.shadow, &mut self.fast), process, range, prot) {", why: "protect を通知つきで呼ぶ", broken: "match self.k.protect(process, range, prot) {" },
             Keep { path: SIM_RS, needle: "        if seen != *model {", why: "通知から組み立てたアドレス空間をモデルと比べる", broken: "        if false {" },
             Keep { path: SIM_RS, needle: "if fault.addr() == GuestAddr::new(addr) && fault.kind() == kind =>", why: "アクセスの失敗の位置と種類をモデルと比べる", broken: "if fault.kind() == kind =>" },
             Keep { path: SIM_RS, needle: "} else if read.get(at).copied() != Some(self.content.byte(*backing, *offset)) {", why: "読んだ内容をモデルと比べる", broken: "} else if false {" },
-            Keep { path: SIM_RS, needle: "kome::SpaceObserver::cleared(&mut self.shadow, process);", why: "プロセスの終了を通知の受け取り手へ伝える", broken: "" },
+            Keep { path: SIM_RS, needle: "kome::SpaceObserver::cleared(&mut (&mut self.shadow, &mut self.fast), process);", why: "プロセスの終了を通知の受け取り手へ伝える", broken: "" },
         ],
         breaks: &[
             |repo| repo.append(BACKEND_RS, "fn peek(kernel: &Kernel) -> u64 { kernel.backing_bytes }"),
@@ -572,6 +574,32 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(BACKEND_RS, |text| text.replace("    let mut failed = None;\n    walk(", "    written?;\n    let written: Result<(), AccessError> = Ok(());\n    let mut failed = None;\n    walk(")),
             |repo| repo.edit(SIM_TESTS_RS, |text| text.replace("\"code:dropped-alias\", ", "")),
             |repo| repo.edit(SIM_RS, |text| text.replacen("self.space_changed(process, false)?;", "self.check_space(process)?;", 1)),
+        ],
+    },
+    Rule {
+        id: "fast-path",
+        about: "速い経路の表は、項目の並びを決め、列を動かさず、変更の通知で消す。決定的シミュレーションが、表に当たるアドレスをモデルと比べる",
+        check: fast_path,
+        keeps: &[
+            Keep { path: FAST_RS, needle: "#[repr(C)]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub struct TlbEntry<W> {\n    read: W,\n    write: W,\n    addend: W,\n}", why: "項目の並び (read、write、addend) は、変換したコードが直接読むので決まっている", broken: "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub struct TlbEntry<W> {\n    read: W,\n    write: W,\n    addend: W,\n}" },
+            Keep { path: FAST_RS, needle: "const _: () = assert!(core::mem::offset_of!(TlbEntry<u32>, write) == 4 && core::mem::offset_of!(TlbEntry<u32>, addend) == 8);", why: "32 ビットの項目の並びを、コンパイル時に確かめる", broken: "" },
+            Keep { path: FAST_RS, needle: "            MapChange::Unmapped { range } | MapChange::Protected { range, .. } => self.drop_range(range),", why: "外した範囲と権限を変えた範囲の項目を消す", broken: "            MapChange::Unmapped { range } | MapChange::Protected { range, .. } => drop(range)," },
+            Keep { path: FAST_RS, needle: "let entry = TlbEntry::filled(tag, position, origin.readable, origin.writable && !barred && written);", why: "書き込みの側を埋めるのは、書ける権限があり、コードの頁でなく、書かれた頁に入れた後だけ", broken: "let entry = TlbEntry::filled(tag, position, origin.readable, origin.writable && written);" },
+            Keep { path: FAST_RS, needle: "        self.bar_writes(page);\n        Ok(page)", why: "コードを変換する頁は、その表の書き込みの側を空ける", broken: "        Ok(page)" },
+            Keep { path: FAST_RS, needle: "            if barred {\n                return Err(NotFast::Slow);\n            }", why: "コードの頁への書き込みは、速い経路に載せない", broken: "" },
+            Keep { path: FAST_MODEL_RS, needle: "        if found != Some((backing, offset)) {", why: "表に当たった位置を、モデルの実体と位置と比べる", broken: "        if false {" },
+            Keep { path: FAST_MODEL_RS, needle: "            if self.translated.contains_key(&spot) {", why: "変換したコードの頁へ、速い経路で書けないことを確かめる", broken: "            if false {" },
+            Keep { path: FAST_MODEL_RS, needle: "            if !self.writable.get(&process).is_some_and(|pages| pages.contains(&spot)) {", why: "速い経路で書ける頁が、書かれた頁に入っていることを確かめる", broken: "            if false {" },
+            Keep { path: FAST_MODEL_RS, needle: "        if count != seen.len() || seen != writable || !wrote.is_subset(&seen) {", why: "取り出した書かれた頁を、モデルと比べる", broken: "        if false {" },
+            Keep { path: SIM_RS, needle: "        self.fast.check(&self.spaces, PAGES.saturating_add(4))?;\n", why: "操作のたびに、全ての表の全ての頁をモデルと比べる", broken: "" },
+            Keep { path: SIM_RS, needle: "                        self.fast_pass(process, start, len, writing, &data)?;\n                        self.fast_upkeep(process, start, len)?;\n", why: "成功した読み書きと同じバイトを、速い経路でもたどる", broken: "" },
+            Keep { path: SIM_RS, needle: "                        self.fast.restored();\n", why: "復元の後に、表を空にする", broken: "" },
+            Keep { path: SIM_TESTS_RS, needle: "        \"fast:code-not-written\",\n", why: "決定的シミュレーションが、変換したコードの頁への書き込みに到達することを確かめる", broken: "" },
+            Keep { path: MEMORY_MD, needle: "検査: lint `fast-path`。", why: "速い経路の約束と検査の対応が文書にある", broken: "" },
+        ],
+        breaks: &[
+            |repo| repo.append(FAST_RS, "impl<W: TlbWord> SoftTlb<W> {\n    fn grow(&mut self) {\n        self.entries.reserve(1).ok();\n    }\n}"),
+            |repo| repo.edit(FAST_RS, |text| text.replace("        for entry in self.entries.iter_mut() {\n            entry.write = W::NEVER;\n        }", "        self.entries = List::new();")),
         ],
     },
     Rule {
@@ -2115,6 +2143,21 @@ fn refinements_kept(repo: &Repo, report: &mut Report) {
     }
     if script.matches("    exit 1\n").count() != 2 {
         report.add(FLUX_SH, 1, "わざと誤った定義が通ったとき、または拒まれた定義が合わないときは失敗させる");
+    }
+}
+
+/// 速い経路の表: 項目の列は、作った後に数を変えない (変換したコードが、列の番地を埋め込んでいる)。
+fn fast_path(repo: &Repo, report: &mut Report) {
+    let moving = ["push(", "insert(", "remove(", "pop(", "reserve(", "truncate(", "clear(", "swap_remove("];
+    for (at, line) in repo.text(FAST_RS).lines().enumerate() {
+        let assigned = line.contains("self.entries = ");
+        let resized = line.match_indices("self.entries.").any(|(place, found)| {
+            let rest = line.get(place.saturating_add(found.len())..).unwrap_or("");
+            moving.iter().any(|call| rest.starts_with(call))
+        });
+        if assigned || resized {
+            report.add(FAST_RS, at.saturating_add(1), "表の項目の列を、作った後に動かしている。列の番地は変換したコードが埋め込んでいる".to_owned());
+        }
     }
 }
 

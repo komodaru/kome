@@ -18,3 +18,5 @@ an_id_from_another_issuer_never_resolves	3	小さな上限での証明。前提:
 an_admitted_send_fits_the_channel	-	形 (数、長さの上限、容量)、送る長さ、持っているバイト数とメッセージの数は全ての値。前提: メッセージの数は上限以下、流れの中身は容量以下 (audit が確かめる範囲)。メッセージの列の容量 (数 × 長さの上限) の掛け算は計算していない
 a_stop_reason_is_accepted_only_when_it_fits	-	止まった理由、中断の要求の有無、貸した量、実行した量、終了要求は全ての値。前提は無い
 the_lending_order_is_a_strict_total_order	-	三つの席の優先度 (u8) と実行待ちになった順番 (u64) は全ての値。前提は無い。列 (ヒープ) の形が保たれることは示していない (audit と試験が見る)
+a_tlb_entry_of_u32_hits_exactly_its_page	-	頁の大きさは 2 から 2^63 の全ての 2 の冪、アドレスと位置は u64 の全ての値 (頁の先頭の番地と頁の全体の位置が u32 に収まる項目)、許可は 4 通り
+a_tlb_entry_of_u64_hits_exactly_its_page	-	頁の大きさは 2 から 2^63 の全ての 2 の冪、アドレスと位置は u64 の全ての値 (頁の全体の位置が u64 に収まる項目)、許可は 4 通り
