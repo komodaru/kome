@@ -33,7 +33,7 @@ pub struct Repo {
 }
 
 /// 読まないディレクトリ (生成物と外から取ってきたもの)。
-const SKIPPED_DIRS: [&str; 5] = [".git", "target", "states", "corpus", "artifacts"];
+const SKIPPED_DIRS: [&str; 6] = [".git", "target", "states", "corpus", "artifacts", ".lake"];
 
 impl Repo {
     /// `root` 以下を読む。

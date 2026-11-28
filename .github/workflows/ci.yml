@@ -148,6 +148,24 @@ jobs:
       - name: loom
         run: scripts/ci/loom.sh
 
+  lean:
+    name: lean
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.lean4
+          key: lean-${{ hashFiles('scripts/ci/lean-install.sh') }}
+      - uses: ./.github/actions/rust
+        with:
+          key: lean
+      - name: Lean を入れる
+        run: scripts/ci/lean-install.sh
+      - name: lean
+        run: scripts/ci/lean.sh
+
   verus:
     name: verus
     runs-on: ubuntu-latest

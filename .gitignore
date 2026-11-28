@@ -8,3 +8,4 @@ fuzz/corpus/
 fuzz/artifacts/
 fuzz/coverage/
 mutants.out*/
+lean/.lake/

@@ -49,6 +49,19 @@ const BENCH_SH: &str = "scripts/ci/bench-gate.sh";
 const HOST_TESTS_RS: &str = "crates/kome-host-std/tests/host.rs";
 const FAST_RS: &str = "crates/kome/src/fast.rs";
 const FAST_MODEL_RS: &str = "crates/kome-testkit/src/fast.rs";
+const LEAN_LAKEFILE: &str = "lean/lakefile.toml";
+const LEAN_TOOLCHAIN: &str = "lean/lean-toolchain";
+const LEAN_SH: &str = "scripts/ci/lean.sh";
+const LEAN_INSTALL_SH: &str = "scripts/ci/lean-install.sh";
+const LEAN_TESTS_RS: &str = "crates/kome-testkit/tests/lean.rs";
+const LEAN_TLB: &str = "lean/Kome/Tlb.lean";
+const LEAN_MIRROR: &str = "lean/Mirror.lean";
+const LEAN_TSV: &str = "docs/lean.tsv";
+const LEAN_MD: &str = "docs/lean.md";
+/// 証明を検査から外す語。`sorry` と `admit` は穴、`axiom` は証明なしの主張、残りは Lean の核の外で
+/// 計算した結果を信じさせるか、定義の中身を検査から隠す。
+const LEAN_ESCAPES: [&str; 11] =
+    ["sorry", "admit", "axiom", "native_decide", "bv_decide", "ofReduceBool", "implemented_by", "extern", "unsafe", "partial", "opaque"];
 const SIM_TESTS_RS: &str = "crates/kome-testkit/tests/sim.rs";
 const EXEC_RS: &str = "crates/kome/src/exec.rs";
 const VERUS_TSV: &str = "docs/verus.tsv";
@@ -600,6 +613,32 @@ pub const RULES: &[Rule] = &[
         breaks: &[
             |repo| repo.append(FAST_RS, "impl<W: TlbWord> SoftTlb<W> {\n    fn grow(&mut self) {\n        self.entries.reserve(1).ok();\n    }\n}"),
             |repo| repo.edit(FAST_RS, |text| text.replace("        for entry in self.entries.iter_mut() {\n            entry.write = W::NEVER;\n        }", "        self.entries = List::new();")),
+        ],
+    },
+    Rule {
+        id: "lean-kept",
+        about: "Lean の証明は抜け道を使わず、一覧の定理が実在し、モデルを実行して実装と比べる",
+        check: lean_kept,
+        keeps: &[
+            Keep { path: LEAN_LAKEFILE, needle: "[leanOptions]\nwarningAsError = true\n", why: "Lean の警告 (証明の穴を含む) を失敗にする", broken: "" },
+            Keep { path: LEAN_SH, needle: "        echo \"#print axioms Kome.$module.$name\" >>\"$audit\"\n", why: "全ての定理について、頼っている公理を Lean に出させる", broken: "" },
+            Keep { path: LEAN_SH, needle: "if [ -n \"$other\" ]; then\n", why: "標準の公理以外に頼る定理があれば失敗する", broken: "if [ -z \"$other\" ]; then\n" },
+            Keep { path: LEAN_SH, needle: "if ! grep -q '^lean: .*Lean のモデルと実装の動きを照合した$' <<<\"$out\"; then\n", why: "モデルと実装を照合した行が出たことまで見る", broken: "if false; then\n" },
+            Keep { path: LEAN_TESTS_RS, needle: "        if model != real {\n", why: "モデルの出力と実装の動きを、一行ずつ比べる", broken: "        if false {\n" },
+            Keep { path: LEAN_TESTS_RS, needle: "    assert_eq!(got.len(), expected.len(), \"行の数が違う\");\n", why: "モデルが全ての操作に答えたことを確かめる", broken: "" },
+            Keep { path: LEAN_TESTS_RS, needle: "    let all = [\"mapped\", \"overlap\", \"done\", \"protected\", \"uncovered\", \"filled\", \"fault\", \"slow\", \"translated\", \"dirty\", \"dirty+\"];\n", why: "突き合わせが、全ての種類の結果を通ることを確かめる", broken: "    let all: [&str; 0] = [];\n" },
+            Keep { path: LEAN_TLB, needle: "theorem a_hit_is_allowed_after_any_operations (slots : Nat) (ops : List Op) (p page : Nat) (write : Bool)\n", why: "表に当たるアクセスが許されていることを、全ての操作の列について言う", broken: "theorem a_hit_is_allowed_after_some_operations (slots : Nat) (ops : List Op) (p page : Nat) (write : Bool)\n" },
+            Keep { path: LEAN_MD, needle: "lint `lean-kept`", why: "Lean の使い方と検査の対応が文書にある", broken: "lint" },
+        ],
+        breaks: &[
+            |repo| repo.append(LEAN_TLB, "theorem hole : False := by\n  sorry\n"),
+            |repo| repo.append(LEAN_TLB, "axiom handy : ∀ s : State, Ok s\n"),
+            |repo| repo.append(LEAN_MIRROR, "theorem quick : 2 + 2 = 4 := by native_decide\n"),
+            |repo| repo.edit(LEAN_TLB, |text| text.replace("namespace Kome.Tlb", "namespace Kome.Table")),
+            |repo| repo.edit(LEAN_TSV, |text| text.replace("Kome.Tlb.ok_run\t", "Kome.Tlb.ok_walk\t")),
+            |repo| repo.edit(LEAN_TSV, |text| text.replace("Kome.Tlb.ok_run\tMEM-4\t", "Kome.Tlb.ok_run\tMEM-9\t")),
+            |repo| repo.edit(LEAN_TOOLCHAIN, |_| "leanprover/lean4:v4.35.0\n".to_owned()),
+            |repo| repo.remove(LEAN_TSV),
         ],
     },
     Rule {
@@ -2146,6 +2185,66 @@ fn refinements_kept(repo: &Repo, report: &mut Report) {
     }
 }
 
+/// Lean の証明: 抜け道の語が無く、ファイルの名前空間が決まった形で、一覧の定理が実在する。
+fn lean_kept(repo: &Repo, report: &mut Report) {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    for (path, text) in repo.under("lean/", ".lean") {
+        for (at, line) in text.lines().enumerate() {
+            for escape in LEAN_ESCAPES {
+                let used = line.match_indices(escape).any(|(place, found)| {
+                    let before = line.get(..place).and_then(|head| head.chars().next_back());
+                    let after = line.get(place.saturating_add(found.len())..).and_then(|tail| tail.chars().next());
+                    !before.is_some_and(word) && !after.is_some_and(word)
+                });
+                if used {
+                    report.add(path, at.saturating_add(1), format!("Lean の証明を検査から外す語 `{escape}` を使っている"));
+                }
+            }
+        }
+        if let Some(module) = path.strip_prefix("lean/Kome/").and_then(|name| name.strip_suffix(".lean")) {
+            let namespace = format!("namespace Kome.{module}\n");
+            if !text.contains(&namespace) {
+                report.add(path, 1, format!("定理の名前を一覧と照合できない: `{}` が無い", namespace.trim_end()));
+            }
+        }
+    }
+    let version = repo.text(LEAN_TOOLCHAIN).trim().strip_prefix("leanprover/lean4:v").unwrap_or("");
+    if version.is_empty() || !repo.text(LEAN_INSTALL_SH).contains(&format!("\nversion={version}\n")) {
+        report.add(LEAN_TOOLCHAIN, 1, format!("lean-toolchain の版が、{LEAN_INSTALL_SH} が入れる版と違う"));
+    }
+    if !repo.has(LEAN_TSV) {
+        report.add(LEAN_TSV, 1, "Lean の定理の一覧が無い");
+        return;
+    }
+    let ledger = repo.text(LEDGER);
+    let mut listed = 0usize;
+    for (at, line) in repo.text(LEAN_TSV).lines().enumerate().filter(|(_, line)| !line.starts_with('#') && !line.is_empty()) {
+        let number = at.saturating_add(1);
+        listed = listed.saturating_add(1);
+        let cells: Vec<&str> = line.split('\t').collect();
+        let [name, invariant, says, omits] = cells.as_slice() else {
+            report.add(LEAN_TSV, number, "行の形が違う (定理、台帳、言っていること、言っていないこと)");
+            continue;
+        };
+        if says.trim().is_empty() || omits.trim().is_empty() {
+            report.add(LEAN_TSV, number, format!("{name}: 言っていることと、言っていないことの両方を書く"));
+        }
+        if !ledger.contains(&format!("id = \"{invariant}\"\n")) {
+            report.add(LEAN_TSV, number, format!("{name}: 台帳に {invariant} が無い"));
+        }
+        let found = name.strip_prefix("Kome.").and_then(|rest| rest.split_once('.')).is_some_and(|(module, theorem)| {
+            let text = repo.text(&format!("lean/Kome/{module}.lean"));
+            text.lines().any(|line| line.strip_prefix("theorem ").is_some_and(|rest| rest.split([' ', ':', '(']).next() == Some(theorem)))
+        });
+        if !found {
+            report.add(LEAN_TSV, number, format!("{name} という定理が lean/ に無い"));
+        }
+    }
+    if listed == 0 {
+        report.add(LEAN_TSV, 1, "Lean の定理の一覧が空である");
+    }
+}
+
 /// 速い経路の表: 項目の列は、作った後に数を変えない (変換したコードが、列の番地を埋め込んでいる)。
 fn fast_path(repo: &Repo, report: &mut Report) {
     let moving = ["push(", "insert(", "remove(", "pop(", "reserve(", "truncate(", "clear(", "swap_remove("];
@@ -2505,7 +2604,7 @@ fn quiet_operations(repo: &Repo, report: &mut Report) {
 }
 
 /// CI が必ず実行するコマンドと、それを置くジョブ。ステップの `run` は、この文字列ちょうどである。
-const CI_RUNS: [(&str, &str); 18] = [
+const CI_RUNS: [(&str, &str); 20] = [
     ("cover", "scripts/ci/cover.sh"),
     ("lint", "cargo run -q --locked -p kome-lint"),
     ("lint", "cargo clippy --workspace --all-targets --locked -- -D warnings"),
@@ -2522,6 +2621,8 @@ const CI_RUNS: [(&str, &str); 18] = [
     ("flux", "scripts/ci/flux-install.sh"),
     ("flux", "scripts/ci/flux.sh"),
     ("loom", "scripts/ci/loom.sh"),
+    ("lean", "scripts/ci/lean-install.sh"),
+    ("lean", "scripts/ci/lean.sh"),
     ("verus", "scripts/ci/verus-install.sh"),
     ("verus", "scripts/ci/verus.sh"),
 ];

@@ -1,0 +1,12 @@
+name = "kome"
+defaultTargets = ["Kome", "mirror"]
+
+[leanOptions]
+warningAsError = true
+
+[[lean_lib]]
+name = "Kome"
+
+[[lean_exe]]
+name = "mirror"
+root = "Mirror"

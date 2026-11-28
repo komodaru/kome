@@ -9,12 +9,7 @@ if grep -qs "\"$version\"" "$home/verus-x86-linux/version.json"; then
     echo "verus: $version は入っている"
     exit 0
 fi
-archive="$(mktemp)"
-trap 'rm -f "$archive"' EXIT
-curl --fail --silent --show-error --location --retry 3 -o "$archive" \
-    "https://github.com/verus-lang/verus/releases/download/release/$version/verus-$version-x86-linux.zip"
-echo "$sha256  $archive" | sha256sum --check --quiet
-rm -rf "$home"
-mkdir -p "$home"
+archive="$("$(dirname "$0")/fetch.sh" "https://github.com/verus-lang/verus/releases/download/release/$version/verus-$version-x86-linux.zip" "$sha256" "$home")"
 unzip -q "$archive" -d "$home"
+rm -f "$archive"
 grep -q "\"$version\"" "$home/verus-x86-linux/version.json"
