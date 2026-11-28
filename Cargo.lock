@@ -299,6 +299,7 @@ version = "0.1.0"
 dependencies = [
  "kome",
  "kome-host-std",
+ "kome-noalloc",
 ]
 
 [[package]]
@@ -320,6 +321,10 @@ dependencies = [
  "toml",
  "yaml-rust2",
 ]
+
+[[package]]
+name = "kome-noalloc"
+version = "0.0.0"
 
 [[package]]
 name = "kome-testkit"

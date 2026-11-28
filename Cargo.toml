@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/kome", "crates/kome-testkit", "crates/kome-lint", "crates/kome-host-std", "crates/kome-bench", "crates/kome-trace"]
-exclude = ["fuzz"]
+exclude = ["fuzz", "checks/noalloc"]
 
 [workspace.package]
 edition = "2024"

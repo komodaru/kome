@@ -108,6 +108,11 @@ impl<T> List<T> {
         Ok(())
     }
 
+    /// 全ての要素を取り除く。容量は残す。
+    pub(crate) fn clear(&mut self) {
+        self.items.clear();
+    }
+
     #[must_use = "取り除けなかったこと (None) を呼び出し側が扱う"]
     pub(crate) fn remove(&mut self, at: usize) -> Option<T> {
         if at < self.items.len() { Some(self.items.remove(at)) } else { None }

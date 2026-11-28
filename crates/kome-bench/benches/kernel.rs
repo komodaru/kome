@@ -8,7 +8,7 @@ use kome::{
     RunPermit, SignalMode, SignalOp, SignalSpec, SoftTlb, Start, Stop, Stopped, ThreadFate, ThreadId, WaitMode, WaitStart,
     WorkerId, guest_read, run_once,
 };
-use kome_bench::{Bench, must, some};
+use kome_bench::{Allocations, Bench, must, some};
 use kome_host_std::{FlatStore, Host, Personality};
 
 const PAGE: u64 = 4096;
@@ -235,8 +235,12 @@ fn hosts(bench: &Bench) {
     }
 }
 
+/// 確保を数える (`--counts`)。数えていない間は、システムのアロケータへ渡すだけである。
+#[global_allocator]
+static COUNTING: kome_noalloc::Counting = kome_noalloc::Counting;
+
 fn main() {
-    let bench = Bench::from_args();
+    let bench = Bench::from_args(Allocations { enter: kome_noalloc::enter, leave: kome_noalloc::leave, count: kome_noalloc::count });
     scheduling(&bench);
     waiting(&bench);
     channels(&bench);

@@ -503,6 +503,30 @@ fn a_closed_object_lives_until_its_waiters_leave() {
     assert_eq!(k.interrupt_wait(t), Err(Error::Refused(Refusal::NotWaiting)));
 }
 
+/// 待機の対象の列は、スレッドが持つ容量を使い回す。二度目からの待機は、対象の列のために確保しない。
+#[test]
+fn a_thread_reuses_the_room_of_its_earlier_wait() {
+    let (mut k, p, t, e) = serviced_with_event();
+    let other = event(&mut k, p);
+    let room = |k: &Kernel| k.threads.get(t).map(|entry| (entry.spare.len(), entry.spare.capacity()));
+    assert_eq!(room(&k), Some((0, 0)));
+    // 起こされて終わる待機。
+    assert_eq!(k.wait(t, &[e, other], WaitMode::Any, Deadline::Never, Interruptible::Yes), Ok(WaitStart::Blocked));
+    assert_eq!(room(&k), Some((0, 0)), "待っている間は、列は待機が持つ");
+    k.signal(e, SignalOp::Add(1)).unwrap();
+    let kept = room(&k).unwrap();
+    assert!(kept.0 == 0 && kept.1 >= 2, "終わった待機の列が、空になって残っていない: {kept:?}");
+    k.signal(e, SignalOp::Set(0)).unwrap();
+    // 中断で終わる待機。同じ容量のまま使い回す。
+    assert_eq!(k.wait(t, &[other, e], WaitMode::All, Deadline::Never, Interruptible::Yes), Ok(WaitStart::Blocked));
+    k.interrupt_wait(t).unwrap();
+    assert_eq!(room(&k), Some(kept));
+    // 残した容量は、状態の一部ではない (写しどうしは等しい)。
+    let copy = k.snapshot().unwrap();
+    assert_eq!(copy, k.snapshot().unwrap());
+    k.audit().unwrap();
+}
+
 #[test]
 fn only_interruptible_waits_are_interrupted() {
     let (mut k, _, t, e) = serviced_with_event();

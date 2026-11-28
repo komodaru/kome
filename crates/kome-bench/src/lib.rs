@@ -14,7 +14,12 @@
 //!   幅は [`AGAINST_LIMIT`] 倍。相手に無い操作 (新しく足した測定) は比べない。
 //! - `--baseline ファイル` は、今の比を記録として書き出す。
 //!
+//! - `--counts ファイル` は、時間ではなく数 (命令、確保、キャッシュの外れ、分岐の予測の外れ) を
+//!   操作ごとに数え、記録と比べる。`--counts-baseline ファイル` は記録を書き出す ([`counts`])。
+//!
 //! 二つの判定の使い分けは `scripts/ci/bench-gate.sh` と docs/bench.md にある。
+
+pub mod counts;
 
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -141,6 +146,23 @@ enum Use {
     Against(PathBuf),
     /// 記録として書き出す。
     Baseline(PathBuf),
+    /// 一つの操作を決まった回数だけ行い、その間の確保の数を出す (Cachegrind の上で動かすための形)。
+    CountOne(String, u64),
+    /// 操作ごとに数を数え、記録と比べて判定する。
+    Counts(PathBuf),
+    /// 操作ごとに数を数え、記録として書き出す。
+    CountsBaseline(PathBuf),
+}
+
+/// 確保を数えるアロケータの口。測定の実行ファイルが、大域のアロケータと一緒に渡す。
+#[derive(Clone, Copy, Debug)]
+pub struct Allocations {
+    /// 数え始める。
+    pub enter: fn(),
+    /// 数えるのをやめる。
+    pub leave: fn(),
+    /// 印の間に起きた確保の数。
+    pub count: fn() -> u64,
 }
 
 /// 失敗しないはずの結果を取り出す。失敗は測定の筋書きの誤りなので、その場で止める。
@@ -169,14 +191,25 @@ pub struct Bench {
     record: Option<PathBuf>,
     /// 測った操作の名前と最小値 (ns)。
     least: RefCell<Vec<(String, f64)>>,
+    allocations: Allocations,
+    /// 数で測る操作の名前 (`--counts` のとき)。
+    names: RefCell<Vec<String>>,
 }
 
 impl Bench {
     /// コマンドラインの引数から作る。`--smoke` で一度だけの実行、`--gate ファイル` で判定、
     /// `--baseline ファイル` で記録の書き出し、それ以外の語は名前の絞り込み。
     #[must_use]
-    pub fn from_args() -> Bench {
-        let mut bench = Bench { smoke: false, filter: None, usage: Use::Show, record: None, least: RefCell::new(Vec::new()) };
+    pub fn from_args(allocations: Allocations) -> Bench {
+        let mut bench = Bench {
+            smoke: false,
+            filter: None,
+            usage: Use::Show,
+            record: None,
+            least: RefCell::new(Vec::new()),
+            allocations,
+            names: RefCell::new(Vec::new()),
+        };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             if arg == "--smoke" {
@@ -189,11 +222,18 @@ impl Bench {
                 bench.usage = Use::Against(from_root(&some(args.next())));
             } else if arg == "--baseline" {
                 bench.usage = Use::Baseline(from_root(&some(args.next())));
+            } else if arg == "--count-one" {
+                let name = some(args.next());
+                bench.usage = Use::CountOne(name, must(some(args.next()).parse()));
+            } else if arg == "--counts" {
+                bench.usage = Use::Counts(from_root(&some(args.next())));
+            } else if arg == "--counts-baseline" {
+                bench.usage = Use::CountsBaseline(from_root(&some(args.next())));
             } else if !arg.starts_with('-') {
                 bench.filter = Some(arg);
             }
         }
-        if !bench.smoke {
+        if !bench.smoke && bench.timed() {
             println!("名前\t中央値 (ns)\t最小値 (ns)");
         }
         bench.measure(REFERENCE, {
@@ -224,7 +264,22 @@ impl Bench {
         }
         let reference = least.iter().find(|(name, _)| name == REFERENCE).map_or(f64::NAN, |(_, least)| *least);
         match self.usage {
-            Use::Show => Ok(()),
+            Use::Show | Use::CountOne(..) => Ok(()),
+            Use::Counts(path) => {
+                let recorded = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+                let exe = std::env::current_exe().map_err(|error| format!("自分の実行ファイルが分からない: {error}"))?;
+                let measured = counts::count_all(&exe, &self.names.into_inner())?;
+                Bench::decide_counts(&counts::parse(&recorded)?, &measured)
+            }
+            Use::CountsBaseline(path) => {
+                let exe = std::env::current_exe().map_err(|error| format!("自分の実行ファイルが分からない: {error}"))?;
+                let measured = counts::count_all(&exe, &self.names.into_inner())?;
+                let mut text = String::from(
+                    "# 操作一回あたりの数: 命令、確保、一次データキャッシュの外れ、分岐の予測の外れ (docs/bench.md)。\n# `cargo bench -p kome-bench -- --counts-baseline docs/bench-counts.tsv` が書く。\n",
+                );
+                text.extend(measured.iter().map(counts::line));
+                std::fs::write(&path, text).map_err(|error| format!("{}: {error}", path.display()))
+            }
             Use::Baseline(path) => {
                 let mut text = format!("# 操作の最小値を「{REFERENCE}」の最小値で割った比。`cargo bench -p kome-bench -- --baseline docs/bench-gate.tsv` が書く。\n");
                 for (name, least) in least.iter().filter(|(name, _)| name != REFERENCE) {
@@ -269,6 +324,55 @@ impl Bench {
         if failed == 0 { Ok(()) } else { Err(format!("{failed} 個の操作が、記録の {limit} 倍に収まらなかった")) }
     }
 
+    /// 数の記録と比べて判定し、結果を表示する。
+    fn decide_counts(recorded: &[counts::Counts], measured: &[counts::Counts]) -> Result<(), String> {
+        let limit = counts::COUNT_LIMIT;
+        let mut failed = 0u32;
+        println!("名前\t命令\t確保\tキャッシュの外れ\t予測の外れ\t判定 (命令は記録の {limit} 倍まで、確保は増えないこと)");
+        for (name, verdict) in counts::judge(recorded, measured, limit) {
+            let shown = measured.iter().find(|counts| counts.name == name).map_or_else(|| format!("{name}\t-\t-\t-\t-"), |now| counts::line(now).trim_end().to_owned());
+            let word = match verdict {
+                counts::Counted::Within(_, recorded) => format!("ok (記録は {recorded:.1})"),
+                counts::Counted::MoreWork(_, recorded) => format!("命令が増えた (記録は {recorded:.1})"),
+                counts::Counted::MoreAllocations(_, recorded) => format!("確保が増えた (記録は {recorded:.3})"),
+                counts::Counted::NotMeasured => "測っていない".to_owned(),
+                counts::Counted::NotRecorded => "記録に無い".to_owned(),
+            };
+            if !word.starts_with("ok") {
+                failed = failed.saturating_add(1);
+            }
+            println!("{shown}\t{word}");
+        }
+        if failed == 0 { Ok(()) } else { Err(format!("{failed} 個の操作が、数の記録に収まらなかった")) }
+    }
+
+    /// 時間を測る実行か (数を数える実行ではないか)。
+    const fn timed(&self) -> bool {
+        matches!(self.usage, Use::Show | Use::Gate(_) | Use::Against(_) | Use::Baseline(_))
+    }
+
+    /// 数を数える実行なら、`op` を数える側の流儀で扱い、真を返す。
+    fn counted<R>(&self, name: &str, op: &mut impl FnMut() -> R) -> bool {
+        match &self.usage {
+            Use::CountOne(wanted, rounds) => {
+                if wanted == name {
+                    (self.allocations.enter)();
+                    for _ in 0..*rounds {
+                        black_box(op());
+                    }
+                    (self.allocations.leave)();
+                    println!("allocs\t{}", (self.allocations.count)());
+                }
+                true
+            }
+            Use::Counts(_) | Use::CountsBaseline(_) => {
+                self.names.borrow_mut().push(name.to_owned());
+                true
+            }
+            Use::Show | Use::Gate(_) | Use::Against(_) | Use::Baseline(_) => false,
+        }
+    }
+
     /// 一度だけの実行か。
     #[must_use]
     pub const fn smoke(&self) -> bool {
@@ -281,7 +385,7 @@ impl Bench {
 
     /// `op` 一回あたりの時間を測る。
     pub fn measure<R>(&self, name: &str, mut op: impl FnMut() -> R) {
-        if !self.wanted(name) {
+        if !self.wanted(name) || self.counted(name, &mut op) {
             return;
         }
         if self.smoke {
@@ -306,8 +410,10 @@ impl Bench {
 
     /// まとまった仕事 (`ops` 回ぶんの操作を含む) を何度か実行し、操作一回あたりの時間を出す。
     /// `ops` は `--smoke` のときの回数と、それ以外のときの回数から `work` が選ぶ。
+    ///
+    /// 数では測らない (別のスレッドで動く仕事は、数える印の外にある)。
     pub fn measure_whole(&self, name: &str, ops: u64, mut work: impl FnMut(u64)) {
-        if !self.wanted(name) {
+        if !self.wanted(name) || !self.timed() {
             return;
         }
         if self.smoke {

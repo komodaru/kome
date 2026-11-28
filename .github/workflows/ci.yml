@@ -56,6 +56,10 @@ jobs:
         run: cargo bench -p kome-bench --locked -- --smoke
       - name: よく通る操作が、記録と一つ前のコミットより遅くなっていない
         run: scripts/ci/bench-gate.sh
+      - name: Valgrind を入れる
+        run: scripts/ci/valgrind-install.sh
+      - name: よく通る操作の命令の数と確保の数が、記録より増えていない
+        run: cargo bench -p kome-bench --locked -- --counts docs/bench-counts.tsv
 
   cover:
     name: cover

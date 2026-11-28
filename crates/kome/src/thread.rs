@@ -16,7 +16,7 @@ use crate::kernel::Kernel;
 use crate::object::{Object, SignalMode, SignalSpec};
 use crate::process::{ExitCode, Life};
 use crate::sched::{Priority, WorkerId};
-use crate::store::TryClone;
+use crate::store::{List, TryClone};
 use crate::wait::Wait;
 
 /// 作った直後のスレッドの状態。
@@ -43,7 +43,8 @@ impl TryClone for Run {
 
 impl TryClone for Thread {
     fn try_clone(&self) -> Result<Thread, Error> {
-        let Thread { process, exit_signal, run, suspend, kill, run_gen, executed, priority, turn, queued } = self;
+        // 使い回すための容量は写さない (写しから復元したスレッドは、最初の待機で確保し直す)。
+        let Thread { process, exit_signal, run, suspend, kill, run_gen, executed, priority, turn, queued, spare: _ } = self;
         Ok(Thread {
             process: *process,
             exit_signal: *exit_signal,
@@ -55,6 +56,7 @@ impl TryClone for Thread {
             priority: *priority,
             turn: *turn,
             queued: *queued,
+            spare: List::new(),
         })
     }
 }
@@ -109,6 +111,8 @@ pub(crate) struct Thread {
     pub(crate) turn: u64,
     /// 実行待ちの列 ([`crate::runq`]) の中の位置。列に無ければ `None`。
     pub(crate) queued: Option<usize>,
+    /// 前の待機が使った対象の列 (中身は空)。次の待機が、その容量を使い回す。
+    pub(crate) spare: List<ObjectId>,
 }
 
 impl Kernel {
@@ -141,6 +145,7 @@ impl Kernel {
             priority: Priority::DEFAULT,
             turn: 0,
             queued: None,
+            spare: List::new(),
         })?;
         let owner = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
         owner.threads.push(thread)?;

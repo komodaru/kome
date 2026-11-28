@@ -49,6 +49,7 @@ scripts/ci/shuttle.sh                                      # Shuttle: 並列実�
 scripts/ci/verus.sh                                        # Verus: アドレスからマッピングを引く探索を、表の長さによらず
 scripts/ci/flux.sh                                         # 篩型 (Flux): 範囲計算と容量の会計を全ての値について
 cargo bench -p kome-bench                                  # 性能の測定 (`-- --smoke` で一度だけ)
+cargo bench -p kome-bench -- --counts docs/bench-counts.tsv  # 操作ごとの命令の数と確保の数 (Valgrind が要る)
 cargo mutants -p kome --profile mutants   # 変異試験 (週次)
 ```
 

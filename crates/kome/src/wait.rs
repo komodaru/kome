@@ -113,8 +113,8 @@ impl Kernel {
             Deadline::Never => None,
         };
         // ここから下は予約。失敗しても状態は変わらない。
-        let mut list = List::new();
-        list.reserve(targets.len())?;
+        // 対象の列は、このスレッドの前の待機が使ったものを使い回す (待機のたびに確保しない)。
+        self.threads.get_mut(thread).ok_or(Error::Broken(Invariant::WaitOnce))?.spare.reserve(targets.len())?;
         for target in targets {
             self.objects.get_mut(*target).ok_or(Error::Broken(Invariant::WaitOnce))?.waiters.reserve(1)?;
         }
@@ -123,6 +123,8 @@ impl Kernel {
         }
         self.effects.promise(1)?;
         // ここから下は確定。
+        let entry = self.threads.get_mut(thread).ok_or(Error::Broken(Invariant::WaitOnce))?;
+        let mut list = core::mem::replace(&mut entry.spare, List::new());
         for target in targets {
             list.push(*target)?;
             self.pin(*target)?;
@@ -155,6 +157,7 @@ impl Kernel {
             return Err(Error::Broken(Invariant::WaitOnce));
         };
         self.detach_wait(thread, &wait)?;
+        self.keep_spare(thread, wait)?;
         self.effects.forgo(1)
     }
 
@@ -225,7 +228,16 @@ impl Kernel {
         self.consume(wait.targets.as_slice(), outcome)?;
         // 結果の通知を、対象の破棄の通知より先に出す。
         self.effects.emit(Effect::WaitDone { thread, outcome })?;
-        self.detach_wait(thread, &wait)
+        self.detach_wait(thread, &wait)?;
+        self.keep_spare(thread, wait)
+    }
+
+    /// 終わった待機の対象の列を空にして、スレッドに残す。次の待機が、その容量を使い回す。
+    fn keep_spare(&mut self, thread: ThreadId, wait: Wait) -> Result<(), Error> {
+        let Wait { mut targets, mode: _, due: _, interruptible: _ } = wait;
+        targets.clear();
+        self.threads.get_mut(thread).ok_or(Error::Broken(Invariant::WaitOnce))?.spare = targets;
+        Ok(())
     }
 
     /// 資源の数が変わった後、その資源を待つ待機を登録順に評価して確定する。

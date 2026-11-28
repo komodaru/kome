@@ -49,6 +49,8 @@ const ISSUER_GUARD: &str = "if slot.generation != id.generation || slot.issuer !
 const BENCH_GATE: &str = "docs/bench-gate.tsv";
 const BENCH_LIB: &str = "crates/kome-bench/src/lib.rs";
 const BENCH_SH: &str = "scripts/ci/bench-gate.sh";
+const BENCH_COUNTS: &str = "docs/bench-counts.tsv";
+const BENCH_COUNTS_RS: &str = "crates/kome-bench/src/counts.rs";
 const HOST_TESTS_RS: &str = "crates/kome-host-std/tests/host.rs";
 const FAST_RS: &str = "crates/kome/src/fast.rs";
 const FAST_MODEL_RS: &str = "crates/kome-testkit/src/fast.rs";
@@ -100,6 +102,16 @@ pub const RULES: &[Rule] = &[
             |repo| repo.append(KOME_MANIFEST, "[build-dependencies]\ncc = \"1\""),
             |repo| repo.append("crates/kome/build.rs", "fn main() {}"),
             |repo| repo.append(KOME_MANIFEST, "[features]\nstd = []"),
+        ],
+    },
+    Rule {
+        id: "locks-agree",
+        about: "ワークスペースの外のクレート (checks/noalloc、fuzz) の Cargo.lock は、ワークスペースのクレートの依存を、根の Cargo.lock と同じに持つ",
+        check: locks_agree,
+        keeps: &[],
+        breaks: &[
+            |repo| repo.edit("checks/noalloc/Cargo.lock", |text| text.replace(" \"shuttle\",\n", "")),
+            |repo| repo.edit("fuzz/Cargo.lock", |text| text.replace(" \"shuttle\",\n", "")),
         ],
     },
     Rule {
@@ -520,6 +532,13 @@ pub const RULES: &[Rule] = &[
             Keep { path: BENCH_LIB, needle: "if *least < *kept || kept.is_nan() { *least } else { *kept }", why: "測り足すときは、操作ごとに小さい方を残す", broken: "*least" },
             Keep { path: BENCH_SH, needle: "base=\"$(git rev-parse --verify 'HEAD^')\"\n", why: "一つ前のコミットが無ければ失敗する", broken: "base=\"$(git rev-parse --verify 'HEAD^')\" || exit 0\n" },
             Keep { path: BENCH_LIB, needle: "            None => Verdict::NotMeasured,", why: "記録にある操作を測っていなければ、失敗にする", broken: "            None => Verdict::Within(0.0, recorded)," },
+            Keep { path: BENCH_COUNTS_RS, needle: "pub const COUNT_LIMIT: f64 = 1.05;", why: "命令の数の記録との比較の幅", broken: "pub const COUNT_LIMIT: f64 = 5.0;" },
+            Keep { path: BENCH_COUNTS_RS, needle: "Some(now) if now.allocations > record.allocations + 0.0005 => Counted::MoreAllocations(now.allocations, record.allocations),", why: "確保の数が少しでも増えたら、失敗にする", broken: "Some(now) if now.allocations > record.allocations + 1.0 => Counted::MoreAllocations(now.allocations, record.allocations)," },
+            Keep { path: BENCH_COUNTS_RS, needle: "Some(now) if now.instructions <= record.instructions * limit => Counted::Within(now.instructions, record.instructions),", why: "命令の数が幅を超えたら、失敗にする (読めなかった数は収まったと見なさない)", broken: "Some(now) if now.instructions <= record.instructions * limit || now.instructions.is_nan() => Counted::Within(now.instructions, record.instructions)," },
+            Keep { path: BENCH_COUNTS_RS, needle: "        verdicts.push((now.name.clone(), Counted::NotRecorded));\n", why: "記録に無い操作を測ったら、失敗にする (新しい測定は同じコミットで記録する)", broken: "" },
+            Keep { path: BENCH_COUNTS_RS, needle: "\"--I1=32768,8,64\", \"--D1=32768,8,64\", \"--LL=8388608,16,64\"", why: "キャッシュの大きさを固定して、数が機械に左右されないようにする", broken: "\"--cache-sim=yes\"" },
+            Keep { path: BENCH_LIB, needle: "            if !word.starts_with(\"ok\") {\n                failed = failed.saturating_add(1);\n            }\n", why: "数の判定で収まらなかった操作を数える", broken: "" },
+            Keep { path: BENCH_RS, needle: "#[global_allocator]\nstatic COUNTING: kome_noalloc::Counting = kome_noalloc::Counting;\n", why: "測定の実行ファイルが、確保を数えるアロケータを使う", broken: "" },
         ],
         breaks: &[
             |repo| repo.edit(BENCH_RS, |text| text.replace("    timers(&bench);\n", "")),
@@ -529,6 +548,9 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(BENCH_GATE, |text| text.replace("タイマを仕掛けて期限まで進める\t", "タイマ\t")),
             |repo| repo.edit(BENCH_GATE, |text| text.replace("アドレスを引く (マッピング 128 個)\t", "# アドレスを引く (マッピング 128 個)\t")),
             |repo| repo.remove(BENCH_GATE),
+            |repo| repo.remove(BENCH_COUNTS),
+            |repo| repo.edit(BENCH_COUNTS, |text| text.replace("タイマを仕掛けて期限まで進める\t", "タイマ\t")),
+            |repo| repo.edit(BENCH_COUNTS, |text| text.replace("\n基準の仕事\t", "\n# 基準の仕事\t")),
             |repo| repo.edit(BENCH_LIB, |text| text.replace("&least, reference, AGAINST_LIMIT, false)", "&least, reference, LIMIT, false)")),
             |repo| repo.edit(BENCH_SH, |text| text.replace("$2 > recorded[$1] * 1.15 { print $1 }", "$2 != recorded[$1] { print $1 }")),
             |repo| repo.edit(BENCH_RS, |text| text.replace("    if let Err(why) = bench.finish() {", "    if let Err(why) = Ok::<(), String>(()) {")),
@@ -873,6 +895,39 @@ fn no_deps(repo: &Repo, report: &mut Report) {
         let is_kome = package.get("name").and_then(toml::Value::as_str) == Some("kome");
         if is_kome && package.get("dependencies").is_some() {
             report.add_at(repo, "Cargo.lock", "name = \"kome\"", "Cargo.lock で kome が依存を持っている");
+        }
+    }
+}
+
+/// マニフェストが、試験のため以外に求める依存の名前 ([dependencies] と、[target.…dependencies])。
+fn wanted_dependencies(manifest: &toml::Table) -> Vec<String> {
+    let names = |table: Option<&toml::Value>| -> Vec<String> { table.and_then(toml::Value::as_table).map_or_else(Vec::new, |deps| deps.keys().cloned().collect()) };
+    let mut wanted = names(manifest.get("dependencies"));
+    let targets = manifest.get("target").and_then(toml::Value::as_table);
+    for target in targets.into_iter().flat_map(toml::Table::values) {
+        wanted.extend(names(target.get("dependencies")));
+    }
+    wanted
+}
+
+/// ワークスペースのクレートに依存を足したら、それを使う外のクレートの Cargo.lock も同じコミットで更新する
+/// (CI はどちらも `--locked` で組み立てるので、古いままだと外のクレートだけが失敗する)。
+fn locks_agree(repo: &Repo, report: &mut Report) {
+    for path in ["checks/noalloc/Cargo.lock", "fuzz/Cargo.lock"] {
+        let lock = table(report, repo, path);
+        let packages = lock.get("package").and_then(toml::Value::as_array).map_or(&[][..], Vec::as_slice);
+        for package in packages.iter().filter(|package| package.get("source").is_none()) {
+            let Some(name) = package.get("name").and_then(toml::Value::as_str) else { continue };
+            let manifest = format!("crates/{name}/Cargo.toml");
+            if !repo.has(&manifest) {
+                continue;
+            }
+            let locked: Vec<&str> = package.get("dependencies").and_then(toml::Value::as_array).map_or(&[][..], Vec::as_slice).iter().filter_map(toml::Value::as_str).collect();
+            for wanted in wanted_dependencies(&table(report, repo, &manifest)) {
+                if !locked.contains(&wanted.as_str()) {
+                    report.add_at(repo, path, &format!("name = \"{name}\""), format!("{name} の依存 {wanted} が無い。`cargo metadata --manifest-path` でこの Cargo.lock を更新する"));
+                }
+            }
         }
     }
 }
@@ -2046,6 +2101,22 @@ fn bench_listed(repo: &Repo, report: &mut Report) {
             report.add(BENCH_MD, at.saturating_add(1), format!("操作「{name}」が、判定に使う記録 ({BENCH_GATE}) に無い"));
         }
     }
+    // 数の記録の行は、判定に使う時間の記録の操作と、基準の仕事である (同じ操作を、時間と数の両方で見る)。
+    if !repo.has(BENCH_COUNTS) {
+        report.add(BENCH_COUNTS, 1, "数の記録が無い (`cargo bench -p kome-bench -- --counts-baseline docs/bench-counts.tsv`)");
+        return;
+    }
+    let counted: Vec<&str> = repo.text(BENCH_COUNTS).lines().filter(|line| !line.starts_with('#')).filter_map(|line| line.split_once('\t')).map(|(name, _)| name).collect();
+    for name in recorded.iter().filter(|name| !name.contains("参照ホスト")).chain(&["基準の仕事"]) {
+        if !counted.contains(name) {
+            report.add(BENCH_COUNTS, 1, format!("操作「{name}」が、数の記録に無い"));
+        }
+    }
+    for (at, name) in counted.iter().enumerate() {
+        if *name != "基準の仕事" && !recorded.contains(name) {
+            report.add(BENCH_COUNTS, at.saturating_add(3), format!("数の記録の操作「{name}」が、時間の記録 ({BENCH_GATE}) に無い"));
+        }
+    }
     let lib = repo.text(BENCH_LIB);
     let kept = [
         ("                Bench::decide(&baseline, &least, reference, LIMIT, true)", "記録との比較は、記録の幅で、測っていない操作も失敗にする"),
@@ -2641,7 +2712,7 @@ fn quiet_operations(repo: &Repo, report: &mut Report) {
 }
 
 /// CI が必ず実行するコマンドと、それを置くジョブ。ステップの `run` は、この文字列ちょうどである。
-const CI_RUNS: [(&str, &str); 21] = [
+const CI_RUNS: [(&str, &str); 23] = [
     ("cover", "scripts/ci/cover.sh"),
     ("lint", "cargo run -q --locked -p kome-lint"),
     ("lint", "cargo clippy --workspace --all-targets --locked -- -D warnings"),
@@ -2650,6 +2721,8 @@ const CI_RUNS: [(&str, &str); 21] = [
     ("test", "cargo test --locked --manifest-path checks/noalloc/Cargo.toml"),
     ("test", "cargo bench -p kome-bench --locked -- --smoke"),
     ("test", "scripts/ci/bench-gate.sh"),
+    ("test", "scripts/ci/valgrind-install.sh"),
+    ("test", "cargo bench -p kome-bench --locked -- --counts docs/bench-counts.tsv"),
     ("no-std", "cargo build -p kome --locked --target wasm32v1-none"),
     ("no-std", "cargo build -p kome --locked --target thumbv7em-none-eabi"),
     ("miri", "cargo miri test -p kome --locked --lib"),
