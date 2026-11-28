@@ -10,6 +10,7 @@ description = "kome の設計上の規則を、後戻りしないように機械
 
 [dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 syn = { version = "2", features = ["full", "visit"] }
 toml = "1"
 yaml-rust2 = "0.13.1"

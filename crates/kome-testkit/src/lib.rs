@@ -27,3 +27,17 @@ pub mod shadow;
 pub mod sim;
 
 pub use sim::{Failure, Probe, Summary, drive, drive_probed};
+
+/// 種から決まるバイト列 (xorshift64*)。[`drive`] に与える入力を、試験が同じ作り方で作る。
+#[must_use]
+pub fn noise(seed: u64, len: usize) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    (0..len)
+        .map(|_| {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D).to_le_bytes()[7]
+        })
+        .collect()
+}

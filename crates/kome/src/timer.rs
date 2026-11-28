@@ -16,7 +16,6 @@
 use crate::error::{Error, Invariant, Refusal};
 use crate::id::{ObjectId, ProcessId, TimerId};
 use crate::kernel::{Due, DueEntry, Kernel};
-use crate::process::Life;
 use crate::store::plain_try_clone;
 use crate::time::{Instant, Period};
 use crate::wait::WaitOutcome;
@@ -69,10 +68,7 @@ pub(crate) struct Timer {
 impl Kernel {
     /// `object` へ通知するタイマを、止まった状態で作る。
     pub fn create_timer(&mut self, process: ProcessId, object: ObjectId) -> Result<TimerId, Error> {
-        let owner = self.processes.find(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        self.alive(process)?;
         self.can_notify(object, 1)?;
         self.timers.reserve()?;
         let timer = self.timers.insert(Timer { process, object, armed: None })?;

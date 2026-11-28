@@ -19,7 +19,6 @@ use crate::error::{Error, Invariant, Refusal, Resource};
 use crate::id::{BackingId, ChannelId, ObjectId, ProcessId};
 use crate::kernel::Kernel;
 use crate::object::Object;
-use crate::process::Life;
 use crate::store::{Queue, TryClone, plain_try_clone};
 
 /// 通信路の端。
@@ -273,10 +272,7 @@ impl Kernel {
             .filter(|total| *total <= self.limits.channel_bytes())
             .ok_or(Error::Exhausted(Resource::ChannelBytes))?;
         let limit = self.holdings_limit(process);
-        let owner = self.processes.find_mut(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive_mut(process)?;
         owner.senders.room_for_new(limit)?;
         owner.receivers.room_for_new(limit)?;
         self.channels.reserve()?;
@@ -318,10 +314,7 @@ impl Kernel {
             return Err(Error::Refused(Refusal::EndClosed));
         }
         let held = held.checked_add(1).ok_or(Error::Refused(Refusal::HoldOverflow))?;
-        let owner = self.processes.find_mut(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive_mut(process)?;
         match end {
             End::Send => owner.senders.add(channel, limit)?,
             End::Receive => owner.receivers.add(channel, limit)?,
@@ -521,10 +514,7 @@ impl Kernel {
             Parcel::Object(object) => {
                 let handles = self.objects.get(object).ok_or(Error::Broken(Invariant::ChannelKept))?.handles;
                 let handles = handles.checked_add(1).ok_or(Error::Refused(Refusal::HoldOverflow))?;
-                let owner = self.processes.find_mut(process, &self.lineage)?;
-                if owner.life != Life::Alive {
-                    return Err(Error::Refused(Refusal::ProcessExiting));
-                }
+                let owner = self.alive_mut(process)?;
                 owner.objects.add(object, limit)?;
                 self.objects.get_mut(object).ok_or(Error::Broken(Invariant::ChannelKept))?.handles = handles;
                 self.unpin(object)
@@ -532,10 +522,7 @@ impl Kernel {
             Parcel::Backing(backing) => {
                 let holds = self.backings.get(backing).ok_or(Error::Broken(Invariant::ChannelKept))?.holds;
                 let holds = holds.checked_add(1).ok_or(Error::Refused(Refusal::HoldOverflow))?;
-                let owner = self.processes.find_mut(process, &self.lineage)?;
-                if owner.life != Life::Alive {
-                    return Err(Error::Refused(Refusal::ProcessExiting));
-                }
+                let owner = self.alive_mut(process)?;
                 owner.backings.add(backing, limit)?;
                 let entry = self.backings.get_mut(backing).ok_or(Error::Broken(Invariant::ChannelKept))?;
                 entry.holds = holds;

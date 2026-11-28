@@ -232,10 +232,7 @@ impl Kernel {
     /// I/O 要求を準備する。`links` の資源は要求が回収されるまで破棄されない。
     pub fn prepare_io(&mut self, process: ProcessId, links: IoLinks) -> Result<IoId, Error> {
         let IoLinks { target, notify } = links;
-        let owner = self.processes.find(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive(process)?;
         let ios = owner.ios.checked_add(1).ok_or(Error::Exhausted(crate::error::Resource::Ios))?;
         if ios > owner.quota.ios() {
             return Err(Error::Exhausted(crate::error::Resource::ProcessIos));
@@ -507,13 +504,7 @@ mod tests {
     /// TLA+ のモデル (tla/IoLifecycle.tla) が使う表は、この実装そのものである。
     #[test]
     fn the_tla_table_is_io_step() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tla/IoTable.tla");
-        let table = tla_table();
-        if std::env::var("KOME_UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty()) {
-            std::fs::write(path, &table).unwrap();
-        }
-        let on_disk = std::fs::read_to_string(path).unwrap();
-        assert_eq!(on_disk, table, "tla/IoTable.tla が io_step と違う。KOME_UPDATE_GOLDEN=1 で書き直す");
+        crate::tests::golden("tla/IoTable.tla", &tla_table());
     }
 
     /// 内容だけが違う状態・出来事は、遷移の形を変えない (表が内容を落としてよい根拠)。

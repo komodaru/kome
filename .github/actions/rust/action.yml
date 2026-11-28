@@ -1,0 +1,29 @@
+name: rust
+description: Rust のツールチェーンを入れ、ビルドのキャッシュを戻す (保存するのは main だけ)。
+
+inputs:
+  key:
+    description: キャッシュを分ける名前 (ジョブの名前)。
+    required: true
+  install:
+    description: ツールチェーンを入れるコマンド。既定は rust-toolchain.toml のもの。
+    default: rustup show active-toolchain || rustup toolchain install
+  workspaces:
+    description: ワークスペースが根以外にあるときの、rust-cache の workspaces。
+    default: ""
+  cache-directories:
+    description: 一緒にキャッシュするディレクトリ。
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - run: ${{ inputs.install }}
+      shell: bash
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      with:
+        key: ${{ inputs.key }}
+        cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        workspaces: ${{ inputs.workspaces }}
+        cache-directories: ${{ inputs.cache-directories }}

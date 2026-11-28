@@ -226,4 +226,5 @@ lint `foreign-ids-tested` (ID を受け取る全ての引数に、別インス�
 | 値の範囲で決まる性質を全ての値について確かめる | Flux の篩型 (`docs/flux.md`)、lint `refinements-kept` |
 | 長さに上限の無い表についての性質を証明する | Verus (`docs/verus.md`)、lint `verus-kept` |
 | 実スレッドのホストが一つの書き手を守る | Loom (`scripts/ci/loom.sh`)、lint `host-single-writer` |
+| 同じコードを二度書かない | lint `dup` (関数、表、続いた文、文字列、スクリプトと CI の行。意図した写しは `docs/dup-known.tsv` に理由つきで載せる。候補は `cargo run -q -p kome-lint -- dup`) |
 | その場で検査を黙らせない | lint `no-local-allow`、`escape-comments`、`ci-required` |

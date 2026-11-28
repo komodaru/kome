@@ -21,6 +21,19 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "dup") {
+        // 見つけた写しの組を、一覧に載っているものも含めて全て出す。
+        let known = kome_lint::dup::known(repo.text(kome_lint::dup::KNOWN)).unwrap_or_default();
+        for group in kome_lint::dup::find(repo.all()) {
+            let mark = if known.iter().any(|entry| kome_lint::dup::listed(&group, entry)) { "一覧にある" } else { "一覧に無い" };
+            println!("{} {} ({mark})", group.kind.id(), group.size);
+            for member in &group.members {
+                println!("    {}:{}-{} {}", member.file, member.first, member.last, member.name);
+            }
+            println!("    {}", kome_lint::dup::entry_line(&group));
+        }
+        return ExitCode::SUCCESS;
+    }
     if args.get(1).is_some_and(|arg| arg == "ran") {
         let log = match args.get(2).map(std::fs::read_to_string) {
             Some(Ok(log)) => log,

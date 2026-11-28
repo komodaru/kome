@@ -26,12 +26,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/rust
         with:
           key: lint
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: kome-lint
         run: cargo run -q --locked -p kome-lint
       - name: clippy
@@ -46,12 +43,9 @@ jobs:
         with:
           # 性能の判定が、一つ前のコミットと比べる。
           fetch-depth: 2
-      - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/rust
         with:
           key: test
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: test (必須の試験が走ったことの照合つき)
         run: scripts/ci/test.sh
       - name: 生成した表が実装と同じ
@@ -69,13 +63,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: rustup show active-toolchain || rustup toolchain install
-      - run: rustup target add wasm32v1-none thumbv7em-none-eabi
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/rust
         with:
           key: no-std
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: rustup target add wasm32v1-none thumbv7em-none-eabi
       - name: Wasm (OS もホストも無い)
         run: cargo build -p kome --locked --target wasm32v1-none
       - name: 32 ビットの組み込み (OS もホストも無い)
@@ -90,12 +81,10 @@ jobs:
       MIRIFLAGS: -Zmiri-disable-isolation
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: rustup toolchain install nightly-2026-11-26 --profile minimal --component miri
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/rust
         with:
           key: miri
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          install: rustup toolchain install nightly-2026-11-26 --profile minimal --component miri
       - name: miri
         run: cargo miri test -p kome --locked --lib
 
@@ -105,16 +94,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/rust
         with:
           key: kani
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-directories: ~/.kani
       - name: Kani を入れる
         run: |
-          if ! cargo kani --version 2>/dev/null | grep -q '0\.68\.0'; then
+          if [[ "$(cargo kani --version 2>/dev/null)" != *0.68.0* ]]; then
             cargo install --locked kani-verifier --version 0.68.0
           fi
           cargo kani setup
@@ -143,12 +129,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/rust
         with:
           key: loom
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: loom
         run: scripts/ci/loom.sh
 
@@ -182,11 +165,8 @@ jobs:
         with:
           path: tla/tla2tools.jar
           key: tla-tools-v1.7.4
-      - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/rust
         with:
           key: tla
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: tla
         run: scripts/ci/tla.sh

@@ -20,7 +20,7 @@ fi
 
 for harness in "${harnesses[@]}"; do
     out="$(cargo kani -p kome --harness "$harness" 2>&1 || true)"
-    if echo "$out" | grep -q '^VERIFICATION:- SUCCESSFUL' && echo "$out" | grep -q '1 successfully verified harnesses, 0 failures'; then
+    if grep -q '^VERIFICATION:- SUCCESSFUL' <<<"$out" && grep -q '1 successfully verified harnesses, 0 failures' <<<"$out"; then
         bounds="$(awk -F'\t' -v name="$harness" '$1 == name { print "展開の上限 " $2 "、範囲: " $3 }' docs/proofs.tsv)"
         if [ -z "$bounds" ]; then
             echo "FAILED    $harness: docs/proofs.tsv に検証条件と範囲が無い" >&2

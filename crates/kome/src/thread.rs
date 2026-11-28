@@ -114,10 +114,7 @@ pub(crate) struct Thread {
 impl Kernel {
     /// スレッドと、その終了時に数が 1 になる資源を作る。
     pub fn create_thread(&mut self, process: ProcessId, start: Start) -> Result<ThreadCreated, Error> {
-        let owner = self.processes.find_mut(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive_mut(process)?;
         if u64::try_from(owner.threads.len()).unwrap_or(u64::MAX) >= u64::from(owner.quota.threads()) {
             return Err(Error::Exhausted(Resource::ProcessThreads));
         }

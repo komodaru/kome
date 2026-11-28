@@ -296,6 +296,35 @@ impl Sim {
         move |thread| self.k.thread_phase(*thread) == Ok(phase)
     }
 
+    /// いま在るメモリ実体か。
+    fn backed(&self) -> impl Fn(&BackingId) -> bool + '_ {
+        |backing| self.k.backing_len(*backing).is_ok()
+    }
+
+    /// 資源を持てるプロセスと、`pool` の中の相手を一つずつ選ぶ。片方が無くても、入力は両方ぶん読む。
+    fn holder_and<T: Copy>(&self, r: &mut Reader<'_>, pool: &[T], fits: impl Fn(&T) -> bool) -> Option<(ProcessId, T)> {
+        let (process, other) = (r.prefer(&self.processes, self.alive()), r.prefer(pool, fits));
+        process.zip(other)
+    }
+
+    /// プロセスと、ページの範囲 (最初のページと数) を選ぶ。
+    fn process_and_pages(&self, r: &mut Reader<'_>) -> Option<(ProcessId, u64, u64)> {
+        let process = r.prefer(&self.processes, self.alive())?;
+        Some((process, r.below(PAGES), r.below(4).saturating_add(1)))
+    }
+
+    /// アドレス空間を変える操作を受理した後の確認。`stale` なら、そのプロセスへ貸している実行権は
+    /// 古いコードを抱えているものとして覚える。
+    fn space_changed(&mut self, process: ProcessId, stale: bool) -> Result<(), String> {
+        if stale {
+            for held in self.held.iter_mut().filter(|held| held.permit.process() == process) {
+                held.stale = true;
+            }
+        }
+        self.check_space(process)?;
+        self.check_shadow(process)
+    }
+
     fn exists(&self) -> impl Fn(&ObjectId) -> bool + '_ {
         |object| self.k.signal_count(*object).is_ok()
     }
@@ -847,15 +876,11 @@ impl Sim {
                 }
             }
             12 => {
-                let (Some(process), Some(object)) = (r.prefer(&self.processes, self.alive()), r.prefer(&self.objects, self.exists())) else {
-                    return Ok(Outcome::Skipped);
-                };
+                let Some((process, object)) = self.holder_and(r, &self.objects, self.exists()) else { return Ok(Outcome::Skipped) };
                 done(self.k.retain_object(process, object))
             }
             13 => {
-                let (Some(process), Some(object)) = (r.prefer(&self.processes, self.alive()), r.prefer(&self.objects, self.exists())) else {
-                    return Ok(Outcome::Skipped);
-                };
+                let Some((process, object)) = self.holder_and(r, &self.objects, self.exists()) else { return Ok(Outcome::Skipped) };
                 done(self.quiet(|k| k.release_object(process, object)))
             }
             14 | 15 => {
@@ -914,9 +939,7 @@ impl Sim {
                 }
             }
             20 => {
-                let (Some(process), Some(object)) = (r.prefer(&self.processes, self.alive()), r.prefer(&self.objects, self.exists())) else {
-                    return Ok(Outcome::Skipped);
-                };
+                let Some((process, object)) = self.holder_and(r, &self.objects, self.exists()) else { return Ok(Outcome::Skipped) };
                 match self.k.create_timer(process, object) {
                     Ok(timer) => {
                         self.timers.push(timer);
@@ -1088,15 +1111,11 @@ impl Sim {
                 }
             }
             39 => {
-                let (Some(process), Some(backing)) = (r.prefer(&self.processes, self.alive()), r.prefer(&self.backings, |backing| self.k.backing_len(*backing).is_ok())) else {
-                    return Ok(Outcome::Skipped);
-                };
+                let Some((process, backing)) = self.holder_and(r, &self.backings, self.backed()) else { return Ok(Outcome::Skipped) };
                 done(self.k.retain_backing(process, backing))
             }
             40 => {
-                let (Some(process), Some(backing)) = (r.prefer(&self.processes, self.alive()), r.prefer(&self.backings, |backing| self.k.backing_len(*backing).is_ok())) else {
-                    return Ok(Outcome::Skipped);
-                };
+                let Some((process, backing)) = self.holder_and(r, &self.backings, self.backed()) else { return Ok(Outcome::Skipped) };
                 done(self.quiet(|k| k.release_backing(process, backing)))
             }
             44 => {
@@ -1182,9 +1201,8 @@ impl Sim {
                 }
             }
             41..=43 => {
-                let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
-                let (first, count) = (r.below(PAGES), r.below(4).saturating_add(1));
-                let source = if r.below(3) == 0 { None } else { r.prefer(&self.backings, |backing| self.k.backing_len(*backing).is_ok()).map(|b| (b, r.below(3).saturating_mul(PAGE))) };
+                let Some((process, first, count)) = self.process_and_pages(r) else { return Ok(Outcome::Skipped) };
+                let source = if r.below(3) == 0 { None } else { r.prefer(&self.backings, self.backed()).map(|b| (b, r.below(3).saturating_mul(PAGE))) };
                 let perm = Perm::from_bits(r.byte() & 7);
                 let prot = Prot::new(perm.read, perm.write, perm.execute);
                 let map_source = match source {
@@ -1207,8 +1225,7 @@ impl Sim {
                     Ok(_) => {
                         let space = self.spaces.get_mut(&process).ok_or("モデルに無いプロセスへのマッピングを受理した")?;
                         space.map(first, count, source, if source.is_some() { perm } else { Perm::NONE }, PAGE);
-                        self.check_space(process)?;
-                        self.check_shadow(process)?;
+                        self.space_changed(process, false)?;
                         Outcome::Accepted
                     }
                     Err(error) => Outcome::Refused(error),
@@ -1225,21 +1242,14 @@ impl Sim {
                         if bytes != removed.saturating_mul(PAGE) {
                             return Err(format!("外したバイト数 {bytes}、モデルは {removed} ページ"));
                         }
-                        if backed {
-                            for held in self.held.iter_mut().filter(|held| held.permit.process() == process) {
-                                held.stale = true;
-                            }
-                        }
-                        self.check_space(process)?;
-                        self.check_shadow(process)?;
+                        self.space_changed(process, backed)?;
                         Outcome::Accepted
                     }
                     Err(error) => Outcome::Refused(error),
                 }
             }
             48..=50 => {
-                let Some(process) = r.prefer(&self.processes, self.alive()) else { return Ok(Outcome::Skipped) };
-                let (first, count) = (r.below(PAGES), r.below(4).saturating_add(1));
+                let Some((process, first, count)) = self.process_and_pages(r) else { return Ok(Outcome::Skipped) };
                 let perm = Perm::from_bits(r.byte() & 7);
                 let prot = Prot::new(perm.read, perm.write, perm.execute);
                 let range = pages(first, count).ok_or("範囲")?;
@@ -1267,13 +1277,7 @@ impl Sim {
                         if changed {
                             self.check_merged(process, first, count)?;
                         }
-                        if lost {
-                            for held in self.held.iter_mut().filter(|held| held.permit.process() == process) {
-                                held.stale = true;
-                            }
-                        }
-                        self.check_space(process)?;
-                        self.check_shadow(process)?;
+                        self.space_changed(process, lost)?;
                         Outcome::Accepted
                     }
                     Err(error) => Outcome::Refused(error),
@@ -1390,7 +1394,7 @@ impl Sim {
                 let data: Vec<u8> = (0..r.below(6)).map(|_| r.byte()).collect();
                 let parcel = match r.below(6) {
                     0 => r.prefer(&self.objects, self.exists()).map(Parcel::Object),
-                    1 => r.prefer(&self.backings, |backing| self.k.backing_len(*backing).is_ok()).map(Parcel::Backing),
+                    1 => r.prefer(&self.backings, self.backed()).map(Parcel::Backing),
                     _ => None,
                 };
                 // モデルが受け付ける形の送信なら、その結果。長すぎる、流れに資源を載せる、端を持たない送信は拒否。

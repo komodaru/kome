@@ -48,6 +48,43 @@ fn thread(kernel: &mut Kernel, process: ProcessId) -> (ThreadId, ObjectId) {
     ok!(kernel, made)
 }
 
+/// カーネルから作った表が、リポジトリのファイル (`path` はリポジトリの根から) と同じであること。
+/// `KOME_UPDATE_GOLDEN=1` のときは、先にファイルを書き直す。
+pub(crate) fn golden(path: &str, made: &str) {
+    let file = format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR"));
+    if std::env::var("KOME_UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty()) {
+        std::fs::write(&file, made).unwrap();
+    }
+    let on_disk = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(on_disk, made, "{path} がカーネルと違う。KOME_UPDATE_GOLDEN=1 で書き直す");
+}
+
+/// 受け付けない実行権は、理由つきで返り、状態を変えない。
+fn rejected(kernel: &mut Kernel, permit: RunPermit, before: &Snapshot, error: Error) {
+    assert_eq!(kernel.relinquish(permit, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(error));
+    assert_eq!(*kernel, *before);
+}
+
+/// 一つのスレッドがサービス中で、待つ相手の event が一つある状態。
+fn serviced_with_event() -> (Kernel, ProcessId, ThreadId, ObjectId) {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (t, _) = thread(&mut k, p);
+    let e = event(&mut k, p);
+    assert_eq!(trap(&mut k, W0), t);
+    (k, p, t, e)
+}
+
+/// 二つのスレッドのうち、先に作ったほうを W0 へ貸した状態。
+fn first_of_two_lent() -> (Kernel, ProcessId, ThreadId, ThreadId, RunPermit) {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (first, _) = thread(&mut k, p);
+    let (second, _) = thread(&mut k, p);
+    let permit = ok!(k, k.grant(W0)).unwrap();
+    (k, p, first, second, permit)
+}
+
 /// 先頭の実行可能なスレッドを一度実行させ、サービス中にして返す。
 fn trap(kernel: &mut Kernel, worker: WorkerId) -> ThreadId {
     let permit = ok!(kernel, kernel.grant(worker)).unwrap();
@@ -141,11 +178,7 @@ fn exit_signal_outlives_the_thread_while_someone_holds_it() {
 
 #[test]
 fn exit_process_waits_for_running_threads_to_stop() {
-    let mut k = kernel();
-    let (p, _) = process(&mut k);
-    let (running, _) = thread(&mut k, p);
-    let (idle, _) = thread(&mut k, p);
-    let permit = ok!(k, k.grant(W0)).unwrap();
+    let (mut k, p, running, idle, permit) = first_of_two_lent();
     assert_eq!(permit.thread(), running);
     ok!(k, k.exit_process(p, ExitCode::new(9)));
     assert_eq!(k.process_phase(p), Ok(ProcessPhase::Exiting));
@@ -163,11 +196,7 @@ fn exit_process_waits_for_running_threads_to_stop() {
 
 #[test]
 fn threads_run_in_fifo_order_and_a_preempted_thread_goes_to_the_back() {
-    let mut k = kernel();
-    let (p, _) = process(&mut k);
-    let (a, _) = thread(&mut k, p);
-    let (b, _) = thread(&mut k, p);
-    let first = ok!(k, k.grant(W0)).unwrap();
+    let (mut k, _, a, b, first) = first_of_two_lent();
     assert_eq!(first.thread(), a);
     assert_eq!(first.budget(), Limits::DEFAULT.quantum());
     assert_eq!(ok!(k, k.relinquish(first, Stop::Yielded, Budget::new(100_003))), ThreadFate::Ready);
@@ -212,8 +241,7 @@ fn a_stale_or_foreign_permit_changes_nothing() {
     let idle = ok!(twin, twin.relinquish(second, Stop::Yielded, Budget::new(1)));
     assert_eq!(idle, ThreadFate::Ready);
     let third = ok!(twin, twin.grant(W0)).unwrap();
-    assert_eq!(k.relinquish(third, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
-    assert_eq!(k, before);
+    rejected(&mut k, third, &before, Error::Refused(Refusal::StalePermit));
     // k は 1 回目の実行を貸しているので、4 回目の実行の実行権は古い。
     let mine = ok!(k, k.grant(W0)).unwrap();
     let fourth = {
@@ -229,8 +257,7 @@ fn a_stale_or_foreign_permit_changes_nothing() {
         ok!(late, late.grant(W0)).unwrap()
     };
     let before = k.snapshot().unwrap();
-    assert_eq!(k.relinquish(fourth, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
-    assert_eq!(k, before);
+    rejected(&mut k, fourth, &before, Error::Refused(Refusal::StalePermit));
     // 別の worker が同じ回の実行権を名乗っても受け取らない。
     let other_worker = {
         let mut late = kernel();
@@ -238,14 +265,12 @@ fn a_stale_or_foreign_permit_changes_nothing() {
         let _ = thread(&mut late, lp);
         ok!(late, late.grant(W1)).unwrap()
     };
-    assert_eq!(k.relinquish(other_worker, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Refused(Refusal::StalePermit)));
-    assert_eq!(k, before);
+    rejected(&mut k, other_worker, &before, Error::Refused(Refusal::StalePermit));
     let mut other = Kernel::new(InstanceId::new(2), Limits::DEFAULT).unwrap();
     let (op, _) = process(&mut other);
     let _ = thread(&mut other, op);
     let foreign = other.grant(W0).unwrap().unwrap();
-    assert_eq!(k.relinquish(foreign, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
-    assert_eq!(k, before);
+    rejected(&mut k, foreign, &before, Error::Foreign);
     assert_eq!(ok!(k, k.relinquish(mine, Stop::Trap, Budget::new(1))), ThreadFate::Servicing);
 }
 
@@ -264,8 +289,7 @@ fn a_snapshot_is_restored_only_as_another_instance_with_nothing_lent() {
     let mut restored = quiet.restore(InstanceId::new(7)).unwrap();
     assert_eq!(restored.instance(), InstanceId::new(7));
     let before = restored.snapshot().unwrap();
-    assert_eq!(restored.relinquish(permit, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
-    assert_eq!(restored, before);
+    rejected(&mut restored, permit, &before, Error::Foreign);
     // 発行済みの I/O があると復元できない。完了通知は元の実行インスタンス宛てだからである。
     let own = ok!(restored, restored.grant(W0)).unwrap();
     assert_eq!(own.thread(), t);
@@ -467,11 +491,7 @@ fn wait_validates_before_changing_anything() {
 
 #[test]
 fn a_closed_object_lives_until_its_waiters_leave() {
-    let mut k = kernel();
-    let (p, _) = process(&mut k);
-    let (t, _) = thread(&mut k, p);
-    let e = event(&mut k, p);
-    assert_eq!(trap(&mut k, W0), t);
+    let (mut k, p, t, e) = serviced_with_event();
     let started = k.wait(t, &[e], WaitMode::Any, Deadline::Never, Interruptible::Yes);
     assert_eq!(ok!(k, started), WaitStart::Blocked);
     ok!(k, k.release_object(p, e));
@@ -485,11 +505,7 @@ fn a_closed_object_lives_until_its_waiters_leave() {
 
 #[test]
 fn only_interruptible_waits_are_interrupted() {
-    let mut k = kernel();
-    let (p, _) = process(&mut k);
-    let (t, _) = thread(&mut k, p);
-    let e = event(&mut k, p);
-    assert_eq!(trap(&mut k, W0), t);
+    let (mut k, _, t, e) = serviced_with_event();
     assert_eq!(wait_any(&mut k, t, &[e]), WaitStart::Blocked);
     assert_eq!(k.interrupt_wait(t), Err(Error::Refused(Refusal::NotInterruptible)));
     assert_eq!(k.thread_phase(t), Ok(ThreadPhase::Blocked));
@@ -527,11 +543,7 @@ fn spec_must_be_consistent() {
 
 #[test]
 fn a_wait_times_out_exactly_once_at_its_deadline() {
-    let mut k = kernel();
-    let (p, _) = process(&mut k);
-    let (t, _) = thread(&mut k, p);
-    let e = event(&mut k, p);
-    assert_eq!(trap(&mut k, W0), t);
+    let (mut k, _, t, e) = serviced_with_event();
     let poll = k.wait(t, &[e], WaitMode::Any, Deadline::At(at(0)), Interruptible::No);
     assert_eq!(ok!(k, poll), WaitStart::Done(WaitOutcome::TimedOut));
     let started = k.wait(t, &[e], WaitMode::Any, Deadline::At(at(100)), Interruptible::No);
@@ -1324,13 +1336,7 @@ fn tla_wait_table() -> String {
 /// TLA+ のモデル (tla/WaitRace.tla) が使う判定は、このカーネルの判定そのものである。
 #[test]
 fn the_tla_wait_table_is_the_kernel() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tla/WaitTable.tla");
-    let table = tla_wait_table();
-    if std::env::var("KOME_UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty()) {
-        std::fs::write(path, &table).unwrap();
-    }
-    let on_disk = std::fs::read_to_string(path).unwrap();
-    assert_eq!(on_disk, table, "tla/WaitTable.tla がカーネルと違う。KOME_UPDATE_GOLDEN=1 で書き直す");
+    golden("tla/WaitTable.tla", &tla_wait_table());
 }
 
 #[test]
@@ -1615,13 +1621,7 @@ fn tla_exit_table() -> String {
 /// TLA+ のモデル (tla/ProcessExit.tla) が使う表は、このカーネルの動きそのものである。
 #[test]
 fn the_tla_exit_table_is_the_kernel() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tla/ExitTable.tla");
-    let table = tla_exit_table();
-    if std::env::var("KOME_UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty()) {
-        std::fs::write(path, &table).unwrap();
-    }
-    let on_disk = std::fs::read_to_string(path).unwrap_or_default();
-    assert_eq!(on_disk, table, "tla/ExitTable.tla がカーネルと違う。KOME_UPDATE_GOLDEN=1 で書き直す");
+    golden("tla/ExitTable.tla", &tla_exit_table());
 }
 
 // ---- 検査の文言ごとの壊し方 ----
@@ -2533,11 +2533,7 @@ fn a_restored_state_lends_the_thread_that_was_ready() {
 
 #[test]
 fn a_restored_state_wakes_a_wait_and_reports_it() {
-    let mut original = kernel();
-    let (p, _) = process(&mut original);
-    let (t, _) = thread(&mut original, p);
-    let event = event(&mut original, p);
-    assert_eq!(trap(&mut original, W0), t);
+    let (mut original, _, t, event) = serviced_with_event();
     assert_eq!(wait_any(&mut original, t, &[event]), WaitStart::Blocked);
     let mut k = restored(&original);
     assert_eq!(ok!(k, k.signal(event, SignalOp::Set(1))), 0);
@@ -2560,8 +2556,7 @@ fn a_restored_state_refuses_a_permit_lent_by_the_original() {
     let own = ok!(k, k.grant(W0)).unwrap();
     assert_eq!((own.thread(), own.run()), (t, lent_by_original.run()));
     let before = k.snapshot().unwrap();
-    assert_eq!(k.relinquish(lent_by_original, Stop::Trap, Budget::new(1)).map_err(|refused| refused.error()), Err(Error::Foreign));
-    assert_eq!(k, before);
+    rejected(&mut k, lent_by_original, &before, Error::Foreign);
     assert_eq!(ok!(k, k.relinquish(own, Stop::Trap, Budget::new(1))), ThreadFate::Servicing);
 }
 
@@ -3182,11 +3177,7 @@ fn each_stop_reason_decides_where_the_thread_goes() {
         (Stop::Exited(ExitCode::new(5)), ThreadFate::Exited(ExitCode::new(5))),
     ];
     for (stop, fate) in cases {
-        let mut k = kernel();
-        let (p, _) = process(&mut k);
-        let (t, _) = thread(&mut k, p);
-        let (_other, _) = thread(&mut k, p);
-        let permit = ok!(k, k.grant(W0)).unwrap();
+        let (mut k, p, t, _other, permit) = first_of_two_lent();
         assert_eq!(ok!(k, k.relinquish(permit, stop, quantum)), fate, "{stop:?}");
         match fate {
             // 実行待ちへ戻ったスレッドは、列の末尾にいる。

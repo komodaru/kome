@@ -20,8 +20,8 @@ fn the_repository_is_clean() {
 fn every_rule_detects_each_of_its_breakages() {
     let clean = repo();
     for rule in RULES {
-        assert!(!rule.breaks.is_empty(), "{}: 壊し方が一つも無い規則は、検出できるか分からない", rule.id);
-        for (at, breakage) in rule.breaks.iter().enumerate() {
+        assert!(!rule.breaks.is_empty() || !rule.keeps.is_empty(), "{}: 壊し方が一つも無い規則は、検出できるか分からない", rule.id);
+        let detects = |at: usize, breakage: &dyn Fn(&mut Repo)| {
             let mut broken = clean.clone();
             breakage(&mut broken);
             assert_ne!(broken, clean, "{} の壊し方 {at} が何も変えていない (置き換える文字列が無くなった)", rule.id);
@@ -33,6 +33,13 @@ fn every_rule_detects_each_of_its_breakages() {
                 "{} の壊し方 {at} は読めないファイルを作っただけ: {findings:?}",
                 rule.id
             );
+        };
+        // 残すべき文字列を一つずつ崩し、続けて、規則ごとの壊し方を一つずつ試す。
+        for (at, keep) in rule.keeps.iter().enumerate() {
+            detects(at, &|repo: &mut Repo| keep.spoil(repo));
+        }
+        for (at, breakage) in rule.breaks.iter().enumerate() {
+            detects(rule.keeps.len().saturating_add(at), breakage);
         }
     }
 }

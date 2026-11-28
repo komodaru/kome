@@ -34,7 +34,6 @@ use crate::error::{Error, Invariant, Refusal, Resource};
 use crate::id::{BackingId, ProcessId};
 use crate::kernel::Kernel;
 use crate::lookup;
-use crate::process::Life;
 use crate::store::{List, TryClone, plain_try_clone};
 use crate::thread::Run;
 
@@ -276,6 +275,13 @@ impl Space {
         Ok(())
     }
 
+    /// 範囲を確かめ、最初と最後のアドレスと、範囲に掛かりうる最初のマッピングの位置を返す。
+    fn locate(&self, range: GuestRange) -> Result<(u64, u64, usize), Error> {
+        self.check(range)?;
+        let (start, last) = (range.start().get(), range.last().get());
+        Ok((start, last, self.first_ending_at_or_after(start)))
+    }
+
     /// `addr` 以降に終わる最初のマッピングの位置。
     fn first_ending_at_or_after(&self, addr: u64) -> usize {
         lookup::first_ending_at_or_after(self.maps.as_slice(), addr)
@@ -300,6 +306,13 @@ pub(crate) struct Backing {
 }
 
 /// `value` を `align` の倍数へ切り上げる。
+/// `backing` を写すマッピングが一つ減ったことを記録する。
+fn one_map_less(backings: &mut crate::id::Arena<crate::id::kind::Backing, Backing>, backing: BackingId) -> Result<(), Error> {
+    let entry = backings.get_mut(backing).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
+    entry.maps = entry.maps.checked_sub(1).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
+    Ok(())
+}
+
 fn align_up(value: u64, align: u64) -> Option<u64> {
     let mask = align.checked_sub(1)?;
     Some(value.checked_add(mask)? & !mask)
@@ -319,10 +332,7 @@ impl Kernel {
             .filter(|total| *total <= self.limits.backing_bytes())
             .ok_or(Error::Exhausted(Resource::BackingBytes))?;
         let limit = self.holdings_limit(process);
-        let owner = self.processes.find_mut(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive_mut(process)?;
         owner.backings.room_for_new(limit)?;
         self.backings.reserve()?;
         self.effects.promise(1)?;
@@ -338,10 +348,7 @@ impl Kernel {
         let limit = self.holdings_limit(process);
         let holds = self.backings.find(backing, &self.lineage)?.holds;
         let holds = holds.checked_add(1).ok_or(Error::Refused(Refusal::HoldOverflow))?;
-        let owner = self.processes.find_mut(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive_mut(process)?;
         owner.backings.add(backing, limit)?;
         self.backings.get_mut(backing).ok_or(Error::Broken(Invariant::MemBackingAlive))?.holds = holds;
         Ok(())
@@ -375,14 +382,9 @@ impl Kernel {
         source: MapSource,
         prot: Prot,
     ) -> Result<MapGen, Error> {
-        let owner = self.processes.find(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive(process)?;
         let space = &owner.space;
-        space.check(range)?;
-        let (start, last) = (range.start().get(), range.last().get());
-        let place = space.first_ending_at_or_after(start);
+        let (start, last, place) = space.locate(range)?;
         if space.maps.get(place).is_some_and(|next| next.start <= last) {
             return Err(Error::Refused(Refusal::Overlap));
         }
@@ -422,14 +424,9 @@ impl Kernel {
     /// 外したバイト数を返す (`u64` に収まらなければ `u64::MAX`)。何も無ければ 0 で、
     /// 状態は変わらない。
     pub fn unmap(&mut self, process: ProcessId, range: GuestRange) -> Result<u64, Error> {
-        let owner = self.processes.find(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive(process)?;
         let space = &owner.space;
-        space.check(range)?;
-        let (start, last) = (range.start().get(), range.last().get());
-        let first = space.first_ending_at_or_after(start);
+        let (start, last, first) = space.locate(range)?;
         // 計画: 何を外し、いくつ増え、いくつ保留が要るか。
         let mut bytes = 0u64;
         let mut cut_backed = 0u32;
@@ -523,14 +520,9 @@ impl Kernel {
     /// 権限が減る部分が無い変更 (増やすだけ) は、世代を進めるが、実行中のスレッドを止めない。
     /// 古い世代で検証したマッピングは、変更の前より狭い権限しか持たないからである。
     pub fn protect(&mut self, process: ProcessId, range: GuestRange, prot: Prot) -> Result<MapGen, Error> {
-        let owner = self.processes.find(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive(process)?;
         let space = &owner.space;
-        space.check(range)?;
-        let (start, last) = (range.start().get(), range.last().get());
-        let first = space.first_ending_at_or_after(start);
+        let (start, last, first) = space.locate(range)?;
         let mut end = first;
         let mut expected = start;
         let mut changes = false;
@@ -634,8 +626,7 @@ impl Kernel {
             maps.get_mut(at).ok_or(Error::Broken(Invariant::MemLayout))?.last = next.last;
             maps.remove(following).ok_or(Error::Broken(Invariant::MemLayout))?;
             let backing = next.backing().ok_or(Error::Broken(Invariant::MemLayout))?;
-            let entry = self.backings.get_mut(backing).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
-            entry.maps = entry.maps.checked_sub(1).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
+            one_map_less(&mut self.backings, backing)?;
         }
         if reduces {
             self.reduce(process)?;
@@ -818,8 +809,7 @@ impl Kernel {
             }
             let Some(mapping) = owner.space.maps.pop() else { return Ok(()) };
             let Some(backing) = mapping.backing() else { continue };
-            let entry = self.backings.get_mut(backing).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
-            entry.maps = entry.maps.checked_sub(1).ok_or(Error::Broken(Invariant::MemBackingAlive))?;
+            one_map_less(&mut self.backings, backing)?;
             self.reclaim_backing_if_unused(backing)?;
         }
     }

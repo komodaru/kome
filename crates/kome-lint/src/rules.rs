@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::scan::{Scan, scan};
-use crate::{Repo, Report, Rule};
+use crate::{Keep, Repo, Report, Rule, dup};
 
 const KOME_SRC: &str = "crates/kome/src/";
 const KOME_MANIFEST: &str = "crates/kome/Cargo.toml";
@@ -28,6 +28,18 @@ const LOOM_RS: &str = "crates/kome-host-std/tests/loom.rs";
 const LOOM_SH: &str = "scripts/ci/loom.sh";
 const BENCH_RS: &str = "crates/kome-bench/benches/kernel.rs";
 const BENCH_MD: &str = "docs/bench.md";
+const INPUT_RS: &str = "crates/kome/src/input.rs";
+const IO_RS: &str = "crates/kome/src/io.rs";
+const FRESH_OPERATION: &str = "impl Kernel {\n    /// 新しい操作。\n    pub fn fresh_operation(&mut self) {}\n}";
+const NOTIFY_CHECKED: &str = "通知先にする資源を can_notify で確かめていない (通信路の通知の資源は通知先にできない)";
+const FINISHED_HOST_TEST: &str = "fn a_host_finished_from_the_start_lets_its_workers_go()";
+const LATE_INTERRUPT_TEST: &str = "fn an_interrupt_for_one_run_never_stops_the_next_thread_on_the_same_worker()";
+const SHADOW_CHECKED: &str = "self.space_changed(process, ";
+const STALE_OR_FOREIGN: &str = "if self.includes(id.issuer) { Error::Stale(K::TAG) } else { Error::Foreign }";
+const FOREIGN_REPLY: &str = "assert_eq!(own.k.apply(input), Err(Error::Foreign), \"{at}: {shown}\");";
+/// 規則 `dup` の自己試験が足す関数。壊し方は、これと、これを写したものを足す。
+const DUP_FN: &str = "fn dup_first(first: &[u64], second: &[u64]) -> u64 {\n    let mut total = 0u64;\n    for entry in first.iter().chain(second.iter()) {\n        if *entry > 16 && *entry < 4096 {\n            total = total.saturating_add(entry.saturating_mul(3)).saturating_sub(1);\n        }\n    }\n    if total > 65536 {\n        total = total.saturating_sub(first.len().try_into().unwrap_or(u64::MAX));\n    }\n    total\n}\n";
+const DUP_TABLE: &str = "const DUP_ONE: [u32; 24] = [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97];\nconst DUP_TWO: [u32; 24] = [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97];";
 const BENCH_GATE: &str = "docs/bench-gate.tsv";
 const BENCH_LIB: &str = "crates/kome-bench/src/lib.rs";
 const BENCH_SH: &str = "scripts/ci/bench-gate.sh";
@@ -60,6 +72,7 @@ pub const RULES: &[Rule] = &[
         id: "no-deps",
         about: "kome は依存クレート・機能フラグ・ビルドスクリプトを持たない",
         check: no_deps,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit(KOME_MANIFEST, |text| text.replace("[dependencies]\n", "[dependencies]\nlibc = \"1\"\n")),
             |repo| repo.append(KOME_MANIFEST, "[build-dependencies]\ncc = \"1\""),
@@ -71,6 +84,7 @@ pub const RULES: &[Rule] = &[
         id: "no-std",
         about: "kome は no_std + alloc で、std を名指ししない",
         check: no_std,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit("crates/kome/src/lib.rs", |text| text.replace("#![cfg_attr(not(test), no_std)]", "")),
             |repo| repo.append(KERNEL_RS, "fn now() -> std::time::Instant { std::time::Instant::now() }"),
@@ -80,6 +94,7 @@ pub const RULES: &[Rule] = &[
         id: "required-lints",
         about: "コンパイラと clippy の禁止事項を緩めない",
         check: required_lints,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit(KOME_MANIFEST, |text| text.replace("arithmetic_side_effects = \"deny\"", "arithmetic_side_effects = \"warn\"")),
             |repo| repo.edit(KOME_MANIFEST, |text| text.replace("unsafe_code = \"forbid\"\n", "")),
@@ -92,6 +107,7 @@ pub const RULES: &[Rule] = &[
         id: "no-local-allow",
         about: "その場で lint を黙らせない (allow / expect / warn 属性を書かない)",
         check: no_local_allow,
+        keeps: &[],
         breaks: &[
             |repo| repo.append(KERNEL_RS, "#[allow(dead_code)]\nfn unused() {}"),
             |repo| repo.edit("crates/kome-testkit/src/lib.rs", |text| format!("#![allow(clippy::all)]\n{text}")),
@@ -103,6 +119,7 @@ pub const RULES: &[Rule] = &[
         id: "host-vocabulary",
         about: "kome は特定の OS・ホスト・実行基盤の語彙を持たない",
         check: host_vocabulary,
+        keeps: &[],
         breaks: &[
             |repo| repo.append("crates/kome/src/error.rs", "/// 状態。\npub struct NtStatus(u32);"),
             |repo| repo.append(KERNEL_RS, "fn hwnd_of(window: u32) -> u32 { window }"),
@@ -113,6 +130,7 @@ pub const RULES: &[Rule] = &[
         id: "no-globals",
         about: "kome は大域状態と内部可変性を持たない (状態は Kernel の値だけ)",
         check: no_globals,
+        keeps: &[],
         breaks: &[
             |repo| repo.append(KERNEL_RS, "static COUNT: u32 = 0;"),
             |repo| repo.append(KERNEL_RS, "#[cfg(any(test, target_pointer_width = \"64\"))]\npub static COUNT: u32 = 0;"),
@@ -125,6 +143,7 @@ pub const RULES: &[Rule] = &[
         id: "raw-collections",
         about: "確保に失敗しうる入れ物は store.rs の包みだけを使う",
         check: raw_collections,
+        keeps: &[],
         breaks: &[
             |repo| repo.append(KERNEL_RS, "fn grow() -> alloc::vec::Vec<u8> { alloc::vec::Vec::new() }"),
             |repo| repo.append(KERNEL_RS, "fn name(id: u32) -> usize { alloc::format!(\"{id}\").len() }"),
@@ -134,24 +153,28 @@ pub const RULES: &[Rule] = &[
         id: "no-pub-fields",
         about: "kome の構造体はフィールドを公開しない (不変条件を作る関数だけが値を作る)",
         check: no_pub_fields,
+        keeps: &[],
         breaks: &[|repo| repo.append(KERNEL_RS, "/// 開いた型。\npub struct Open {\n    /// 値。\n    pub value: u32,\n}")],
     },
     Rule {
         id: "no-catch-all",
         about: "kome の match は `_` の腕で残りをまとめない",
         check: no_catch_all,
+        keeps: &[],
         breaks: &[|repo| repo.append(KERNEL_RS, "fn kind(value: u8) -> u8 { match value { 0 => 1, _ => 2 } }")],
     },
     Rule {
         id: "no-open-range",
         about: "kome は終わりの無い範囲を数え上げない (端で桁あふれして止まる)",
         check: no_open_range,
+        keeps: &[],
         breaks: &[|repo| repo.append(KERNEL_RS, "fn numbered(items: &[u8]) -> usize { (0u32..).zip(items).count() }")],
     },
     Rule {
         id: "escape-comments",
         about: "コメントに書いて実装を省かない",
         check: escape_comments,
+        keeps: &[],
         breaks: &[
             |repo| repo.append(KERNEL_RS, &format!("// {}: 後で直す", first_word())),
             |repo| repo.append("scripts/ci/tla.sh", &format!("# {}", first_word().to_uppercase())),
@@ -163,6 +186,7 @@ pub const RULES: &[Rule] = &[
         id: "compile-fail-kept",
         about: "型で防いだ誤りの compile_fail 試験を減らさない",
         check: compile_fail_kept,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit("crates/kome/src/sched.rs", |text| text.replacen("```compile_fail", "```ignore", 1)),
             |repo| repo.edit("crates/kome/src/id.rs", |text| text.replacen("```compile_fail", "```", 1)),
@@ -173,6 +197,7 @@ pub const RULES: &[Rule] = &[
         id: "no-skipped-tests",
         about: "試験を無視・条件つきで外さない (走らない試験は合格に数えない)",
         check: no_skipped_tests,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit("crates/kome/src/tests.rs", |text| text.replacen("#[test]\n", &format!("#[test]\n#[{}]\n", skip_word()), 1)),
             |repo| repo.edit("crates/kome-testkit/tests/sim.rs", |text| text.replacen("    #[test]\n", &format!("    #[test]\n    #[{} = \"遅い\"]\n", skip_word()), 1)),
@@ -183,6 +208,7 @@ pub const RULES: &[Rule] = &[
         id: "ledger",
         about: "不変条件の台帳・実装・試験・証明・モデルが食い違わない",
         check: ledger,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit(LEDGER, |text| text.replacen("id = \"RUN-1\"", "id = \"RUN-9\"", 1)),
             |repo| repo.edit(LEDGER, |text| text.replacen("::audit_detects_two_permits_for_one_thread", "::gone", 1)),
@@ -207,6 +233,7 @@ pub const RULES: &[Rule] = &[
         id: "tla-listed",
         about: "TLA+ のモデルは全て実行され、実装から生成した表を使い、誤りの変種で反例が出る",
         check: tla_listed,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit(EXPECT, |text| text.replace("IoLifecycleDuplicate.cfg\tIoLifecycle\tSettlesOnce\n", "")),
             |repo| repo.edit("tla/IoLifecycle.tla", |text| text.replace("EXTENDS IoTable, ", "EXTENDS ")),
@@ -221,8 +248,9 @@ pub const RULES: &[Rule] = &[
         id: "operations-covered",
         about: "Kernel の操作は全て Input にあり、決定的シミュレーションが呼ぶ",
         check: operations_covered,
+        keeps: &[],
         breaks: &[
-            |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 新しい操作。\n    pub fn fresh_operation(&mut self) {}\n}"),
+            |repo| repo.append(KERNEL_RS, FRESH_OPERATION),
             |repo| repo.edit("crates/kome-testkit/src/sim.rs", |text| text.replace("snapshot.restore(", "snapshot.instance_of(")),
         ],
     },
@@ -230,12 +258,13 @@ pub const RULES: &[Rule] = &[
         id: "quiet-operations",
         about: "確保しないと約束した操作は、文書・確保を数える検査・決定的シミュレーションで同じ一覧になる",
         check: quiet_operations,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit(SIM_RS, |text| text.replace("self.quiet(|k| k.exit_process(", "self.plain(|k| k.exit_process(")),
             |repo| repo.edit(SIM_RS, |text| text.replace("let made = self.k.create_thread(process, start);", "let made = self.quiet(|k| k.create_thread(process, start));")),
             |repo| repo.edit(MEMORY_MD, |text| text.replace("`signal`、`interrupt_wait`、`advance`", "`signal`、`interrupt_wait`")),
             |repo| repo.edit(MEMORY_MD, |text| text.replace("| `arm_timer` | 期限の列 |", "| `arm_timer`、`advance` | 期限の列 |")),
-            |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 新しい操作。\n    pub fn fresh_operation(&mut self) {}\n}"),
+            |repo| repo.append(KERNEL_RS, FRESH_OPERATION),
             |repo| repo.edit("checks/noalloc/tests/noalloc.rs", |text| text.replace("assert_eq!(count(), before, \"seed", "assert!(count() >= before, \"seed")),
             |repo| repo.edit("checks/noalloc/src/lib.rs", |text| text.replacen("        note();\n", "", 1)),
         ],
@@ -244,6 +273,7 @@ pub const RULES: &[Rule] = &[
         id: "capacity-audited",
         about: "確保なしで追加する入れ物は、容量を誰が確保するかが表にあり、検査が容量を確かめる",
         check: capacity_audited,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit(CAPACITY, |text| text.lines().filter(|line| !line.starts_with("running\t")).map(|line| format!("{line}\n")).collect()),
             |repo| repo.edit("crates/kome/src/audit.rs", |text| text.replace("\"実行待ちの列が、スレッドの数ぶんの容量を持っていない\"", "\"実行待ちの列が短い\"")),
@@ -257,10 +287,12 @@ pub const RULES: &[Rule] = &[
         id: "independent-model",
         about: "独立したモデルは kome の判定を呼ばず (借りるのは実体の ID だけ)、決定的シミュレーションが見え方と項目のまとまりをモデルと比べる",
         check: independent_model,
+        keeps: &[
+            Keep { path: SIM_RS, needle: "let expected = model.expect(page, within, touch);", why: "決定的シミュレーションが、メモリの見え方をモデルの判定 (Pages::expect) と比べていない", broken: "let expected = actual;" },
+        ],
         breaks: &[
             |repo| repo.edit(PAGES_RS, |text| text.replace("use kome::BackingId;", "use kome::{BackingId, Prot};")),
             |repo| repo.append(PAGES_RS, "fn judged(prot: kome::Prot) -> bool { prot.allows(kome::Access::Write) }"),
-            |repo| repo.edit(SIM_RS, |text| text.replace("let expected = model.expect(page, within, touch);", "let expected = actual;")),
             |repo| repo.edit(SIM_RS, |text| text.replace("self.check_merged(process, first, count)?;", "")),
             |repo| repo.edit(SIM_RS, |text| text.replace("&& model.continues(page, PAGE)", "&& false")),
         ],
@@ -269,18 +301,20 @@ pub const RULES: &[Rule] = &[
         id: "channel-model",
         about: "通信路のモデルは kome を使わず、決定的シミュレーションが結果・中身・通知をモデルと比べる。通知の数を変えられるのは通信路だけ",
         check: channel_model,
+        keeps: &[
+            Keep { path: TIMER_RS, needle: "self.can_notify(", why: NOTIFY_CHECKED, broken: "self.can_pin(" },
+            Keep { path: IO_RS, needle: "self.can_notify(", why: NOTIFY_CHECKED, broken: "self.can_pin(" },
+            Keep { path: IPC_RS, needle: "let admitted = entry.spec.admit(len, entry.queued(), frames, parcel.is_some()).map_err(Error::Refused)?;", why: "send が、受け付けの判定 (ChannelSpec::admit) を通っていない", broken: "let admitted = Some(len);" },
+            Keep { path: SIM_RS, needle: "        self.check_pipes()?;\n", why: "操作のたびに、通信路の中身と通知をモデルと比べる", broken: "" },
+            Keep { path: SIM_RS, needle: "if got != put {", why: "送信の結果をモデルと比べる", broken: "if false {" },
+            Keep { path: SIM_RS, needle: "if filled != want.as_slice() || parcel != carried {", why: "受け取ったバイト列と資源をモデルと比べる", broken: "if parcel != carried {" },
+            Keep { path: SIM_RS, needle: "if levels != (Ok(u64::from(pipe.readable())), Ok(u64::from(pipe.writable()))) {", why: "読める・書けるの通知をモデルと比べる", broken: "if false {" },
+            Keep { path: SIM_RS, needle: "if queued != Ok(wide(pipe.queued())?) || self.k.next_message_len(*channel) != Ok(next) {", why: "中身の量と次の長さをモデルと比べる", broken: "if false {" },
+            Keep { path: SIM_RS, needle: "pipe.forget(process);", why: "プロセスの終了で、モデルの端を外す", broken: "" },
+        ],
         breaks: &[
             |repo| repo.append(PIPES_RS, "fn sized(spec: kome::ChannelSpec) -> kome::ChannelSpec { spec }"),
-            |repo| repo.edit(SIM_RS, |text| text.replace("        self.check_pipes()?;\n", "")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("if got != put {", "if false {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("if filled != want.as_slice() || parcel != carried {", "if parcel != carried {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("if levels != (Ok(u64::from(pipe.readable())), Ok(u64::from(pipe.writable()))) {", "if false {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("if queued != Ok(wide(pipe.queued())?) || self.k.next_message_len(*channel) != Ok(next) {", "if false {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("pipe.forget(process);", "")),
             |repo| repo.edit(OBJECT_RS, |text| text.replacen("        if entry.driven {\n            return Err(Error::Refused(Refusal::DrivenObject));\n        }\n", "", 1)),
-            |repo| repo.edit(TIMER_RS, |text| text.replace("self.can_notify(", "self.can_pin(")),
-            |repo| repo.edit("crates/kome/src/io.rs", |text| text.replace("self.can_notify(", "self.can_pin(")),
-            |repo| repo.edit(IPC_RS, |text| text.replace("let admitted = entry.spec.admit(len, entry.queued(), frames, parcel.is_some()).map_err(Error::Refused)?;", "let admitted = Some(len);")),
             |repo| repo.append(KERNEL_RS, "fn forced(kernel: &mut Kernel, object: crate::id::ObjectId) {\n    if let Some(entry) = kernel.objects.get_mut(object) {\n        entry.driven = false;\n    }\n}"),
         ],
     },
@@ -288,9 +322,20 @@ pub const RULES: &[Rule] = &[
         id: "executor-contract",
         about: "止まった理由は一か所で判定し、文書の表と一致する。貸し出しは一つの入口を通り、決定的シミュレーションが貸す順序を自分の記録と比べる。実行器は、貸されている実行権でだけ実行を始め、拒否した実行権を呼び出した側へ返す",
         check: executor_contract,
+        keeps: &[
+            Keep { path: SCHED_RS, needle: "            stop_allowed(stop, interrupted, permit.budget, consumed).map_err(Error::Refused)?;\n", why: "relinquish が、受理の前に理由を確かめていない (stop_allowed)", broken: "" },
+            Keep { path: SCHED_RS, needle: "        match after_stop(stop, kill) {", why: "実行権を返したスレッドの行き先を、理由と終了要求から決めていない (after_stop)", broken: "        match after_stop(stop, None) {" },
+            Keep { path: SIM_RS, needle: "Err(kome::NotRun::Rejected { permit, loaded: None, error: Error::Foreign }) => permit,", why: "決定的シミュレーションが、別の実行インスタンスの実行権で実行を始めないことを確かめていない", broken: "Err(kome::NotRun::Rejected { permit, .. }) => permit," },
+            Keep { path: TESTS_RS, needle: "fn a_permit_of_another_kernel_never_runs_and_comes_back_whole()", why: "別の Kernel の実行権が実行器を動かさずに返る試験が無い", broken: "fn a_permit_of_another_kernel()" },
+            Keep { path: EXEC_RS, needle: "        Err(NotRelinquished::Rejected(permit, error)) => NotRun::Rejected { permit, loaded: None, error },", why: "hand_back が、受け取られなかった実行権を返していない", broken: "        Err(NotRelinquished::Rejected(_, error)) => NotRun::Failed(error)," },
+            Keep { path: EXEC_RS, needle: "#[must_use = \"拒否された実行権は into_permit で取り戻す\"]\n#[derive(Debug)]\npub enum NotRun<C> {", why: "拒否の値 (NotRun) を捨てても警告が出ない、または複製できる", broken: "#[derive(Debug)]\npub enum NotRun<C> {" },
+            Keep { path: SIM_RS, needle: "if self.rank(*other) > self.rank(picked) {", why: "優先度の高いスレッドを飛ばしていないこと", broken: "if false {" },
+            Keep { path: SIM_RS, needle: "if self.rank(*other) == self.rank(picked) && *theirs < mine {", why: "同じ優先度の中で、先に実行待ちになったスレッドを飛ばしていないこと", broken: "if false {" },
+            Keep { path: SIM_RS, needle: "if let Some(idle) = self.since.keys().find(|thread| self.open(**thread)) {", why: "貸せるスレッドがあるのに貸さないことが無いこと", broken: "if let Some(idle) = None::<&ThreadId> {" },
+            Keep { path: SIM_RS, needle: "        self.note_ready();\n", why: "操作のたびに、貸せる状態のスレッドを記録すること", broken: "" },
+            Keep { path: SIM_RS, needle: "let ready = self.k.thread_phase(*thread) == Ok(ThreadPhase::Ready) && self.k.suspend_count(*thread) == Ok(0);", why: "貸せる状態の判定", broken: "let ready = self.k.priority(*thread).is_ok();" },
+        ],
         breaks: &[
-            |repo| repo.edit(SCHED_RS, |text| text.replace("            stop_allowed(stop, interrupted, permit.budget, consumed).map_err(Error::Refused)?;\n", "")),
-            |repo| repo.edit(SCHED_RS, |text| text.replace("        match after_stop(stop, kill) {", "        match after_stop(stop, None) {")),
             |repo| repo.edit(SCHED_RS, |text| text.replace("    /// ゲストが実行を譲った。スレッドは実行待ちの末尾へ戻る。\n    Yielded,", "    /// ゲストが実行を譲った。スレッドは実行待ちの末尾へ戻る。\n    Yielded,\n    /// 寝た。\n    Slept,")),
             |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("| `Stop::Fault` |", "| `Stop::Trap` |")),
             |repo| repo.edit(SCHED_RS, |text| text.replace("        self.lend(worker, at).map(Some)", "        self.ready.remove(at);\n        Ok(None)")),
@@ -298,44 +343,39 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(EXEC_RS, |text| text.replace("        Err(NotRelinquished::Rejected(permit, error)) => return Err(hand_back(kernel, permit, stopped.consumed, error)),", "        Err(NotRelinquished::Rejected(_, error)) => return Err(NotRun::Failed(error)),")),
             |repo| repo.edit(EXEC_RS, |text| text.replacen("    if let Err(error) = kernel.lent(&permit) {\n", "    if let Err(error) = Ok::<(), Error>(()) {\n", 1)),
             |repo| repo.edit(EXEC_RS, |text| text.replace("        return Err(NotRun::Rejected { permit, loaded: Some(loaded), error });", "        return Err(NotRun::Failed(error));")),
-            |repo| repo.edit(EXEC_RS, |text| text.replace("        Err(NotRelinquished::Rejected(permit, error)) => NotRun::Rejected { permit, loaded: None, error },", "        Err(NotRelinquished::Rejected(_, error)) => NotRun::Failed(error),")),
-            |repo| repo.edit(EXEC_RS, |text| text.replace("#[must_use = \"拒否された実行権は into_permit で取り戻す\"]\n#[derive(Debug)]\npub enum NotRun<C> {", "#[derive(Debug)]\npub enum NotRun<C> {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("Err(kome::NotRun::Rejected { permit, loaded: None, error: Error::Foreign }) => permit,", "Err(kome::NotRun::Rejected { permit, .. }) => permit,")),
-            |repo| repo.edit(TESTS_RS, |text| text.replace("fn a_permit_of_another_kernel_never_runs_and_comes_back_whole()", "fn a_permit_of_another_kernel()")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("if self.rank(*other) > self.rank(picked) {", "if false {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("if self.rank(*other) == self.rank(picked) && *theirs < mine {", "if false {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("if let Some(idle) = self.since.keys().find(|thread| self.open(**thread)) {", "if let Some(idle) = None::<&ThreadId> {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("        self.note_ready();\n", "")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("let ready = self.k.thread_phase(*thread) == Ok(ThreadPhase::Ready) && self.k.suspend_count(*thread) == Ok(0);", "let ready = self.k.priority(*thread).is_ok();")),
         ],
     },
     Rule {
         id: "process-quota",
         about: "プロセスごとの上限を見る箇所は、プロセスへの割り当て (Quota) も見る",
         check: process_quota,
+        keeps: &[
+            Keep { path: SIM_RS, needle: "Ok(()) if after > quota => Err(", why: "決定的シミュレーションが、割り当てを超える受理を検出しない", broken: "Ok(()) if false => Err(" },
+        ],
         breaks: &[
             |repo| repo.edit(OBJECT_RS, |text| text.replacen("let limit = self.holdings_limit(process);", "let limit = self.limits.holdings();", 1)),
             |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replacen("u64::from(self.mappings_limit(process))", "u64::from(self.limits.mappings())", 1)),
             |repo| repo.edit("crates/kome/src/thread.rs", |text| text.replace(">= u64::from(owner.quota.threads()) {", ">= u64::MAX {")),
-            |repo| repo.edit("crates/kome/src/io.rs", |text| text.replace("if ios > owner.quota.ios() {", "if false {")),
+            |repo| repo.edit(IO_RS, |text| text.replace("if ios > owner.quota.ios() {", "if false {")),
             |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("total <= owner.quota.mapped_bytes()", "total <= u64::MAX")),
             |repo| repo.edit("crates/kome/src/process.rs", |text| text.replace("self.limits.holdings().min(quota)", "self.limits.holdings()")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("Ok(()) if after > quota => Err(", "Ok(()) if false => Err(")),
         ],
     },
     Rule {
         id: "trace-complete",
         about: "記録と再生 (kome-trace) は Input と Reply の全ての項目を扱い、返答の行に状態のあらましを入れ、行ごとに照合値を確かめる",
         check: trace_complete,
+        keeps: &[
+            Keep { path: TRACE_RS, needle: "        if sum != format!(\"{expected:016x}\") {", why: "行ごとに照合値を、書いたときの綴りのまま比べる (数として読むと大文字や符号の書き換えが通る)", broken: "        if sum.len() != 16 || u64::from_str_radix(sum, 16).ok() != Some(expected) {" },
+            Keep { path: TRACE_RS, needle: "        \"< effects={} ready={} running={} now={} alive={}/{}/{}/{}/{}/{}/{} {result:?}\",", why: "返答の行に、状態のあらましと返答を入れる", broken: "        \"< effects={} ready={} running={} now={} alive={}/{}/{}/{}/{}/{}/{}\"," },
+            Keep { path: TRACE_RS, needle: "            None => self.out.line(&format!(\"? {input:?}\")),", why: "再生できない入力も、記録には残す", broken: "            None => {}" },
+        ],
         breaks: &[
             |repo| repo.edit(TRACE_WORDS_RS, |text| text.replace("        \"DropTimer\" => {", "        \"DropTimers\" => {")),
             |repo| repo.edit(TRACE_TESTS_RS, |text| text.replace("\"DisarmTimer\", \"DropTimer\", \"Advance\",", "\"DisarmTimer\", \"Advance\",")),
-            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("    /// [`Kernel::poll_effect`]\n    PollEffect,", "    /// [`Kernel::poll_effect`]\n    PollEffect,\n    /// 何もしない。\n    Idle,")),
-            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("    /// 受信の結果。\n    Received(Received),", "    /// 受信の結果。\n    Received(Received),\n    /// 何も無い。\n    Nothing,")),
-            |repo| repo.edit(TRACE_RS, |text| text.replace("        if sum != format!(\"{expected:016x}\") {", "        if sum.len() != 16 || u64::from_str_radix(sum, 16).ok() != Some(expected) {")),
+            |repo| repo.edit(INPUT_RS, |text| text.replace("    /// [`Kernel::poll_effect`]\n    PollEffect,", "    /// [`Kernel::poll_effect`]\n    PollEffect,\n    /// 何もしない。\n    Idle,")),
+            |repo| repo.edit(INPUT_RS, |text| text.replace("    /// 受信の結果。\n    Received(Received),", "    /// 受信の結果。\n    Received(Received),\n    /// 何も無い。\n    Nothing,")),
             |repo| repo.edit(TRACE_RS, |text| text.replace("        if recorded != replayed {", "        if recorded.len() != replayed.len() {")),
-            |repo| repo.edit(TRACE_RS, |text| text.replace("        \"< effects={} ready={} running={} now={} alive={}/{}/{}/{}/{}/{}/{} {result:?}\",", "        \"< effects={} ready={} running={} now={} alive={}/{}/{}/{}/{}/{}/{}\",")),
-            |repo| repo.edit(TRACE_RS, |text| text.replace("            None => self.out.line(&format!(\"? {input:?}\")),", "            None => {}")),
             |repo| repo.edit("crates/kome-trace/Cargo.toml", |text| text.replace("[dependencies]\nkome = { path = \"../kome\" }\n", "[dependencies]\nkome = { path = \"../kome\" }\nserde = \"1\"\n")),
             |repo| repo.remove("crates/kome-trace/tests/golden/basic.trace"),
         ],
@@ -344,33 +384,37 @@ pub const RULES: &[Rule] = &[
         id: "run-identity",
         about: "実行の番号は Kernel の中で一意で、worker への中断の求めは一回の実行だけを名指しする。仕事が終わったホストの worker は眠らない",
         check: run_identity,
+        keeps: &[
+            Keep { path: LOOM_RS, needle: FINISHED_HOST_TEST, why: "Loom: 仕事が最初から終わっているホスト", broken: "fn a_finished_host()" },
+            Keep { path: LOOM_RS, needle: LATE_INTERRUPT_TEST, why: "Loom: 前の実行への中断の求めが次のスレッドを止めない", broken: "fn an_interrupt()" },
+            Keep { path: HOST_TESTS_RS, needle: FINISHED_HOST_TEST, why: "実スレッド: 仕事が最初から終わっているホスト", broken: "fn a_finished_host()" },
+            Keep { path: HOST_TESTS_RS, needle: LATE_INTERRUPT_TEST, why: "実スレッド: 前の実行への中断の求めが次のスレッドを止めない", broken: "fn an_interrupt()" },
+            Keep { path: SCHED_RS, needle: "        let run_gen = self.seq;\n", why: "実行の番号を、Kernel の通し番号から取る (スレッドごとに数えない)", broken: "        let run_gen = entry.run_gen.saturating_add(1);\n" },
+            Keep { path: SCHED_RS, needle: "        self.unqueue(at)?;\n        self.seq = seq;\n", why: "貸すたびに、通し番号を進める", broken: "        self.unqueue(at)?;\n" },
+            Keep { path: HOST_RS, needle: "                if guard.closed {\n                    self.wake(&guard, before);\n                    return Ok(());\n                }\n", why: "worker は、頼まれた仕事を処理した後、眠る前に閉じたかを確かめ直す", broken: "" },
+            Keep { path: HOST_RS, needle: "self.wanted.load(Ordering::SeqCst) == permit.run().get()", why: "中断の求めは、実行の番号が一致するときだけ見える", broken: "self.wanted.load(Ordering::SeqCst) != NO_INTERRUPT" },
+            Keep { path: HOST_RS, needle: "wanted.ok_or(HostFault::NoWorker)?.ask(run);", why: "中断の求めは、Effect::Interrupt が名指しした実行の番号で立てる", broken: "wanted.ok_or(HostFault::NoWorker)?.ask(kome::RunGen::new(0));" },
+            Keep { path: SIM_RS, needle: "        self.check_interrupts()?;\n", why: "決定的シミュレーション: 操作のたびに、参照ホストの表現で中断の求めを確かめる", broken: "" },
+            Keep { path: SIM_RS, needle: "            if seen != held.interrupted {", why: "決定的シミュレーション: 求めが見えることと、Kernel がその実行へ要求したことが一致する", broken: "            if seen && !held.interrupted && false {" },
+            Keep { path: SIM_RS, needle: "?.ask(run);", why: "決定的シミュレーション: 参照ホストと同じ置き場 (InterruptSlot) へ求めを立てる", broken: "?.ask(held.permit.run());" },
+            Keep { path: TESTS_RS, needle: "fn a_run_number_names_one_run_of_one_thread()", why: "実行の番号がスレッドをまたいで重ならない試験", broken: "fn a_run_number()" },
+        ],
         breaks: &[
-            |repo| repo.edit(SCHED_RS, |text| text.replace("        let run_gen = self.seq;\n", "        let run_gen = entry.run_gen.saturating_add(1);\n")),
-            |repo| repo.edit(SCHED_RS, |text| text.replace("        self.unqueue(at)?;\n        self.seq = seq;\n", "        self.unqueue(at)?;\n")),
-            |repo| repo.edit(HOST_RS, |text| text.replace("                if guard.closed {\n                    self.wake(&guard, before);\n                    return Ok(());\n                }\n", "")),
-            |repo| repo.edit(HOST_RS, |text| text.replace("self.wanted.load(Ordering::SeqCst) == permit.run().get()", "self.wanted.load(Ordering::SeqCst) != NO_INTERRUPT")),
-            |repo| repo.edit(HOST_RS, |text| text.replace("wanted.ok_or(HostFault::NoWorker)?.ask(run);", "wanted.ok_or(HostFault::NoWorker)?.ask(kome::RunGen::new(0));")),
-            |repo| repo.edit(LOOM_RS, |text| text.replace("fn a_host_finished_from_the_start_lets_its_workers_go()", "fn a_finished_host()")),
-            |repo| repo.edit(LOOM_RS, |text| text.replace("fn an_interrupt_for_one_run_never_stops_the_next_thread_on_the_same_worker()", "fn an_interrupt()")),
-            |repo| repo.edit(HOST_TESTS_RS, |text| text.replace("fn a_host_finished_from_the_start_lets_its_workers_go()", "fn a_finished_host()")),
-            |repo| repo.edit(HOST_TESTS_RS, |text| text.replace("fn an_interrupt_for_one_run_never_stops_the_next_thread_on_the_same_worker()", "fn an_interrupt()")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("        self.check_interrupts()?;\n", "")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("            if seen != held.interrupted {", "            if seen && !held.interrupted && false {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("?.ask(run);", "?.ask(held.permit.run());")),
             |repo| repo.edit(SIM_TESTS_RS, |text| text.replace("        \"run:other-thread-after-interrupt\",\n", "")),
-            |repo| repo.edit(TESTS_RS, |text| text.replace("fn a_run_number_names_one_run_of_one_thread()", "fn a_run_number()")),
         ],
     },
     Rule {
         id: "tla-conform",
         about: "TLA+ のモデルの状態グラフの全体を、実際の Kernel の動きと突き合わせる。モデルの変数は、どれも実装の値との対応を持つ",
         check: tla_conform,
+        keeps: &[
+            Keep { path: CONFORM_RS, needle: "            if !model.edges.contains(&(from, to)) {", why: "実装の遷移がモデルにあることを確かめる", broken: "            if false {" },
+            Keep { path: CONFORM_RS, needle: "    never_taken(&model, &taken).unwrap_or_else(|why| panic!(\"{}: {why}\", D::NAME));\n", why: "モデルの遷移を実装が全て行うことを確かめる", broken: "" },
+            Keep { path: TLA_SH, needle: "        dump=(-dump dot \"$graphs/$module.dot\")\n", why: "正しい設定の状態グラフを書き出す", broken: "" },
+        ],
         breaks: &[
             |repo| repo.edit(CONFORM_RS, |text| text.replace("const NAME: &'static str = \"WaitRace\";", "const NAME: &'static str = \"WaitRaces\";")),
-            |repo| repo.edit(CONFORM_RS, |text| text.replace("            if !model.edges.contains(&(from, to)) {", "            if false {")),
-            |repo| repo.edit(CONFORM_RS, |text| text.replace("    never_taken(&model, &taken).unwrap_or_else(|why| panic!(\"{}: {why}\", D::NAME));\n", "")),
             |repo| repo.edit(CONFORM_RS, |text| text.replace("format!(\"woken = {}\"", "format!(\"awake = {}\"")),
-            |repo| repo.edit(TLA_SH, |text| text.replace("        dump=(-dump dot \"$graphs/$module.dot\")\n", "")),
             |repo| repo.edit(TLA_SH, |text| text.replace("--lib conform:: --", "--lib conform::the_io --")),
             |repo| repo.edit(TLA_SH, |text| text.replace("        failed=1\n    fi\ndone\nexit", "    fi\ndone\nexit")),
             |repo| repo.edit(CONFORM_MD, |text| text.replace("| `lateGrant` |", "| `late` |")),
@@ -382,40 +426,44 @@ pub const RULES: &[Rule] = &[
         id: "run-queue-kept",
         about: "実行権を貸す相手は実行待ちの列の先頭から一手で選び、列の中の位置は runq.rs だけが書く。スレッドを全て見て選ぶ形へ戻さない",
         check: run_queue_kept,
+        keeps: &[
+            Keep { path: SCHED_RS, needle: "        let at = entry.queued.ok_or(Error::Refused(Refusal::Barrier))?;", why: "名指しの貸し出しは、スレッドが持つ位置で引く", broken: "        let at = self.ready.position(|waiting| waiting.thread == thread).ok_or(Error::Refused(Refusal::Barrier))?;" },
+            Keep { path: BENCH_RS, needle: "for waiting in [16u64, 1024] {", why: "実行待ちが少ないときと多いときの貸し出しを測る", broken: "for waiting in [16u64] {" },
+            Keep { path: TESTS_RS, needle: "fn the_run_queue_lends_in_the_same_order_as_a_scan_of_every_thread() {", why: "全てのスレッドを見て選ぶ手本と、貸す順序を比べる試験", broken: "fn the_run_queue_lends() {" },
+        ],
         breaks: &[
             |repo| repo.edit(SCHED_RS, |text| text.replace("        let at = 0;\n        if self.ready.is_empty() {", "        let at = self.ready.iter().count().saturating_sub(1);\n        if self.ready.is_empty() {")),
-            |repo| repo.edit(SCHED_RS, |text| text.replace("        let at = entry.queued.ok_or(Error::Refused(Refusal::Barrier))?;", "        let at = self.ready.position(|waiting| waiting.thread == thread).ok_or(Error::Refused(Refusal::Barrier))?;")),
             |repo| repo.append("crates/kome/src/thread.rs", "fn forget(kernel: &mut Kernel, thread: ThreadId) {\n    if let Some(entry) = kernel.threads.get_mut(thread) {\n        entry.queued = None;\n    }\n}"),
             |repo| repo.append(SCHED_RS, "fn jump(kernel: &mut Kernel, thread: ThreadId) {\n    if let Some(entry) = kernel.threads.get_mut(thread) {\n        entry.turn = 0;\n    }\n}"),
             |repo| repo.append(MEM_RS, "fn shove(kernel: &mut Kernel, waiting: crate::runq::Waiting) {\n    let _ = kernel.ready.push(waiting);\n}"),
             |repo| repo.edit(MEM_RS, |text| text.replace("            self.hold_back(process)?;\n", "")),
             |repo| repo.edit(SCHED_RS, |text| text.replace("                self.let_in(process)?;\n", "")),
             |repo| repo.edit(RUNQ_RS, |text| text.replace("        for _ in 0..usize::BITS {", "        loop {")),
-            |repo| repo.edit(BENCH_RS, |text| text.replace("for waiting in [16u64, 1024] {", "for waiting in [16u64] {")),
-            |repo| repo.edit(TESTS_RS, |text| text.replace("fn the_run_queue_lends_in_the_same_order_as_a_scan_of_every_thread() {", "fn the_run_queue_lends() {")),
         ],
     },
     Rule {
         id: "host-single-writer",
         about: "参照ホストは錠の外でだけゲストを実行し、同期の部品を Loom に差し替えられる形で使い、Loom がその進み方を試す",
         check: host_single_writer,
+        keeps: &[
+            Keep { path: HOST_RS, needle: "            #[cfg(not(loom_broken))]\n            self.wake(&guard, before);\n", why: "ゲストが止まった後に、待っている者を起こす", broken: "" },
+            Keep { path: HOST_RS, needle: "        self.wake(&guard, before);\n        drop(guard);\n        settled.map(|_| result)", why: "外からの操作の後に、待っている者を起こす", broken: "        drop(guard);\n        settled.map(|_| result)" },
+            Keep { path: HOST_RS, needle: "state.closed || state.kernel.ready_count() != 0 || state.kernel.next_deadline() != before;", why: "眠っている worker は、閉じたとき、貸せるスレッドがあるかもしれないとき、期限が変わったときに起こす", broken: "state.closed || state.kernel.ready_count() != 0;" },
+            Keep { path: HOST_RS, needle: "        guard.idle = guard.idle.saturating_add(1);\n", why: "眠る worker を、錠の中で数えてから眠らせる", broken: "" },
+            Keep { path: HOST_RS, needle: "            guard.watchers = guard.watchers.saturating_add(1);\n", why: "待つ者を、錠の中で数えてから待たせる", broken: "" },
+            Keep { path: HOST_RS, needle: "                guard = self.sleep(guard)?;", why: "貸せるスレッドが無ければ、錠を放すのと待ち始めるのを一つの操作で行う", broken: "                drop(guard);\n                guard = self.lock()?;" },
+            Keep { path: LOOM_SH, needle: "    if ! grep -q \"^test $name ... ok$\" \"$log\"; then\n", why: "書いてある検査が全て走ったことを照合する", broken: "    if false; then\n" },
+        ],
         breaks: &[
             |repo| repo.edit(HOST_RS, |text| text.replace("            drop(guard);\n            let stopped = executor.run(", "            let stopped = executor.run(")),
             |repo| repo.append(HOST_RS, "fn other() -> std::sync::Mutex<u8> { std::sync::Mutex::new(0) }"),
             |repo| repo.append("crates/kome-host-std/src/store.rs", "use std::sync::atomic::AtomicBool;"),
             |repo| repo.append(HOST_RS, "fn back(kernel: &mut Kernel, permit: RunPermit) { let _ = kernel.relinquish(permit, kome::Stop::Trap, kome::Budget::new(0)); }"),
-            |repo| repo.edit(HOST_RS, |text| text.replace("            #[cfg(not(loom_broken))]\n            self.wake(&guard, before);\n", "")),
-            |repo| repo.edit(HOST_RS, |text| text.replace("        self.wake(&guard, before);\n        drop(guard);\n        settled.map(|_| result)", "        drop(guard);\n        settled.map(|_| result)")),
-            |repo| repo.edit(HOST_RS, |text| text.replace("state.closed || state.kernel.ready_count() != 0 || state.kernel.next_deadline() != before;", "state.closed || state.kernel.ready_count() != 0;")),
-            |repo| repo.edit(HOST_RS, |text| text.replace("        guard.idle = guard.idle.saturating_add(1);\n", "")),
-            |repo| repo.edit(HOST_RS, |text| text.replace("            guard.watchers = guard.watchers.saturating_add(1);\n", "")),
-            |repo| repo.edit(HOST_RS, |text| text.replace("                guard = self.sleep(guard)?;", "                drop(guard);\n                guard = self.lock()?;")),
             |repo| repo.edit(LOOM_RS, |text| text.replace("    explore(2, 2, 0, Some(7));", "    explore(1, 2, 0, Some(7));")),
             |repo| repo.edit(LOOM_RS, |text| text.replace("    explore(2, 1, 1, Some(7));", "    explore(2, 1, 1, Some(5));")),
             |repo| repo.edit(LOOM_RS, |text| text.replace("        host.with(|state| state.kernel.unsuspend_thread(guest)).unwrap().unwrap();\n        host.wait_until", "        host.wait_until")),
             |repo| repo.edit(LOOM_RS, |text| text.replace("        support::check(&host, &made, yields);\n", "")),
             |repo| repo.edit(LOOM_SH, |text| text.replace("--cfg loom_broken", "")),
-            |repo| repo.edit(LOOM_SH, |text| text.replace("    if ! grep -q \"^test $name ... ok$\" \"$log\"; then\n", "    if false; then\n")),
             |repo| repo.edit(LOOM_SH, |text| text.replace("if ! grep -q \"deadlock\" \"$log\"; then", "if false; then")),
             |repo| repo.edit("crates/kome-host-std/src/sync.rs", |text| text.replace("#[cfg(loom)]\n", "#[cfg(any())]\n")),
         ],
@@ -424,6 +472,18 @@ pub const RULES: &[Rule] = &[
         id: "bench-listed",
         about: "測定する操作は全て実行され、文書の表に載っている。記録と一つ前のコミットより遅くなっていないことを、基準の仕事との比で判定する",
         check: bench_listed,
+        keeps: &[
+            Keep { path: CI, needle: "          fetch-depth: 2\n", why: "test ジョブが、一つ前のコミットを取っていない (性能の判定が比べる相手)", broken: "" },
+            Keep { path: BENCH_LIB, needle: "pub const LIMIT: f64 = 2.0;", why: "記録との比較の幅", broken: "pub const LIMIT: f64 = 200.0;" },
+            Keep { path: BENCH_LIB, needle: "if ratio <= recorded * limit {", why: "記録の比の幅を超えたら、遅くなったと判定する (測れなかった値は収まったと見なさない)", broken: "if ratio <= recorded * limit || ratio.is_nan() {" },
+            Keep { path: BENCH_LIB, needle: "pub const AGAINST_LIMIT: f64 = 1.15;", why: "一つ前のコミットとの比較の幅", broken: "pub const AGAINST_LIMIT: f64 = 9.0;" },
+            Keep { path: BENCH_SH, needle: "cargo bench -p kome-bench --locked -- --gate docs/bench-gate.tsv\n", why: "記録と比べる", broken: "" },
+            Keep { path: BENCH_SH, needle: "    if cargo bench -p kome-bench --locked -- --record \"$work/head.tsv\" --against \"$work/base.tsv\"; then", why: "今のコミットの最小値を足し込み、一つ前のコミットと比べる", broken: "    if true; then" },
+            Keep { path: BENCH_SH, needle: "echo \"bench-gate: 六回ぶんの最小値でも、一つ前のコミット $base より遅い\" >&2\nexit 1\n", why: "測り足しても遅ければ失敗する", broken: "" },
+            Keep { path: BENCH_LIB, needle: "if *least < *kept || kept.is_nan() { *least } else { *kept }", why: "測り足すときは、操作ごとに小さい方を残す", broken: "*least" },
+            Keep { path: BENCH_SH, needle: "base=\"$(git rev-parse --verify 'HEAD^')\"\n", why: "一つ前のコミットが無ければ失敗する", broken: "base=\"$(git rev-parse --verify 'HEAD^')\" || exit 0\n" },
+            Keep { path: BENCH_LIB, needle: "            None => Verdict::NotMeasured,", why: "記録にある操作を測っていなければ、失敗にする", broken: "            None => Verdict::Within(0.0, recorded)," },
+        ],
         breaks: &[
             |repo| repo.edit(BENCH_RS, |text| text.replace("    timers(&bench);\n", "")),
             |repo| repo.edit(BENCH_MD, |text| text.replace("| 待機を始めて通知で起こす |", "| 待機 |")),
@@ -432,18 +492,8 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(BENCH_GATE, |text| text.replace("タイマを仕掛けて期限まで進める\t", "タイマ\t")),
             |repo| repo.edit(BENCH_GATE, |text| text.replace("アドレスを引く (マッピング 128 個)\t", "# アドレスを引く (マッピング 128 個)\t")),
             |repo| repo.remove(BENCH_GATE),
-            |repo| repo.edit(BENCH_LIB, |text| text.replace("pub const LIMIT: f64 = 2.0;", "pub const LIMIT: f64 = 200.0;")),
-            |repo| repo.edit(BENCH_LIB, |text| text.replace("if ratio <= recorded * limit {", "if ratio <= recorded * limit || ratio.is_nan() {")),
-            |repo| repo.edit(BENCH_LIB, |text| text.replace("pub const AGAINST_LIMIT: f64 = 1.15;", "pub const AGAINST_LIMIT: f64 = 9.0;")),
             |repo| repo.edit(BENCH_LIB, |text| text.replace("&least, reference, AGAINST_LIMIT, false)", "&least, reference, LIMIT, false)")),
-            |repo| repo.edit(BENCH_SH, |text| text.replace("cargo bench -p kome-bench --locked -- --gate docs/bench-gate.tsv\n", "")),
-            |repo| repo.edit(BENCH_SH, |text| text.replace("    if cargo bench -p kome-bench --locked -- --record \"$work/head.tsv\" --against \"$work/base.tsv\"; then", "    if true; then")),
-            |repo| repo.edit(BENCH_SH, |text| text.replace("echo \"bench-gate: 六回ぶんの最小値でも、一つ前のコミット $base より遅い\" >&2\nexit 1\n", "")),
-            |repo| repo.edit(BENCH_LIB, |text| text.replace("if *least < *kept || kept.is_nan() { *least } else { *kept }", "*least")),
-            |repo| repo.edit(BENCH_SH, |text| text.replace("base=\"$(git rev-parse --verify 'HEAD^')\"\n", "base=\"$(git rev-parse --verify 'HEAD^')\" || exit 0\n")),
-            |repo| repo.edit(CI, |text| text.replace("          fetch-depth: 2\n", "")),
             |repo| repo.edit(BENCH_SH, |text| text.replace("$2 > recorded[$1] * 1.15 { print $1 }", "$2 != recorded[$1] { print $1 }")),
-            |repo| repo.edit(BENCH_LIB, |text| text.replace("            None => Verdict::NotMeasured,", "            None => Verdict::Within(0.0, recorded),")),
             |repo| repo.edit(BENCH_RS, |text| text.replace("    if let Err(why) = bench.finish() {", "    if let Err(why) = Ok::<(), String>(()) {")),
         ],
     },
@@ -451,6 +501,11 @@ pub const RULES: &[Rule] = &[
         id: "verus-kept",
         about: "Verus の証明を減らさず、確かめずに信じる定義を増やさず、証明した関数を実際に使う",
         check: verus_kept,
+        keeps: &[
+            Keep { path: MEM_RS, needle: "        lookup::containing(self.maps.as_slice(), addr).and_then(|at| self.maps.get(at))", why: "アドレスを引く経路が、証明した関数を使っていない", broken: "        self.maps.iter().find(|mapping| mapping.start <= addr && addr <= mapping.last)" },
+            Keep { path: MEM_RS, needle: "        lookup::first_ending_at_or_after(self.maps.as_slice(), addr)", why: "アドレスを引く経路が、証明した関数を使っていない", broken: "        self.maps.as_slice().partition_point(|mapping| mapping.last < addr)" },
+            Keep { path: VERUS_SH, needle: "if [ -z \"$listed\" ] || [ \"$(proved \"$out/clean.json\")\" != \"$listed\" ]; then", why: "証明した関数が一覧とちょうど同じであることを確かめる", broken: "if false; then" },
+        ],
         breaks: &[
             |repo| repo.edit(LOOKUP_RS, |text| {
                 // `containing` の仕様を丸ごと取り除く。
@@ -462,11 +517,8 @@ pub const RULES: &[Rule] = &[
             |repo| repo.append(LOOKUP_RS, "#[cfg_attr(verus_keep_ghost, verus_verify(external_body), verus_spec(r => ensures r == 0))]\nfn zero() -> u64 { 0 }"),
             |repo| repo.append(LOOKUP_RS, "#[cfg(verus_keep_ghost)]\nverus! { proof fn anything() ensures false { assume(false); } }"),
             |repo| repo.append(LOOKUP_RS, &format!("#[cfg(verus_keep_ghost)]\nverus! {{ proof fn anything() ensures false {{ {}(); }} }}", ["ad", "mit"].concat())),
-            |repo| repo.edit(MEM_RS, |text| text.replace("        lookup::containing(self.maps.as_slice(), addr).and_then(|at| self.maps.get(at))", "        self.maps.iter().find(|mapping| mapping.start <= addr && addr <= mapping.last)")),
-            |repo| repo.edit(MEM_RS, |text| text.replace("        lookup::first_ending_at_or_after(self.maps.as_slice(), addr)", "        self.maps.as_slice().partition_point(|mapping| mapping.last < addr)")),
             |repo| repo.edit(LOOKUP_RS, |text| text.replace("pub(crate) fn verus_broken_lookup(", "pub(crate) fn lookup_twice(")),
             |repo| repo.edit(VERUS_SH, |text| text.replace(" --cfg verus_broken ", " ")),
-            |repo| repo.edit(VERUS_SH, |text| text.replace("if [ -z \"$listed\" ] || [ \"$(proved \"$out/clean.json\")\" != \"$listed\" ]; then", "if false; then")),
             |repo| repo.remove(VERUS_TSV),
         ],
     },
@@ -474,6 +526,10 @@ pub const RULES: &[Rule] = &[
         id: "refinements-kept",
         about: "篩型 (Flux) の仕様を減らさず、書いた仕様は必ず確かめ、確かめずに信じる定義を増やさない",
         check: refinements_kept,
+        keeps: &[
+            Keep { path: "crates/kome/src/lib.rs", needle: "#[cfg(flux)]\nextern crate flux_core;", why: "Flux で確かめるときに flux_core を読み込まないと、checked_add などの結果が分からず仕様が通らない", broken: "" },
+            Keep { path: FLUX_SH, needle: "export PATH=\"$sysroot/bin:$PATH\"\n", why: "cargo-flux を sysroot から探す (CI がキャッシュから戻すのは sysroot だけ)", broken: "" },
+        ],
         breaks: &[
             |repo| repo.edit(ADDR_RS, |text| text.replacen("    #[cfg_attr(flux, flux::spec(fn(GuestRange[@range], GuestRange[@other]) -> bool[range.start <= other.last && other.start <= range.last]))]\n", "", 1)),
             |repo| repo.edit(ID_RS, |text| text.replacen("#[cfg_attr(flux, flux::spec(", "#[cfg_attr(flux, flux::trusted)]\n    #[cfg_attr(flux, flux::spec(", 1)),
@@ -484,53 +540,57 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(KOME_MANIFEST, |text| text.replace("[package.metadata.flux]\nenabled = true", "[package.metadata.flux]\nenabled = false")),
             |repo| repo.edit(EFFECT_RS, |text| text.replace("    fn flux_broken_room(", "    fn room_twice(")),
             |repo| repo.edit(FLUX_SH, |text| text.replace("--cfg flux_broken", "")),
-            |repo| repo.edit(FLUX_SH, |text| text.replace("export PATH=\"$sysroot/bin:$PATH\"\n", "")),
             |repo| repo.edit(FLUX_SH, |text| text.replace("    exit 1\n", "")),
             |repo| repo.remove(FLUX_TSV),
-            |repo| repo.edit("crates/kome/src/lib.rs", |text| text.replace("#[cfg(flux)]\nextern crate flux_core;", "")),
         ],
     },
     Rule {
         id: "backend-boundary",
         about: "backend との境界は公開の問い合わせだけで書き、決定的シミュレーションは通知とアクセスの結果をモデルと比べる",
         check: backend_boundary,
+        keeps: &[
+            Keep { path: SIM_RS, needle: "        self.check_space(process)?;\n        self.check_shadow(process)\n    }", why: "アドレス空間を変えた後の確認が、通知の結果 (check_shadow) まで見ていない", broken: "        self.check_space(process)\n    }" },
+            Keep { path: BACKEND_RS, needle: "            MapChange::Unmapped { .. } | MapChange::Protected { .. } => true,", why: "外す変更と権限の変更で、コードを捨てる", broken: "            MapChange::Unmapped { .. } | MapChange::Protected { .. } => false," },
+            Keep { path: BACKEND_RS, needle: "    walk(kernel, process, addr, data.len(), Access::Write, |_, _, _| Ok(()))?;\n", why: "書き込みは、範囲の全体が書けることを先に確かめる", broken: "" },
+            Keep { path: BACKEND_RS, needle: "    if bytes != 0 {\n        observer.changed(", why: "外したものがあるときだけ知らせる", broken: "    if false {\n        observer.changed(" },
+            Keep { path: SIM_RS, needle: "if dropped.bytes != code || dropped.forgotten != 0 {", why: "捨てさせたコードの範囲を、モデルのページから引いたものと比べる", broken: "if dropped.forgotten != 0 {" },
+            Keep { path: SIM_RS, needle: "let mut flaky = Flaky { store: &mut self.store, left: breaks };", why: "backend が途中のバイトで失敗する書き込みを試す", broken: "let mut flaky = Flaky { store: &mut self.store, left: None };" },
+            Keep { path: SIM_RS, needle: "let result = map_observed(&mut self.k, &mut self.shadow, process, range, map_source, prot);", why: "map を通知つきで呼ぶ", broken: "let result = self.k.map(process, range, map_source, prot);" },
+            Keep { path: SIM_RS, needle: "match unmap_observed(&mut self.k, &mut self.shadow, process, range) {", why: "unmap を通知つきで呼ぶ", broken: "match self.k.unmap(process, range) {" },
+            Keep { path: SIM_RS, needle: "match protect_observed(&mut self.k, &mut self.shadow, process, range, prot) {", why: "protect を通知つきで呼ぶ", broken: "match self.k.protect(process, range, prot) {" },
+            Keep { path: SIM_RS, needle: "        if seen != *model {", why: "通知から組み立てたアドレス空間をモデルと比べる", broken: "        if false {" },
+            Keep { path: SIM_RS, needle: "if fault.addr() == GuestAddr::new(addr) && fault.kind() == kind =>", why: "アクセスの失敗の位置と種類をモデルと比べる", broken: "if fault.kind() == kind =>" },
+            Keep { path: SIM_RS, needle: "} else if read.get(at).copied() != Some(self.content.byte(*backing, *offset)) {", why: "読んだ内容をモデルと比べる", broken: "} else if false {" },
+            Keep { path: SIM_RS, needle: "kome::SpaceObserver::cleared(&mut self.shadow, process);", why: "プロセスの終了を通知の受け取り手へ伝える", broken: "" },
+        ],
         breaks: &[
             |repo| repo.append(BACKEND_RS, "fn peek(kernel: &Kernel) -> u64 { kernel.backing_bytes }"),
-            |repo| repo.edit(BACKEND_RS, |text| text.replace("            MapChange::Unmapped { .. } | MapChange::Protected { .. } => true,", "            MapChange::Unmapped { .. } | MapChange::Protected { .. } => false,")),
-            |repo| repo.edit(BACKEND_RS, |text| text.replace("    walk(kernel, process, addr, data.len(), Access::Write, |_, _, _| Ok(()))?;\n", "")),
-            |repo| repo.edit(BACKEND_RS, |text| text.replace("    if bytes != 0 {\n        observer.changed(", "    if false {\n        observer.changed(")),
             |repo| repo.edit(BACKEND_RS, |text| text.replace("|shown_in, range| code.invalidate(shown_in, range));", "|shown_in, range| if shown_in == process { code.invalidate(shown_in, range) });")),
             |repo| repo.edit(BACKEND_RS, |text| text.replace("    let mut failed = None;\n    walk(", "    written?;\n    let written: Result<(), AccessError> = Ok(());\n    let mut failed = None;\n    walk(")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("if dropped.bytes != code || dropped.forgotten != 0 {", "if dropped.forgotten != 0 {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("let mut flaky = Flaky { store: &mut self.store, left: breaks };", "let mut flaky = Flaky { store: &mut self.store, left: None };")),
             |repo| repo.edit(SIM_TESTS_RS, |text| text.replace("\"code:dropped-alias\", ", "")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("let result = map_observed(&mut self.k, &mut self.shadow, process, range, map_source, prot);", "let result = self.k.map(process, range, map_source, prot);")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("match unmap_observed(&mut self.k, &mut self.shadow, process, range) {", "match self.k.unmap(process, range) {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("match protect_observed(&mut self.k, &mut self.shadow, process, range, prot) {", "match self.k.protect(process, range, prot) {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("        if seen != *model {", "        if false {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("                        self.check_shadow(process)?;\n", "")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("if fault.addr() == GuestAddr::new(addr) && fault.kind() == kind =>", "if fault.kind() == kind =>")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("} else if read.get(at).copied() != Some(self.content.byte(*backing, *offset)) {", "} else if false {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("kome::SpaceObserver::cleared(&mut self.shadow, process);", "")),
+            |repo| repo.edit(SIM_RS, |text| text.replacen("self.space_changed(process, false)?;", "self.check_space(process)?;", 1)),
         ],
     },
     Rule {
         id: "permit-returned",
         about: "実行権を値で受け取る公開の操作は、受理しなかった実行権を返す",
         check: permit_returned,
+        keeps: &[
+            Keep { path: INPUT_RS, needle: "Err(NotRelinquished::Rejected(permit, reason)) => Reply::Returned(permit, reason),", why: "Kernel::apply が、受理されなかった実行権を返答に入れて返していない", broken: "Err(NotRelinquished::Rejected(_, reason)) => return Err(reason)," },
+        ],
         breaks: &[
             |repo| repo.edit("crates/kome/src/sched.rs", |text| text.replace(") -> Result<ThreadFate, NotRelinquished> {", ") -> Result<ThreadFate, Error> {")),
             |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 捨てる。\n    pub fn discard(&mut self, permit: crate::sched::RunPermit) -> Result<(), Error> {\n        drop(permit);\n        Ok(())\n    }\n}"),
-            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("Err(NotRelinquished::Rejected(permit, reason)) => Reply::Returned(permit, reason),", "Err(NotRelinquished::Rejected(_, reason)) => return Err(reason),")),
         ],
     },
     Rule {
         id: "stale-at-lookup",
         about: "古い ID と別インスタンスの ID の区別は、表を引く一か所 (id.rs) だけが行う",
         check: stale_at_lookup,
+        keeps: &[],
         breaks: &[
             |repo| repo.append(KERNEL_RS, "fn looked(kernel: &Kernel, thread: ThreadId) -> Result<(), Error> {\n    kernel.threads.get(thread).map(|_| ()).ok_or(Error::Stale(crate::id::Tag::Thread))\n}"),
-            |repo| repo.edit("crates/kome/src/id.rs", |text| text.replace("if self.includes(id.issuer) { Error::Stale(K::TAG) } else { Error::Foreign }", "Error::Stale(K::TAG)")),
+            |repo| repo.edit("crates/kome/src/id.rs", |text| text.replace(STALE_OR_FOREIGN, "Error::Stale(K::TAG)")),
             |repo| repo.edit("crates/kome/src/id.rs", |text| text.replace("slot.generation == id.generation && slot.issuer == id.issuer", "slot.generation == id.generation")),
         ],
     },
@@ -538,19 +598,21 @@ pub const RULES: &[Rule] = &[
         id: "foreign-ids-tested",
         about: "ID を受け取る全ての操作と問い合わせの全ての引数に、別インスタンスの ID を渡す試験がある",
         check: foreign_ids_tested,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit(TESTS_RS, |text| text.replace("        Input::RetainObject(p, fo),\n", "")),
             |repo| repo.edit(TESTS_RS, |text| text.replace("        Input::PrepareIo(p, IoLinks::NONE.with_notify(fo)),\n", "")),
             |repo| repo.edit(TESTS_RS, |text| text.replace("    assert_eq!(k.io_outcome(fio), Err(Error::Foreign));\n", "")),
-            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("    PollEffect,\n}", "    PollEffect,\n    /// 新しい操作。\n    Fresh(ObjectId),\n}")),
+            |repo| repo.edit(INPUT_RS, |text| text.replace("    PollEffect,\n}", "    PollEffect,\n    /// 新しい操作。\n    Fresh(ObjectId),\n}")),
             |repo| repo.append(KERNEL_RS, "impl Kernel {\n    /// 新しい問い合わせ。\n    pub fn weight(&self, object: crate::id::ObjectId) -> Result<u64, Error> {\n        self.signal_count(object)\n    }\n}"),
-            |repo| repo.edit(TESTS_RS, |text| text.replace("assert_eq!(own.k.apply(input), Err(Error::Foreign), \"{at}: {shown}\");", "let _ = own.k.apply(input);")),
+            |repo| repo.edit(TESTS_RS, |text| text.replace(FOREIGN_REPLY, "let _ = own.k.apply(input);")),
         ],
     },
     Rule {
         id: "checked-insert",
         about: "試験の道具は、重複を拒否する前に既存の値を置き換えない",
         check: checked_insert,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit("crates/kome-testkit/src/host.rs", |text| text.replace("match self.memory.entry(backing) {", "match self.memory.insert(backing, vec![0; len]) {")),
             |repo| repo.edit(SIM_RS, |text| text.replace("self.blocked.insert(thread, targets);", "if self.blocked.insert(thread, targets).is_some() { return Err(String::new()); }")),
@@ -560,21 +622,24 @@ pub const RULES: &[Rule] = &[
         id: "advance-bounded",
         about: "一度の advance の仕事には目安があり、呼び出し側は残りが無くなるまで呼び直す",
         check: advance_bounded,
+        keeps: &[
+            Keep { path: TIMER_RS, needle: "pub fn advance(&mut self, to: Instant) -> Result<Advanced, Error> {", why: "advance が、進んだ時刻と残りの有無 (Advanced) を返していない", broken: "pub fn advance(&mut self, to: Instant) -> Result<u32, Error> {" },
+            Keep { path: TIMER_RS, needle: "#[must_use = \"more() が真なら", why: "Advanced を捨てても警告が出ない (#[must_use] が無い)", broken: "#[doc = \"more() が真なら" },
+            Keep { path: SIM_RS, needle: "        .with_advance_batch(NonZeroU32::MIN.saturating_add(1))\n", why: "決定的シミュレーションが、advance が区切って返る経路を通らない (目安を小さくする)", broken: "" },
+            Keep { path: INPUT_RS, needle: "Input::Advance(to) => Reply::Advanced(self.advance(to)?),", why: "Kernel::apply が、advance の結果 (Advanced) をそのまま返答に入れていない", broken: "Input::Advance(to) => Reply::Count(self.advance(to)?.fired())," },
+        ],
         breaks: &[
             |repo| repo.edit(TIMER_RS, |text| text.replace("if fired >= batch && last != Some(entry.at) {", "if false {")),
             |repo| repo.edit(TIMER_RS, |text| text.replace("if fired >= batch && last != Some(entry.at) {", "if fired >= batch {")),
-            |repo| repo.edit(TIMER_RS, |text| text.replace("pub fn advance(&mut self, to: Instant) -> Result<Advanced, Error> {", "pub fn advance(&mut self, to: Instant) -> Result<u32, Error> {")),
-            |repo| repo.edit(TIMER_RS, |text| text.replace("#[must_use = \"more() が真なら", "#[doc = \"more() が真なら")),
             |repo| repo.edit("crates/kome-testkit/tests/headless.rs", |text| text.replace("while self.k.advance(to).unwrap().more() {}", "let _ = self.k.advance(to).unwrap();")),
             |repo| repo.edit(SIM_RS, |text| text.replace("if !advanced.more() {", "if true {")),
-            |repo| repo.edit(SIM_RS, |text| text.replace("        .with_advance_batch(NonZeroU32::MIN.saturating_add(1))\n", "")),
-            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("Input::Advance(to) => Reply::Advanced(self.advance(to)?),", "Input::Advance(to) => Reply::Count(self.advance(to)?.fired()),")),
         ],
     },
     Rule {
         id: "docs-current",
         about: "文書が名指しする不変条件・規則・ファイルが実在し、台帳の全項目が責務の表にある",
         check: docs_current,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("| TIME-1 |", "| |")),
             |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("lint `no-globals`", "lint `no-statics`")),
@@ -584,9 +649,38 @@ pub const RULES: &[Rule] = &[
         ],
     },
     Rule {
+        id: "dup",
+        about: "同じコードを二度書かない (意図した写しは docs/dup-known.tsv に理由つきで載せる)",
+        check: dup_free,
+        keeps: &[],
+        breaks: &[
+            // 関数をそのまま写す。
+            |repo| repo.append(TIMER_RS, &format!("{DUP_FN}{}", DUP_FN.replace("dup_first", "dup_second"))),
+            // 局所の名前だけを変えて写す。
+            |repo| repo.append(TIMER_RS, &format!("{DUP_FN}{}", DUP_FN.replace("dup_first", "dup_second").replace("total", "sum").replace("entry", "each"))),
+            // 続いた文を、別の関数の中へ写す。
+            |repo| repo.append(TIMER_RS, &format!("{DUP_FN}{}", DUP_FN.replace("dup_first(", "dup_longer(third: u64, ").replace("    total\n}", "    total.saturating_add(third)\n}"))),
+            // 同じ表を二つ持つ。
+            |repo| repo.append(TIMER_RS, DUP_TABLE),
+            // 同じ文字列を二度書く。
+            |repo| repo.append(TIMER_RS, "fn dup_said() -> &'static str {\n    \"同じ説明の文を二か所に書くと、片方だけが直される日が来る。そうなる前に、名前を付けた定数にして一か所へ置く\"\n}\nfn dup_said_again() -> &'static str {\n    \"同じ説明の文を二か所に書くと、片方だけが直される日が来る。そうなる前に、名前を付けた定数にして一か所へ置く\"\n}"),
+            // スクリプトの行を写す。
+            |repo| repo.edit(TEST_SH, |text| format!("{text}\n{text}")),
+            // CI の手順を、共通の Action を使わずにジョブへ書く。
+            |repo| repo.edit(CI, |text| text.replace("      - uses: ./.github/actions/rust\n        with:\n          key: lint\n", "      - run: rustup show active-toolchain\n      - run: cargo --version\n      - run: rustc --version\n      - run: uname -a\n").replace("      - uses: ./.github/actions/rust\n        with:\n          key: loom\n", "      - run: rustup show active-toolchain\n      - run: cargo --version\n      - run: rustc --version\n      - run: uname -a\n")),
+            // 一覧に、もう無い写しが残る。
+            |repo| repo.append(dup::KNOWN, "exact\tcrates/kome/src/timer.rs#gone\tcrates/kome/src/io.rs#gone\t# 試験が実装と独立に持つ答えなので二つ持つ"),
+            // 一覧に理由が無い。
+            |repo| repo.edit(dup::KNOWN, |text| text.lines().map(|line| line.split("\t# ").next().unwrap_or(line)).collect::<Vec<_>>().join("\n")),
+            // 一覧から行を消す。
+            |repo| repo.edit(dup::KNOWN, |text| text.lines().filter(|line| line.starts_with('#')).collect::<Vec<_>>().join("\n")),
+        ],
+    },
+    Rule {
         id: "ci-required",
         about: "CI は全ての検証を実行し、失敗を見逃さない",
         check: ci_required,
+        keeps: &[],
         breaks: &[
             |repo| repo.edit(CI, |text| text.replace("scripts/ci/kani.sh", "true")),
             |repo| repo.edit(CI, |text| text.replace("--manifest-path checks/noalloc/Cargo.toml", "-p kome")),
@@ -599,6 +693,7 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(CI, |text| text.replace("cancel-in-progress: false", "cancel-in-progress: true")),
             |repo| repo.edit(CI, |text| text.replacen("actions/checkout@", "actions/checkout@v4 # ", 1)),
             |repo| repo.append("scripts/ci/tla.sh", "cargo fmt --all"),
+            |repo| repo.append("scripts/ci/kani.sh", "echo \"$out\" | grep -q ok"),
             |repo| repo.append(".github/workflows/extra.yml", "jobs:\n  a:\n    steps:\n      - run: npm install"),
             |repo| repo.edit(CI, |text| text.replace("run: scripts/ci/test.sh", "run: echo scripts/ci/test.sh")),
             |repo| repo.edit(CI, |text| text.replace("run: cargo test --locked --manifest-path", "run: echo cargo test --locked --manifest-path")),
@@ -1218,11 +1313,8 @@ fn tla_conform(repo: &Repo, report: &mut Report) {
         }
     }
     let kept = [
-        (CONFORM_RS, conform, "            if !model.edges.contains(&(from, to)) {", "実装の遷移がモデルにあることを確かめる"),
-        (CONFORM_RS, conform, "    never_taken(&model, &taken).unwrap_or_else(|why| panic!(\"{}: {why}\", D::NAME));\n", "モデルの遷移を実装が全て行うことを確かめる"),
         (CONFORM_RS, conform, "    assert!(explore::<D>(&fewer).is_err(), ", "モデルから遷移を抜くと一致しなくなることを確かめる"),
         (CONFORM_RS, conform, "    assert!(never_taken(&more, &taken).is_err(), ", "モデルに遷移を足すと一致しなくなることを確かめる"),
-        (TLA_SH, script, "        dump=(-dump dot \"$graphs/$module.dot\")\n", "正しい設定の状態グラフを書き出す"),
         (TLA_SH, script, "out=\"$(KOME_TLA_DUMPS=\"$graphs\" cargo test --release --locked -p kome --lib conform:: -- --nocapture 2>&1)\" || {", "突き合わせの試験を全て走らせる"),
         (TLA_SH, script, "    if line=\"$(echo \"$out\" | grep -o \"conform $module: .*\")\"; then", "モデルごとに、突き合わせが走ったことを見る"),
         (TLA_SH, script, "        failed=1\n    fi\ndone\nexit \"$failed\"\n", "突き合わせが走らなければ失敗にする"),
@@ -1299,7 +1391,7 @@ fn camel(name: &str) -> String {
 
 fn operations_covered(repo: &Repo, report: &mut Report) {
     let sim = "crates/kome-testkit/src/sim.rs";
-    let input = "crates/kome/src/input.rs";
+    let input = INPUT_RS;
     let calls: BTreeSet<String> =
         scanned(report, sim, repo.text(sim), true).map(|found| found.calls.into_iter().collect()).unwrap_or_default();
     let variants: BTreeSet<String> = scanned(report, input, repo.text(input), true)
@@ -1419,7 +1511,7 @@ fn stale_at_lookup(repo: &Repo, report: &mut Report) {
         }
     }
     for needed in [
-        "if self.includes(id.issuer) { Error::Stale(K::TAG) } else { Error::Foreign }",
+        STALE_OR_FOREIGN,
         "(slot.generation == id.generation && slot.issuer == id.issuer).then_some(slot)",
         "if slot.generation != id.generation || slot.issuer != id.issuer {",
         "if slot.generation != id.generation || slot.issuer != id.issuer || !matches!(slot.cell, Entry::Live(_)) {",
@@ -1447,13 +1539,13 @@ fn ids_in(ty: &syn::Type) -> usize {
 }
 
 fn foreign_ids_tested(repo: &Repo, report: &mut Report) {
-    let input = "crates/kome/src/input.rs";
+    let input = INPUT_RS;
     let test = "fn a_foreign_id_is_refused_in_every_position()";
     let body = repo.text(TESTS_RS).split_once(test).and_then(|(_, rest)| rest.split_once("\n}\n")).map_or("", |(body, _)| body);
     if body.is_empty() {
         report.add(TESTS_RS, 1, format!("試験 `{test}` が無い"));
     }
-    for needed in ["assert_eq!(own.k.apply(input), Err(Error::Foreign), \"{at}: {shown}\");", "assert_eq!(own.k, before, \"{at}: {shown} が状態を変えた\");"] {
+    for needed in [FOREIGN_REPLY, "assert_eq!(own.k, before, \"{at}: {shown} が状態を変えた\");"] {
         if !body.contains(needed) {
             report.add_at(repo, TESTS_RS, test, format!("試験が、拒否の理由と状態が変わらないことを確かめていない (`{needed}`)"));
         }
@@ -1528,10 +1620,6 @@ fn permit_returned(repo: &Repo, report: &mut Report) {
             }
         }
     }
-    let input = "crates/kome/src/input.rs";
-    if !repo.text(input).contains("Err(NotRelinquished::Rejected(permit, reason)) => Reply::Returned(permit, reason),") {
-        report.add_at(repo, input, "Input::Relinquish", "Kernel::apply が、受理されなかった実行権を返答に入れて返していない");
-    }
 }
 
 /// 関数の本体の行の範囲を集める。
@@ -1562,19 +1650,6 @@ fn advance_bounded(repo: &Repo, report: &mut Report) {
     // 区切るのは、目安に達していて、次の期限の時刻が直前に処理した期限と違うときだけ。
     if !timer.contains("if fired >= batch && last != Some(entry.at) {") || !timer.contains("let batch = self.limits.advance_batch().get();") {
         report.add_at(repo, TIMER_RS, "pub fn advance(", "advance が、目安の数を処理したところ (同じ時刻の期限を処理し終えたところ) で返っていない");
-    }
-    if !timer.contains("pub fn advance(&mut self, to: Instant) -> Result<Advanced, Error> {") {
-        report.add_at(repo, TIMER_RS, "pub fn advance(", "advance が、進んだ時刻と残りの有無 (Advanced) を返していない");
-    }
-    if !timer.contains("#[must_use = \"more() が真なら") {
-        report.add_at(repo, TIMER_RS, "pub struct Advanced", "Advanced を捨てても警告が出ない (#[must_use] が無い)");
-    }
-    let input = "crates/kome/src/input.rs";
-    if !repo.text(input).contains("Input::Advance(to) => Reply::Advanced(self.advance(to)?),") {
-        report.add_at(repo, input, "Input::Advance(to)", "Kernel::apply が、advance の結果 (Advanced) をそのまま返答に入れていない");
-    }
-    if !repo.text(SIM_RS).contains("        .with_advance_batch(NonZeroU32::MIN.saturating_add(1))\n") {
-        report.add_at(repo, SIM_RS, "pub fn limits()", "決定的シミュレーションが、advance が区切って返る経路を通らない (目安を小さくする)");
     }
     // kome の外で advance を呼ぶ関数は、残りがあるかを見る。
     for (path, text) in repo.under("", ".rs") {
@@ -1607,9 +1682,6 @@ fn independent_model(repo: &Repo, report: &mut Report) {
         }
         after_kome = name == "kome";
     }
-    if !repo.text(SIM_RS).contains("let expected = model.expect(page, within, touch);") {
-        report.add(SIM_RS, 1, "決定的シミュレーションが、メモリの見え方をモデルの判定 (Pages::expect) と比べていない");
-    }
     for needed in ["self.check_merged(process, first, count)?;", "&& model.continues(page, PAGE)"] {
         if !repo.text(SIM_RS).contains(needed) {
             report.add(SIM_RS, 1, format!("決定的シミュレーションが、権限の変更の後に項目がまとまったことをモデルと比べていない (`{needed}`)"));
@@ -1618,7 +1690,7 @@ fn independent_model(repo: &Repo, report: &mut Report) {
 }
 
 fn trace_complete(repo: &Repo, report: &mut Report) {
-    let input = "crates/kome/src/input.rs";
+    let input = INPUT_RS;
     let variants = scanned(report, input, repo.text(input), true).map(|found| found.variants).unwrap_or_default();
     let (lib, words, tests) = (repo.text(TRACE_RS), repo.text(TRACE_WORDS_RS), repo.text(TRACE_TESTS_RS));
     let mut inputs = 0usize;
@@ -1646,10 +1718,7 @@ fn trace_complete(repo: &Repo, report: &mut Report) {
         report.add(TRACE_TESTS_RS, 1, format!("試験が作る操作の種類の数を、Input の項目の数 ({inputs}) に合わせる"));
     }
     let kept = [
-        (TRACE_RS, "        \"< effects={} ready={} running={} now={} alive={}/{}/{}/{}/{}/{}/{} {result:?}\",", "返答の行に、状態のあらましと返答を入れる"),
-        (TRACE_RS, "        if sum != format!(\"{expected:016x}\") {", "行ごとに照合値を、書いたときの綴りのまま比べる (数として読むと大文字や符号の書き換えが通る)"),
         (TRACE_RS, "        if recorded != replayed {\n            return Err(Stopped::Mismatch {", "返答が記録と違ったら、その行で止まる"),
-        (TRACE_RS, "            None => self.out.line(&format!(\"? {input:?}\")),", "再生できない入力も、記録には残す"),
         (TRACE_RS, "            return Err(Stopped::NotReplayable { line: at, input: input.to_owned() });", "再生できない入力で止まる"),
         (TRACE_TESTS_RS, "fn the_saved_recording_still_replays() {", "保存してある記録を再生する試験"),
         (TRACE_TESTS_RS, "fn any_damage_to_the_text_stops_the_replay(", "記録を壊すと再生が止まる試験"),
@@ -1703,14 +1772,11 @@ fn run_queue_kept(repo: &Repo, report: &mut Report) {
     }
     let kept = [
         (SCHED_RS, "        let at = 0;\n        if self.ready.is_empty() {\n            return Ok(None);\n        }\n        self.lend(worker, at).map(Some)", "grant は列の先頭を貸す"),
-        (SCHED_RS, "        let at = entry.queued.ok_or(Error::Refused(Refusal::Barrier))?;", "名指しの貸し出しは、スレッドが持つ位置で引く"),
         (SCHED_RS, "                self.flush_limbo(process)?;\n                self.let_in(process)?;\n", "古い世代の実行が無くなったら、外していたスレッドを列へ戻す"),
         (MEM_RS, "        if barred {\n            // 残っている間は、このプロセスのスレッドへ実行権を貸さない (台帳 MEM-3)。\n            self.hold_back(process)?;\n", "古い世代の実行が残る間、そのプロセスのスレッドを列から外す"),
         (RUNQ_RS, "pub(crate) const fn lent_before(a: (Priority, u64), b: (Priority, u64)) -> bool {", "貸す順序は整数だけの関数で決め、Kani が全ての値で示す"),
         ("crates/kome/src/proofs.rs", "fn the_lending_order_is_a_strict_total_order() {", "貸す順序が必ず付くことを Kani が示す"),
         ("crates/kome/src/audit.rs", "parent.is_none_or(|parent| !waiting.ahead_of(parent)),", "検査が、列の先頭が最も先に貸す席であることを確かめる"),
-        (TESTS_RS, "fn the_run_queue_lends_in_the_same_order_as_a_scan_of_every_thread() {", "全てのスレッドを見て選ぶ手本と、貸す順序を比べる試験"),
-        (BENCH_RS, "for waiting in [16u64, 1024] {", "実行待ちが少ないときと多いときの貸し出しを測る"),
     ];
     for (path, needed, what) in kept {
         if !repo.text(path).contains(needed) {
@@ -1751,12 +1817,6 @@ fn host_single_writer(repo: &Repo, report: &mut Report) {
         ("            drop(guard);\n            let stopped = executor.run(&permit, loaded.context());\n            guard = self.lock()?;\n", "ゲストは錠を放してから実行し、戻ったら取り直す"),
         ("                    break start_run(&mut state.kernel, permit, &mut state.contexts)?;", "文脈は start_run で取り出す"),
         ("            let ran = finish_run(&mut state.kernel, permit, loaded, stopped, &mut state.contexts)?;", "実行権は finish_run で返す"),
-        ("            #[cfg(not(loom_broken))]\n            self.wake(&guard, before);\n", "ゲストが止まった後に、待っている者を起こす"),
-        ("        self.wake(&guard, before);\n        drop(guard);\n        settled.map(|_| result)", "外からの操作の後に、待っている者を起こす"),
-        ("state.closed || state.kernel.ready_count() != 0 || state.kernel.next_deadline() != before;", "眠っている worker は、閉じたとき、貸せるスレッドがあるかもしれないとき、期限が変わったときに起こす"),
-        ("        guard.idle = guard.idle.saturating_add(1);\n", "眠る worker を、錠の中で数えてから眠らせる"),
-        ("            guard.watchers = guard.watchers.saturating_add(1);\n", "待つ者を、錠の中で数えてから待たせる"),
-        ("                guard = self.sleep(guard)?;", "貸せるスレッドが無ければ、錠を放すのと待ち始めるのを一つの操作で行う"),
     ];
     for (needed, what) in kept {
         if !host.contains(needed) {
@@ -1789,7 +1849,6 @@ fn host_single_writer(repo: &Repo, report: &mut Report) {
     let script = repo.text(LOOM_SH);
     for (needed, why) in [
         ("RUSTFLAGS=\"--cfg loom\" cargo test -p kome-host-std --test loom --release --locked 2>&1 | tee \"$log\"\n", "進み方を試す"),
-        ("    if ! grep -q \"^test $name ... ok$\" \"$log\"; then\n", "書いてある検査が全て走ったことを照合する"),
         ("if RUSTFLAGS=\"--cfg loom --cfg loom_broken\" cargo test -p kome-host-std --test loom --release --locked >\"$log\" 2>&1; then\n", "通知を抜いた誤りが見つかることを確かめる"),
         ("if ! grep -q \"deadlock\" \"$log\"; then\n", "見つかった理由が行き詰まりであることを確かめる"),
     ] {
@@ -1801,20 +1860,7 @@ fn host_single_writer(repo: &Repo, report: &mut Report) {
 
 fn run_identity(repo: &Repo, report: &mut Report) {
     let kept = [
-        (SCHED_RS, "        let run_gen = self.seq;\n", "実行の番号を、Kernel の通し番号から取る (スレッドごとに数えない)"),
-        (SCHED_RS, "        self.unqueue(at)?;\n        self.seq = seq;\n", "貸すたびに、通し番号を進める"),
-        (HOST_RS, "                if guard.closed {\n                    self.wake(&guard, before);\n                    return Ok(());\n                }\n", "worker は、頼まれた仕事を処理した後、眠る前に閉じたかを確かめ直す"),
-        (HOST_RS, "self.wanted.load(Ordering::SeqCst) == permit.run().get()", "中断の求めは、実行の番号が一致するときだけ見える"),
-        (HOST_RS, "wanted.ok_or(HostFault::NoWorker)?.ask(run);", "中断の求めは、Effect::Interrupt が名指しした実行の番号で立てる"),
-        (LOOM_RS, "fn a_host_finished_from_the_start_lets_its_workers_go()", "Loom: 仕事が最初から終わっているホスト"),
-        (LOOM_RS, "fn an_interrupt_for_one_run_never_stops_the_next_thread_on_the_same_worker()", "Loom: 前の実行への中断の求めが次のスレッドを止めない"),
-        (HOST_TESTS_RS, "fn a_host_finished_from_the_start_lets_its_workers_go()", "実スレッド: 仕事が最初から終わっているホスト"),
-        (HOST_TESTS_RS, "fn an_interrupt_for_one_run_never_stops_the_next_thread_on_the_same_worker()", "実スレッド: 前の実行への中断の求めが次のスレッドを止めない"),
-        (SIM_RS, "        self.check_interrupts()?;\n", "決定的シミュレーション: 操作のたびに、参照ホストの表現で中断の求めを確かめる"),
-        (SIM_RS, "            if seen != held.interrupted {", "決定的シミュレーション: 求めが見えることと、Kernel がその実行へ要求したことが一致する"),
-        (SIM_RS, "?.ask(run);", "決定的シミュレーション: 参照ホストと同じ置き場 (InterruptSlot) へ求めを立てる"),
         (SIM_TESTS_RS, "        \"run:again-after-interrupt\",\n        \"run:other-thread-after-interrupt\",\n", "決定的シミュレーション: 求めが残った worker への次の貸し出しに到達する"),
-        (TESTS_RS, "fn a_run_number_names_one_run_of_one_thread()", "実行の番号がスレッドをまたいで重ならない試験"),
     ];
     for (path, needed, what) in kept {
         if !repo.text(path).contains(needed) {
@@ -1871,13 +1917,8 @@ fn bench_listed(repo: &Repo, report: &mut Report) {
     }
     let lib = repo.text(BENCH_LIB);
     let kept = [
-        ("pub const LIMIT: f64 = 2.0;", "記録との比較の幅"),
-        ("pub const AGAINST_LIMIT: f64 = 1.15;", "一つ前のコミットとの比較の幅"),
         ("                Bench::decide(&baseline, &least, reference, LIMIT, true)", "記録との比較は、記録の幅で、測っていない操作も失敗にする"),
         ("                Bench::decide(&theirs, &least, reference, AGAINST_LIMIT, false)", "一つ前のコミットとの比較は、狭い幅で行う"),
-        ("if *least < *kept || kept.is_nan() { *least } else { *kept }", "測り足すときは、操作ごとに小さい方を残す"),
-        ("if ratio <= recorded * limit {", "記録の比の幅を超えたら、遅くなったと判定する (測れなかった値は収まったと見なさない)"),
-        ("            None => Verdict::NotMeasured,", "記録にある操作を測っていなければ、失敗にする"),
         ("fn the_gate_fails_an_operation_past_the_limit_and_one_that_was_not_measured()", "判定の規則の試験"),
     ];
     for (needed, what) in kept {
@@ -1892,22 +1933,13 @@ fn bench_listed(repo: &Repo, report: &mut Report) {
     // 取れないときに、黙って通さない。
     let script = repo.text(BENCH_SH);
     let steps = [
-        ("cargo bench -p kome-bench --locked -- --gate docs/bench-gate.tsv\n", "記録と比べる"),
-        ("base=\"$(git rev-parse --verify 'HEAD^')\"\n", "一つ前のコミットが無ければ失敗する"),
         ("cargo bench -p kome-bench --locked -- --record \"$work/all.tsv\")", "一つ前のコミットを、同じ機械で測って最小値を足し込む"),
         ("    !/^#/ && ($1 in recorded) && $2 > recorded[$1] * 1.15 { print $1 }\n", "比較から外すのは、記録の比を幅より大きく引き上げた操作だけ"),
-        ("    if cargo bench -p kome-bench --locked -- --record \"$work/head.tsv\" --against \"$work/base.tsv\"; then", "今のコミットの最小値を足し込み、一つ前のコミットと比べる"),
-        ("echo \"bench-gate: 六回ぶんの最小値でも、一つ前のコミット $base より遅い\" >&2\nexit 1\n", "測り足しても遅ければ失敗する"),
     ];
     for (needed, what) in steps {
         if !script.contains(needed) {
             report.add(BENCH_SH, 1, format!("性能の判定のスクリプトが足りない: {what} (`{}`)", needed.trim()));
         }
-    }
-    let ci = repo.text(CI);
-    let test_job = ci.split_once("\n  test:\n").and_then(|(_, rest)| rest.split_once("\n\n")).map_or("", |(job, _)| job);
-    if !test_job.contains("          fetch-depth: 2\n") {
-        report.add(CI, 1, "test ジョブが、一つ前のコミットを取っていない (性能の判定が比べる相手)");
     }
 }
 
@@ -1969,16 +2001,7 @@ fn verus_kept(repo: &Repo, report: &mut Report) {
             report.add(VERUS_TSV, 1, format!("{function} ({kind}) に当たる、Verus の仕様つきの関数が無い"));
         }
     }
-    // 証明した関数を、アドレスを引く経路が実際に使う。
     let mem = repo.text(MEM_RS);
-    for needed in [
-        "        lookup::first_ending_at_or_after(self.maps.as_slice(), addr)",
-        "        lookup::containing(self.maps.as_slice(), addr).and_then(|at| self.maps.get(at))",
-    ] {
-        if !mem.contains(needed) {
-            report.add(MEM_RS, 1, format!("アドレスを引く経路が、証明した関数を使っていない (`{}`)", needed.trim()));
-        }
-    }
     if let Some(at) = mem.lines().position(|line| line.contains("partition_point") || line.contains("binary_search")) {
         report.add(MEM_RS, at.saturating_add(1), "マッピングの表は lookup.rs の証明した探索で引く");
     }
@@ -1986,7 +2009,6 @@ fn verus_kept(repo: &Repo, report: &mut Report) {
     for (needed, why) in [
         ("\"${check[@]}\" >\"$out/clean.json\"\n", "証明を走らせる"),
         ("if ! grep -q '\"errors\": 0,' \"$out/clean.json\"; then\n", "証明できない関数が無いことを確かめる"),
-        ("if [ -z \"$listed\" ] || [ \"$(proved \"$out/clean.json\")\" != \"$listed\" ]; then", "証明した関数が一覧とちょうど同じであることを確かめる"),
         ("if \"${check[@]}\" --cfg verus_broken >\"$out/broken.json\" 2>\"$out/broken.log\"; then\n", "わざと誤った定義が拒まれることを確かめる"),
         ("if [ \"$refused\" != \"$broken\" ] ||", "拒まれた定義が、わざと誤った定義とちょうど同じであることを確かめる"),
     ] {
@@ -2054,12 +2076,8 @@ fn refinements_kept(repo: &Repo, report: &mut Report) {
             report.add(FLUX_TSV, 1, format!("{path} が無い"));
         }
     }
-    if !repo.text("crates/kome/src/lib.rs").contains("#[cfg(flux)]\nextern crate flux_core;") {
-        report.add("crates/kome/src/lib.rs", 1, "Flux で確かめるときに flux_core を読み込まないと、checked_add などの結果が分からず仕様が通らない");
-    }
     let script = repo.text(FLUX_SH);
     for (needed, why) in [
-        ("export PATH=\"$sysroot/bin:$PATH\"\n", "cargo-flux を sysroot から探す (CI がキャッシュから戻すのは sysroot だけ)"),
         ("RUSTFLAGS=\"-L $sysroot/lib\" cargo flux -p kome\n", "仕様を確かめる"),
         ("if RUSTFLAGS=\"-L $sysroot/lib --cfg flux_broken\" cargo flux -p kome >\"$log\" 2>&1; then\n", "わざと誤った定義が拒まれることを確かめる"),
         ("if [ \"$(echo \"$refused\" | sed 's/.*:://' | sort -u)\" != \"$expected\" ]; then\n", "拒まれた定義が、わざと誤った定義とちょうど同じであることを確かめる"),
@@ -2090,10 +2108,7 @@ fn backend_boundary(repo: &Repo, report: &mut Report) {
         }
     }
     let kept = [
-        ("            MapChange::Unmapped { .. } | MapChange::Protected { .. } => true,", "外す変更と権限の変更で、コードを捨てる"),
-        ("    walk(kernel, process, addr, data.len(), Access::Write, |_, _, _| Ok(()))?;\n", "書き込みは、範囲の全体が書けることを先に確かめる"),
         ("    walk(kernel, process, addr, out.len(), Access::Read, |_, _, _| Ok(()))?;\n", "読み出しは、範囲の全体が読めることを先に確かめる"),
-        ("    if bytes != 0 {\n        observer.changed(", "外したものがあるときだけ知らせる"),
         ("    if generation != before {\n        observer.changed(", "権限が変わったときだけ知らせる"),
         ("        let seen = kernel.executable_views(span.backing(), span.offset(), len, |shown_in, range| code.invalidate(shown_in, range));", "監視つきの書き込みは、書いた実体を実行できる権限で見せている全ての場所 (別名) のコードを捨てさせる"),
     ];
@@ -2109,16 +2124,7 @@ fn backend_boundary(repo: &Repo, report: &mut Report) {
     }
     let sim = repo.text(SIM_RS);
     let compared = [
-        ("let result = map_observed(&mut self.k, &mut self.shadow, process, range, map_source, prot);", "map を通知つきで呼ぶ"),
-        ("match unmap_observed(&mut self.k, &mut self.shadow, process, range) {", "unmap を通知つきで呼ぶ"),
-        ("match protect_observed(&mut self.k, &mut self.shadow, process, range, prot) {", "protect を通知つきで呼ぶ"),
-        ("        if seen != *model {", "通知から組み立てたアドレス空間をモデルと比べる"),
-        ("if fault.addr() == GuestAddr::new(addr) && fault.kind() == kind =>", "アクセスの失敗の位置と種類をモデルと比べる"),
-        ("} else if read.get(at).copied() != Some(self.content.byte(*backing, *offset)) {", "読んだ内容をモデルと比べる"),
-        ("kome::SpaceObserver::cleared(&mut self.shadow, process);", "プロセスの終了を通知の受け取り手へ伝える"),
         ("guest_write_watched(&self.k, &mut flaky, &mut dropped, process, GuestAddr::new(start), &data)", "書き込みを監視つきの経路で行う"),
-        ("let mut flaky = Flaky { store: &mut self.store, left: breaks };", "backend が途中のバイトで失敗する書き込みを試す"),
-        ("if dropped.bytes != code || dropped.forgotten != 0 {", "捨てさせたコードの範囲を、モデルのページから引いたものと比べる"),
     ];
     let reached = "let all = [\"code:kept\", \"code:dropped\", \"code:dropped-alias\", \"code:dropped-after-failure\"];";
     if !repo.text(SIM_TESTS_RS).contains(reached) {
@@ -2129,7 +2135,7 @@ fn backend_boundary(repo: &Repo, report: &mut Report) {
             report.add(SIM_RS, 1, format!("決定的シミュレーションが backend との境界を確かめていない: {what} (`{needed}`)"));
         }
     }
-    if sim.matches("                        self.check_shadow(process)?;\n").count() != 3 {
+    if sim.matches(SHADOW_CHECKED).count() != 3 {
         report.add(SIM_RS, 1, "決定的シミュレーションが、アドレス空間を変える三つの操作の全てで通知の結果を確かめていない");
     }
 }
@@ -2157,9 +2163,8 @@ fn process_quota(repo: &Repo, report: &mut Report) {
     }
     let sites = [
         ("crates/kome/src/thread.rs", ">= u64::from(owner.quota.threads()) {", "create_thread が、スレッドの数の割り当てを見ていない"),
-        ("crates/kome/src/io.rs", "if ios > owner.quota.ios() {", "prepare_io が、I/O 要求の数の割り当てを見ていない"),
+        (IO_RS, "if ios > owner.quota.ios() {", "prepare_io が、I/O 要求の数の割り当てを見ていない"),
         ("crates/kome/src/mem.rs", "total <= owner.quota.mapped_bytes()", "map が、実体つきのバイト数の割り当てを見ていない"),
-        (SIM_RS, "Ok(()) if after > quota => Err(", "決定的シミュレーションが、割り当てを超える受理を検出しない"),
     ];
     for (path, needed, message) in sites {
         if !repo.text(path).contains(needed) {
@@ -2171,12 +2176,6 @@ fn process_quota(repo: &Repo, report: &mut Report) {
 fn executor_contract(repo: &Repo, report: &mut Report) {
     let sched = repo.text(SCHED_RS);
     // 返却は、受理の前に理由を確かめ、受理した後の行き先を終了要求つきで決める。どちらも Kani が示した関数を通る。
-    if !sched.contains("            stop_allowed(stop, interrupted, permit.budget, consumed).map_err(Error::Refused)?;\n") {
-        report.add_at(repo, SCHED_RS, "pub fn relinquish(", "relinquish が、受理の前に理由を確かめていない (stop_allowed)");
-    }
-    if !sched.contains("        match after_stop(stop, kill) {") {
-        report.add_at(repo, SCHED_RS, "fn take_back(", "実行権を返したスレッドの行き先を、理由と終了要求から決めていない (after_stop)");
-    }
     // 止まる理由の変種は、どれも文書の表に行がある。
     let architecture = repo.text(ARCHITECTURE_MD);
     let variants = sched.split("pub enum Stop {").nth(1).and_then(|rest| rest.split("\n}").next()).unwrap_or("");
@@ -2208,32 +2207,47 @@ fn executor_contract(repo: &Repo, report: &mut Report) {
     let whole = [
         ("    if let Err(error) = kernel.lent(&permit) {\n        return Err(NotRun::Rejected { permit, loaded: None, error });\n    }\n    match contexts.load(&permit) {", "start_run が、文脈を取り出す前に実行権の所属を確かめていない"),
         ("    if let Err(error) = kernel.lent(&permit) {\n        return Err(NotRun::Rejected { permit, loaded: Some(loaded), error });\n    }\n    let thread = permit.thread();\n    if let Err(error) = contexts.save(loaded) {", "finish_run が、文脈を戻す前に実行権の所属を確かめていない、または拒否した文脈を返していない"),
-        ("        Err(NotRelinquished::Rejected(permit, error)) => NotRun::Rejected { permit, loaded: None, error },", "hand_back が、受け取られなかった実行権を返していない"),
-        ("#[must_use = \"拒否された実行権は into_permit で取り戻す\"]\n#[derive(Debug)]\npub enum NotRun<C> {", "拒否の値 (NotRun) を捨てても警告が出ない、または複製できる"),
     ];
     for (needed, what) in whole {
         if !exec.contains(needed) {
             report.add_at(repo, EXEC_RS, "pub fn start_run", what);
         }
     }
-    if !repo.text(SIM_RS).contains("Err(kome::NotRun::Rejected { permit, loaded: None, error: Error::Foreign }) => permit,") {
-        report.add(SIM_RS, 1, "決定的シミュレーションが、別の実行インスタンスの実行権で実行を始めないことを確かめていない");
+}
+
+fn dup_free(repo: &Repo, report: &mut Report) {
+    let known = match dup::known(repo.text(dup::KNOWN)) {
+        Ok(known) => known,
+        Err((line, why)) => {
+            report.add(dup::KNOWN, line, format!("写しの一覧の行が決まりに合わない: {why}"));
+            return;
+        }
+    };
+    let found = dup::find(repo.all());
+    for group in &found {
+        if known.iter().any(|entry| dup::listed(group, entry)) {
+            continue;
+        }
+        let Some(first) = group.members.first() else { continue };
+        let others: Vec<String> = group.members.iter().skip(1).map(|member| format!("{}:{} {}", member.file, member.first, member.name)).collect();
+        report.add(
+            &first.file,
+            first.first,
+            format!(
+                "同じコードが {} か所にある ({}、大きさ {}): `{}` と {}。一か所にまとめる。意図して持つなら {} に `{}` と書く",
+                group.members.len(),
+                group.kind.id(),
+                group.size,
+                first.name,
+                others.join("、"),
+                dup::KNOWN,
+                dup::entry_line(group),
+            ),
+        );
     }
-    if !repo.text(TESTS_RS).contains("fn a_permit_of_another_kernel_never_runs_and_comes_back_whole()") {
-        report.add(TESTS_RS, 1, "別の Kernel の実行権が実行器を動かさずに返る試験が無い");
-    }
-    // 決定的シミュレーションは、貸す順序を自分の記録と比べる。
-    let sim = repo.text(SIM_RS);
-    let compared = [
-        ("if self.rank(*other) > self.rank(picked) {", "優先度の高いスレッドを飛ばしていないこと"),
-        ("if self.rank(*other) == self.rank(picked) && *theirs < mine {", "同じ優先度の中で、先に実行待ちになったスレッドを飛ばしていないこと"),
-        ("if let Some(idle) = self.since.keys().find(|thread| self.open(**thread)) {", "貸せるスレッドがあるのに貸さないことが無いこと"),
-        ("        self.note_ready();\n", "操作のたびに、貸せる状態のスレッドを記録すること"),
-        ("let ready = self.k.thread_phase(*thread) == Ok(ThreadPhase::Ready) && self.k.suspend_count(*thread) == Ok(0);", "貸せる状態の判定"),
-    ];
-    for (needed, what) in compared {
-        if !sim.contains(needed) {
-            report.add(SIM_RS, 1, format!("決定的シミュレーションが貸す順序を確かめていない: {what} (`{needed}`)"));
+    for entry in &known {
+        if !found.iter().any(|group| dup::listed(group, entry)) {
+            report.add(dup::KNOWN, entry.line, "一覧にあるが、もう写しではない。行を消す");
         }
     }
 }
@@ -2247,33 +2261,10 @@ fn channel_model(repo: &Repo, report: &mut Report) {
             }
         }
     }
-    let sim = repo.text(SIM_RS);
-    let compared = [
-        ("        self.check_pipes()?;\n", "操作のたびに、通信路の中身と通知をモデルと比べる"),
-        ("if got != put {", "送信の結果をモデルと比べる"),
-        ("if filled != want.as_slice() || parcel != carried {", "受け取ったバイト列と資源をモデルと比べる"),
-        ("if levels != (Ok(u64::from(pipe.readable())), Ok(u64::from(pipe.writable()))) {", "読める・書けるの通知をモデルと比べる"),
-        ("if queued != Ok(wide(pipe.queued())?) || self.k.next_message_len(*channel) != Ok(next) {", "中身の量と次の長さをモデルと比べる"),
-        ("pipe.forget(process);", "プロセスの終了で、モデルの端を外す"),
-    ];
-    for (needed, what) in compared {
-        if !sim.contains(needed) {
-            report.add(SIM_RS, 1, format!("決定的シミュレーションが通信路をモデルと比べていない: {what} (`{needed}`)"));
-        }
-    }
     // 通知の資源の数は中身から決まる。外からの signal、タイマ、I/O の通知では変えられない。
     let refusals = repo.text(OBJECT_RS).matches("return Err(Error::Refused(Refusal::DrivenObject));").count();
     if refusals < 2 {
         report.add_at(repo, OBJECT_RS, "pub fn signal(", "通信路の通知の資源を、signal か通知先の指定で変えられる (DrivenObject で拒否する)");
-    }
-    for path in [TIMER_RS, "crates/kome/src/io.rs"] {
-        if !repo.text(path).contains("self.can_notify(") {
-            report.add(path, 1, "通知先にする資源を can_notify で確かめていない (通信路の通知の資源は通知先にできない)");
-        }
-    }
-    // 送信の受け付けは、Kani が全ての値で示した判定 (ChannelSpec::admit) を通る。
-    if !repo.text(IPC_RS).contains("let admitted = entry.spec.admit(len, entry.queued(), frames, parcel.is_some()).map_err(Error::Refused)?;") {
-        report.add_at(repo, IPC_RS, "pub fn send(", "send が、受け付けの判定 (ChannelSpec::admit) を通っていない");
     }
     // `driven` を決めるのは Object を作る所だけ。後から書き換えない。
     for (path, text) in kernel_files(repo) {
@@ -2450,7 +2441,8 @@ const CI_ENV: [&str; 4] = ["CARGO_TERM_COLOR", "CARGO_INCREMENTAL", "RUSTUP_TOOL
 /// 試験のスクリプトが必ず行うこと: 全クレートの試験と、走った試験の照合。
 const TEST_SH: &str = "scripts/ci/test.sh";
 const TEST_STEPS: [&str; 2] = ["cargo test --workspace --locked 2>&1 | tee \"$log\"", "cargo run -q --locked -p kome-lint -- ran \"$log\""];
-const CI_BANNED: [(&str, &str); 6] = [
+const CI_BANNED: [(&str, &str); 7] = [
+    ("| grep -q", "grep -q は一致したところで読むのをやめ、書く側が SIGPIPE で失敗する (pipefail のもとで、出力が長いときだけ落ちる)。`grep -q … <<<\"$out\"` と書く"),
     ("continue-on-error", "失敗を見逃す設定を置かない"),
     ("|| true", "失敗を握りつぶさない"),
     ("cancel-in-progress: true", "main への push が続くと実行が終わらなくなる。取り消さない"),
@@ -2553,7 +2545,8 @@ fn ci_required(repo: &Repo, report: &mut Report) {
                     let revision = rest.split_whitespace().next().unwrap_or("");
                     revision.len() == 40 && revision.chars().all(|c| c.is_ascii_hexdigit())
                 });
-                if !pinned {
+                // リポジトリの中の Action (`./…`) は、同じコミットの一部である。
+                if !pinned && !action.starts_with("./") {
                     report.add(path, number, "Action はコミットのハッシュで固定する");
                 }
             }

@@ -24,14 +24,12 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/rust
         with:
           key: mutants
-          cache-on-failure: true
       - name: cargo-mutants を入れる
         run: |
-          if ! cargo mutants --version 2>/dev/null | grep -q '27\.1\.0'; then
+          if [[ "$(cargo mutants --version 2>/dev/null)" != *27.1.0* ]]; then
             cargo install --locked cargo-mutants --version 27.1.0
           fi
       - name: mutants
@@ -55,16 +53,14 @@ jobs:
       RUSTUP_TOOLCHAIN: nightly-2026-11-26
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: rustup toolchain install nightly-2026-11-26 --profile minimal
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/rust
         with:
           key: fuzz
-          cache-on-failure: true
-          workspaces: |
-            fuzz -> target
+          install: rustup toolchain install nightly-2026-11-26 --profile minimal
+          workspaces: fuzz -> target
       - name: cargo-fuzz を入れる
         run: |
-          if ! cargo fuzz --version 2>/dev/null | grep -q '0\.13\.2'; then
+          if [[ "$(cargo fuzz --version 2>/dev/null)" != *0.13.2* ]]; then
             cargo install --locked cargo-fuzz --version 0.13.2
           fi
       - name: fuzz

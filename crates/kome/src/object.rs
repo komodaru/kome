@@ -12,7 +12,6 @@ use crate::effect::Effect;
 use crate::error::{Error, Invariant, Refusal, Resource};
 use crate::id::{ObjectId, ProcessId, ThreadId};
 use crate::kernel::Kernel;
-use crate::process::Life;
 use crate::store::{List, TryClone};
 
 /// 待機が成立したときの扱い。
@@ -113,10 +112,7 @@ impl Kernel {
             return Err(Error::Refused(Refusal::BadSignalSpec));
         }
         let limit = self.holdings_limit(process);
-        let owner = self.processes.find_mut(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive_mut(process)?;
         owner.objects.room_for_new(limit)?;
         self.objects.reserve()?;
         self.effects.promise(1)?;
@@ -131,10 +127,7 @@ impl Kernel {
         let limit = self.holdings_limit(process);
         let handles = self.objects.find(object, &self.lineage)?.handles;
         let handles = handles.checked_add(1).ok_or(Error::Refused(Refusal::HoldOverflow))?;
-        let owner = self.processes.find_mut(process, &self.lineage)?;
-        if owner.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let owner = self.alive_mut(process)?;
         owner.objects.add(object, limit)?;
         self.objects.get_mut(object).ok_or(Error::Broken(Invariant::ObjectRefs))?.handles = handles;
         Ok(())

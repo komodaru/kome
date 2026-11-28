@@ -252,14 +252,9 @@ fn effects_emit_exactly_what_was_promised() {
     assert!(effects.promise(1).is_ok() == (count < 2));
 }
 
-/// 取り除いた資源の ID は、スロットが再利用されても二度と解決しない (台帳 ID-1)。
-/// 最初の世代は任意 (使い切る直前まで)。
-#[kani::proof]
-#[kani::unwind(3)]
-fn a_removed_id_never_resolves_again() {
-    let first: u32 = kani::any();
-    kani::assume(first != 0 && first != u32::MAX);
-    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(crate::InstanceId::new(1), 1, NonZeroU32::new(first).unwrap());
+/// 世代 `first` から始まる Arena で、資源を作って取り除き、もう一つ作る。古い ID と新しい ID を返す。
+fn recycled(first: NonZeroU32) -> (Arena<kind::Io, u8>, IoId, IoId) {
+    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(crate::InstanceId::new(1), 1, first);
     let made = arena.insert(1);
     kani::assume(made.is_ok());
     let old = made.unwrap();
@@ -268,6 +263,17 @@ fn a_removed_id_never_resolves_again() {
     let made = arena.insert(2);
     kani::assume(made.is_ok());
     let new = made.unwrap();
+    (arena, old, new)
+}
+
+/// 取り除いた資源の ID は、スロットが再利用されても二度と解決しない (台帳 ID-1)。
+/// 最初の世代は任意 (使い切る直前まで)。
+#[kani::proof]
+#[kani::unwind(3)]
+fn a_removed_id_never_resolves_again() {
+    let first: u32 = kani::any();
+    kani::assume(first != 0 && first != u32::MAX);
+    let (mut arena, old, new) = recycled(NonZeroU32::new(first).unwrap());
     assert!(new.slot() == old.slot() && new.generation() == first + 1);
     assert!(arena.get(old).is_none());
     assert!(arena.remove(old).is_none());
@@ -278,15 +284,7 @@ fn a_removed_id_never_resolves_again() {
 #[kani::proof]
 #[kani::unwind(3)]
 fn an_exhausted_slot_is_retired() {
-    let mut arena: Arena<kind::Io, u8> = Arena::starting_at(crate::InstanceId::new(1), 1, NonZeroU32::MAX);
-    let made = arena.insert(1);
-    kani::assume(made.is_ok());
-    let old = made.unwrap();
-    assert!(arena.remove(old) == Some(1));
-    assert!(arena.get(old).is_none());
-    let made = arena.insert(2);
-    kani::assume(made.is_ok());
-    let new = made.unwrap();
+    let (arena, old, new) = recycled(NonZeroU32::MAX);
     assert!(new.slot() != old.slot());
     assert!(arena.get(old).is_none());
     assert!(arena.get(new) == Some(&2));

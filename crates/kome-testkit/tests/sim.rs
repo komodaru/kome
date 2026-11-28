@@ -7,21 +7,8 @@
 use std::collections::BTreeSet;
 
 use kome::Effect;
-use kome_testkit::drive;
+use kome_testkit::{drive, noise};
 use proptest::prelude::*;
-
-/// 試験用の決定的な乱数列 (xorshift64*)。
-fn noise(seed: u64, len: usize) -> Vec<u8> {
-    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-    (0..len)
-        .map(|_| {
-            state ^= state >> 12;
-            state ^= state << 25;
-            state ^= state >> 27;
-            state.wrapping_mul(0x2545_F491_4F6C_DD1D).to_le_bytes()[7]
-        })
-        .collect()
-}
 
 fn name(effect: &Effect) -> &'static str {
     match effect {

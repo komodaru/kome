@@ -278,6 +278,21 @@ impl Kernel {
     }
 
     /// `process` が参照できる資源の種類数: 状態全体の上限と、プロセスへの割り当ての小さい方。
+    /// 終了していないプロセス。終了を求められたプロセスには、新しい資源も操作も受け付けない。
+    pub(crate) fn alive(&self, process: ProcessId) -> Result<&Process, Error> {
+        let entry = self.processes.find(process, &self.lineage)?;
+        if entry.life != Life::Alive {
+            return Err(Error::Refused(Refusal::ProcessExiting));
+        }
+        Ok(entry)
+    }
+
+    /// [`Kernel::alive`] の、書き換えられる版。
+    pub(crate) fn alive_mut(&mut self, process: ProcessId) -> Result<&mut Process, Error> {
+        self.alive(process)?;
+        self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))
+    }
+
     pub(crate) fn holdings_limit(&self, process: ProcessId) -> u32 {
         let quota = self.processes.get(process).map_or(u32::MAX, |entry| entry.quota.holdings);
         self.limits.holdings().min(quota)
@@ -318,10 +333,7 @@ impl Kernel {
     /// プロセスを終了させる。実行中でないスレッドはここで終了し、実行中のスレッドは
     /// 実行権を返した時点で終了する。
     pub fn exit_process(&mut self, process: ProcessId, code: ExitCode) -> Result<(), Error> {
-        let entry = self.processes.find_mut(process, &self.lineage)?;
-        if entry.life != Life::Alive {
-            return Err(Error::Refused(Refusal::ProcessExiting));
-        }
+        let entry = self.alive_mut(process)?;
         entry.life = Life::Exiting(code);
         let mut at = 0usize;
         loop {

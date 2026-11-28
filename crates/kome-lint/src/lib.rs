@@ -7,9 +7,12 @@
 //! 型や API で防げる誤りはそちらで防ぐ。ここにあるのは、型では表せない約束である:
 //! 依存を持たないこと、OS の語彙を持ち込まないこと、台帳と実装と検証が食い違わないこと。
 
+pub mod dup;
 mod ran;
 mod rules;
 mod scan;
+#[cfg(test)]
+mod dup_tests;
 #[cfg(test)]
 mod tests;
 
@@ -70,6 +73,11 @@ impl Repo {
             .map(|(path, text)| (path.as_str(), text.as_str()))
     }
 
+    /// 全てのファイル (パスと内容)。
+    pub fn all(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.files.iter().map(|(path, text)| (path.as_str(), text.as_str()))
+    }
+
     /// ファイルを書き換える (無ければ作る)。
     pub fn edit(&mut self, path: &str, change: impl FnOnce(&str) -> String) {
         let changed = change(self.text(path));
@@ -120,6 +128,28 @@ impl Report {
     }
 }
 
+/// ファイルに残っていなければならない文字列。
+///
+/// 「この一行があること」で守る約束は、検査 (その文字列を探す) と壊し方 (その文字列を別のものに
+/// 置き換える) の両方に同じ文字列が要る。ここに一度だけ書き、検査も壊し方もここから作る。
+pub struct Keep {
+    /// ファイル。
+    pub path: &'static str,
+    /// 残っていなければならない文字列。
+    pub needle: &'static str,
+    /// 何を守っているか。
+    pub why: &'static str,
+    /// 自己試験が `needle` と置き換える文字列 (約束を破った形)。
+    pub broken: &'static str,
+}
+
+impl Keep {
+    /// このファイルの約束を破る。
+    pub fn spoil(&self, repo: &mut Repo) {
+        repo.edit(self.path, |text| text.replace(self.needle, self.broken));
+    }
+}
+
 /// 一つの規則。
 pub struct Rule {
     /// 名前。
@@ -128,13 +158,20 @@ pub struct Rule {
     pub about: &'static str,
     /// 検査。
     pub check: fn(&Repo, &mut Report),
-    /// 規則が検出しなければならない壊し方。一つ以上。
+    /// 残っていなければならない文字列。`check` より先に確かめる。
+    pub keeps: &'static [Keep],
+    /// 規則が検出しなければならない壊し方 (`keeps` から作れないもの)。`keeps` と合わせて一つ以上。
     pub breaks: &'static [fn(&mut Repo)],
 }
 
 /// 一つの規則を適用する。
 pub fn check(rule: &Rule, repo: &Repo) -> Vec<Finding> {
     let mut report = Report { rule: rule.id, findings: Vec::new() };
+    for keep in rule.keeps {
+        if !repo.text(keep.path).contains(keep.needle) {
+            report.add(keep.path, 1, format!("約束が崩れている: {} (`{}` が無い)", keep.why, keep.needle.trim()));
+        }
+    }
     (rule.check)(repo, &mut report);
     report.findings
 }

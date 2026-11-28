@@ -2,25 +2,12 @@
 //! シミュレーションのどの状態から呼んでも確保しないことを確かめる。
 
 use kome_noalloc::{Counting, count, enter, leave};
-use kome_testkit::{Probe, drive_probed};
+use kome_testkit::{Probe, drive_probed, noise};
 
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
 const PROBE: Probe = Probe { enter, leave };
-
-/// 試験用の決定的な乱数列 (xorshift64*)。
-fn noise(seed: u64, len: usize) -> Vec<u8> {
-    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-    (0..len)
-        .map(|_| {
-            state ^= state >> 12;
-            state ^= state << 25;
-            state ^= state >> 27;
-            state.wrapping_mul(0x2545_F491_4F6C_DD1D).to_le_bytes()[7]
-        })
-        .collect()
-}
 
 #[test]
 fn the_counter_sees_an_allocation_between_the_marks() {

@@ -39,14 +39,14 @@ while IFS=$'\t' read -r cfg module expected; do
     fi
     out="$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -workers auto -deadlock -metadir states "${dump[@]}" -config "$cfg" "$module" 2>&1 || true)"
     if [ "$expected" = ok ]; then
-        if echo "$out" | grep -q '^Model checking completed. No error has been found.'; then
+        if grep -q '^Model checking completed. No error has been found.' <<<"$out"; then
             echo "ok        $cfg ($(echo "$out" | grep -o '[0-9]* distinct states found' | tail -1))"
         else
             echo "FAILED    $cfg: 違反なしで終わるはずが、そうならなかった" >&2
             echo "$out" | tail -60 >&2
             failed=1
         fi
-    elif echo "$out" | grep -q "^Error: Invariant $expected is violated\\.\$"; then
+    elif grep -q "^Error: Invariant $expected is violated\\.\$" <<<"$out"; then
         echo "ok        $cfg ($expected の反例が出た)"
     else
         echo "FAILED    $cfg: $expected の反例が出るはずが、出なかった" >&2

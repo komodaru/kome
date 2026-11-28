@@ -1,0 +1,5 @@
+# 意図して二つ持つ写しの一覧 (lint `dup`)。
+# 行: 種類<TAB>ファイル#名前<TAB>ファイル#名前…<TAB># 二つ持つ理由
+# 候補の行は `cargo run -q -p kome-lint -- dup` が出す。載っていない写しも、もう写しでない行も違反になる。
+lines	.github/workflows/ci.yml#cancel-in-progress: false	.github/workflows/weekly.yml#cancel-in-progress: false	# ワークフローの最上位 (concurrency と env) は、GitHub Actions ではファイルをまたいで共有できない
+lines	.github/workflows/ci.yml#permissions:	.github/workflows/weekly.yml#permissions:	# ワークフローの最上位 (権限と concurrency) は、GitHub Actions ではファイルをまたいで共有できない
