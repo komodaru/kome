@@ -43,7 +43,7 @@ impl TryClone for Run {
 
 impl TryClone for Thread {
     fn try_clone(&self) -> Result<Thread, Error> {
-        let Thread { process, exit_signal, run, suspend, kill, run_gen, executed, priority } = self;
+        let Thread { process, exit_signal, run, suspend, kill, run_gen, executed, priority, turn, queued } = self;
         Ok(Thread {
             process: *process,
             exit_signal: *exit_signal,
@@ -53,6 +53,8 @@ impl TryClone for Thread {
             run_gen: *run_gen,
             executed: *executed,
             priority: *priority,
+            turn: *turn,
+            queued: *queued,
         })
     }
 }
@@ -103,6 +105,10 @@ pub(crate) struct Thread {
     /// 実行した量の累計。
     pub(crate) executed: u64,
     pub(crate) priority: Priority,
+    /// 実行待ちになった順番。同じ優先度の中で、小さいものから貸す。
+    pub(crate) turn: u64,
+    /// 実行待ちの列 ([`crate::runq`]) の中の位置。列に無ければ `None`。
+    pub(crate) queued: Option<usize>,
 }
 
 impl Kernel {
@@ -136,6 +142,8 @@ impl Kernel {
             run_gen: 0,
             executed: 0,
             priority: Priority::DEFAULT,
+            turn: 0,
+            queued: None,
         })?;
         let owner = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
         owner.threads.push(thread)?;
@@ -162,8 +170,9 @@ impl Kernel {
         let entry = self.threads.find_mut(thread, &self.lineage)?;
         let previous = entry.suspend;
         entry.suspend = previous.checked_add(1).ok_or(Error::Refused(Refusal::SuspendOverflow))?;
+        let (process, queued) = (entry.process, entry.queued);
         match entry.run {
-            Run::Ready if previous == 0 => self.dequeue(thread),
+            Run::Ready if previous == 0 => self.leave(thread, process, queued),
             Run::Running { .. } => self.interrupt(thread),
             Run::Ready | Run::Servicing | Run::Blocked(_) => Ok(()),
         }?;
@@ -221,16 +230,6 @@ impl Kernel {
         Ok(self.threads.find(thread, &self.lineage)?.executed)
     }
 
-    /// 実行待ちの列の末尾へ入れる。容量は [`Kernel::create_thread`] が確保してある。
-    pub(crate) fn enqueue(&mut self, thread: ThreadId) -> Result<(), Error> {
-        self.ready.push_back_within(thread).map_err(|_| Error::Broken(Invariant::RunQueue))
-    }
-
-    fn dequeue(&mut self, thread: ThreadId) -> Result<(), Error> {
-        let at = self.ready.position(|queued| *queued == thread).ok_or(Error::Broken(Invariant::RunQueue))?;
-        self.ready.remove(at).map(|_| ()).ok_or(Error::Broken(Invariant::RunQueue))
-    }
-
     /// 実行中のスレッドの worker へ中断を要求する。一度の実行につき一度だけ出す。
     pub(crate) fn interrupt(&mut self, thread: ThreadId) -> Result<(), Error> {
         let entry = self.threads.get_mut(thread).ok_or(Error::Broken(Invariant::RunOnePermit))?;
@@ -255,7 +254,7 @@ impl Kernel {
         match entry.run {
             Run::Ready => {
                 if entry.suspend == 0 {
-                    self.dequeue(thread)?;
+                    self.leave(thread, entry.process, entry.queued)?;
                 }
             }
             Run::Blocked(wait) => {

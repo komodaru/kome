@@ -3,7 +3,7 @@
 //! 証明には二種類ある。どちらであるかと前提は、証明ごとに `docs/proofs.tsv` に書く
 //! (`kome-lint` の ledger が、この表と照合する)。
 //!
-//! - 整数だけの関数 (範囲、時刻、周期、I/O の遷移、席の勘定、送信の受け付け、止まった理由の扱い) は、引数の全ての値について示す。
+//! - 整数だけの関数 (範囲、時刻、周期、I/O の遷移、席の勘定、送信の受け付け、止まった理由の扱い、貸す順序) は、引数の全ての値について示す。
 //! - 表やキューを使う証明 (ID、`Effect` の発行) は、小さな上限と、決まった長さの操作の列に
 //!   限って示す。記憶域の確保が成功した場合だけを対象にする。上限や列の長さを変えた場合は
 //!   示していない。その部分は試験と決定的シミュレーションが見る。
@@ -18,7 +18,8 @@ use crate::ipc::ChannelSpec;
 use crate::io::{HostError, IoEmit, IoEvent, IoOutcome, IoState, io_step};
 use crate::mem::{MemFault, MemFaultKind};
 use crate::process::ExitCode;
-use crate::sched::{Budget, Next, Stop, after_stop, stop_allowed};
+use crate::runq::lent_before;
+use crate::sched::{Budget, Next, Priority, Stop, after_stop, stop_allowed};
 use crate::time::{Duration, Instant, Period};
 
 fn any_range() -> GuestRange {
@@ -384,5 +385,26 @@ fn a_stop_reason_is_accepted_only_when_it_fits() {
         // 続きをそのまま実行できる理由だけが、実行待ちへ戻る。
         let resumable = matches!(stop, Stop::BudgetExhausted | Stop::Yielded | Stop::Interrupted);
         assert!(next == if resumable { Next::Requeue } else { Next::Service });
+    }
+}
+
+/// 貸す順序は、どの二つの席にも必ず付き、回らない。だから実行待ちの列 (ヒープ) の先頭は
+/// ただ一つに決まる。優先度が高い方が先で、同じなら先に実行待ちになった方が先である。
+#[kani::proof]
+fn the_lending_order_is_a_strict_total_order() {
+    let a = (Priority::new(kani::any()), kani::any::<u64>());
+    let b = (Priority::new(kani::any()), kani::any::<u64>());
+    let c = (Priority::new(kani::any()), kani::any::<u64>());
+    assert!(!lent_before(a, a));
+    assert!(!(lent_before(a, b) && lent_before(b, a)));
+    assert!(lent_before(a, b) || lent_before(b, a) || a == b);
+    if lent_before(a, b) && lent_before(b, c) {
+        assert!(lent_before(a, c));
+    }
+    if a.0 > b.0 {
+        assert!(lent_before(a, b));
+    }
+    if a.0 == b.0 {
+        assert!(lent_before(a, b) == (a.1 < b.1));
     }
 }

@@ -38,6 +38,7 @@ const ADDR_RS: &str = "crates/kome/src/addr.rs";
 const EFFECT_RS: &str = "crates/kome/src/effect.rs";
 const ID_RS: &str = "crates/kome/src/id.rs";
 const SCHED_RS: &str = "crates/kome/src/sched.rs";
+const RUNQ_RS: &str = "crates/kome/src/runq.rs";
 const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
 
@@ -302,6 +303,23 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("total <= owner.quota.mapped_bytes()", "total <= u64::MAX")),
             |repo| repo.edit("crates/kome/src/process.rs", |text| text.replace("self.limits.holdings().min(quota)", "self.limits.holdings()")),
             |repo| repo.edit(SIM_RS, |text| text.replace("Ok(()) if after > quota => Err(", "Ok(()) if false => Err(")),
+        ],
+    },
+    Rule {
+        id: "run-queue-kept",
+        about: "実行権を貸す相手は実行待ちの列の先頭から一手で選び、列の中の位置は runq.rs だけが書く。スレッドを全て見て選ぶ形へ戻さない",
+        check: run_queue_kept,
+        breaks: &[
+            |repo| repo.edit(SCHED_RS, |text| text.replace("        let at = 0;\n        if self.ready.is_empty() {", "        let at = self.ready.iter().count().saturating_sub(1);\n        if self.ready.is_empty() {")),
+            |repo| repo.edit(SCHED_RS, |text| text.replace("        let at = entry.queued.ok_or(Error::Refused(Refusal::Barrier))?;", "        let at = self.ready.position(|waiting| waiting.thread == thread).ok_or(Error::Refused(Refusal::Barrier))?;")),
+            |repo| repo.append("crates/kome/src/thread.rs", "fn forget(kernel: &mut Kernel, thread: ThreadId) {\n    if let Some(entry) = kernel.threads.get_mut(thread) {\n        entry.queued = None;\n    }\n}"),
+            |repo| repo.append(SCHED_RS, "fn jump(kernel: &mut Kernel, thread: ThreadId) {\n    if let Some(entry) = kernel.threads.get_mut(thread) {\n        entry.turn = 0;\n    }\n}"),
+            |repo| repo.append(MEM_RS, "fn shove(kernel: &mut Kernel, waiting: crate::runq::Waiting) {\n    let _ = kernel.ready.push(waiting);\n}"),
+            |repo| repo.edit(MEM_RS, |text| text.replace("            self.hold_back(process)?;\n", "")),
+            |repo| repo.edit(SCHED_RS, |text| text.replace("                self.let_in(process)?;\n", "")),
+            |repo| repo.edit(RUNQ_RS, |text| text.replace("        for _ in 0..usize::BITS {", "        loop {")),
+            |repo| repo.edit(BENCH_RS, |text| text.replace("for waiting in [16u64, 1024] {", "for waiting in [16u64] {")),
+            |repo| repo.edit(TESTS_RS, |text| text.replace("fn the_run_queue_lends_in_the_same_order_as_a_scan_of_every_thread() {", "fn the_run_queue_lends() {")),
         ],
     },
     Rule {
@@ -1447,6 +1465,58 @@ fn independent_model(repo: &Repo, report: &mut Report) {
         if !repo.text(SIM_RS).contains(needed) {
             report.add(SIM_RS, 1, format!("決定的シミュレーションが、権限の変更の後に項目がまとまったことをモデルと比べていない (`{needed}`)"));
         }
+    }
+}
+
+fn run_queue_kept(repo: &Repo, report: &mut Report) {
+    // 列とその中の位置を書くのは runq.rs だけ。ほかの場所が書くと、位置と席がずれる。
+    let writes = [
+        ("self.ready.push", "列へ入れる"),
+        ("kernel.ready.push", "列へ入れる"),
+        ("self.ready.pop", "列から取り出す"),
+        ("self.ready.swap", "列を並べ替える"),
+        ("self.ready.remove", "列から取り出す"),
+        ("self.ready.get_mut", "列の席を書き換える"),
+        (".queued = ", "列の中の位置を書く"),
+        (".turn = ", "実行待ちになった順番を書く"),
+    ];
+    // 列を全て見るのは、検査 (audit.rs) だけ。貸す相手を選ぶために全て見ると、スレッドの数に比例して遅くなる。
+    let scans = ["self.ready.iter()", "self.ready.position(", "self.ready.as_slice()"];
+    for (path, text) in repo.under(KOME_SRC, ".rs") {
+        if path == RUNQ_RS || path == TESTS_RS {
+            continue;
+        }
+        for (at, line) in text.lines().enumerate() {
+            for (write, what) in writes {
+                if line.contains(write) {
+                    report.add(path, at.saturating_add(1), format!("{what}のは {RUNQ_RS} だけにする"));
+                }
+            }
+            if path != "crates/kome/src/audit.rs" && scans.iter().any(|scan| line.contains(scan)) {
+                report.add(path, at.saturating_add(1), "実行待ちの列を全て見ない。貸す相手は列の先頭、名指しはスレッドが持つ位置で引く");
+            }
+        }
+    }
+    let kept = [
+        (SCHED_RS, "        let at = 0;\n        if self.ready.is_empty() {\n            return Ok(None);\n        }\n        self.lend(worker, at).map(Some)", "grant は列の先頭を貸す"),
+        (SCHED_RS, "        let at = entry.queued.ok_or(Error::Refused(Refusal::Barrier))?;", "名指しの貸し出しは、スレッドが持つ位置で引く"),
+        (SCHED_RS, "                self.flush_limbo(process)?;\n                self.let_in(process)?;\n", "古い世代の実行が無くなったら、外していたスレッドを列へ戻す"),
+        (MEM_RS, "        if barred {\n            // 残っている間は、このプロセスのスレッドへ実行権を貸さない (台帳 MEM-3)。\n            self.hold_back(process)?;\n", "古い世代の実行が残る間、そのプロセスのスレッドを列から外す"),
+        (RUNQ_RS, "pub(crate) const fn lent_before(a: (Priority, u64), b: (Priority, u64)) -> bool {", "貸す順序は整数だけの関数で決め、Kani が全ての値で示す"),
+        ("crates/kome/src/proofs.rs", "fn the_lending_order_is_a_strict_total_order() {", "貸す順序が必ず付くことを Kani が示す"),
+        ("crates/kome/src/audit.rs", "parent.is_none_or(|parent| !waiting.ahead_of(parent)),", "検査が、列の先頭が最も先に貸す席であることを確かめる"),
+        (TESTS_RS, "fn the_run_queue_lends_in_the_same_order_as_a_scan_of_every_thread() {", "全てのスレッドを見て選ぶ手本と、貸す順序を比べる試験"),
+        (BENCH_RS, "for waiting in [16u64, 1024] {", "実行待ちが少ないときと多いときの貸し出しを測る"),
+    ];
+    for (path, needed, what) in kept {
+        if !repo.text(path).contains(needed) {
+            report.add(path, 1, format!("実行待ちの列の約束が崩れている: {what}"));
+        }
+    }
+    // 並べ替えの繰り返しは、木の深さで必ず止まる形にする。
+    let runq = repo.text(RUNQ_RS);
+    if runq.matches("        for _ in 0..usize::BITS {").count() != 2 || runq.contains("loop {") {
+        report.add(RUNQ_RS, 1, "席を上下へ動かす繰り返しは、回数に上限のある形 (`for _ in 0..usize::BITS`) で書く");
     }
 }
 

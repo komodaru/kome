@@ -276,19 +276,14 @@ impl Kernel {
     /// 実行権を `worker` へ貸す。
     ///
     /// 権限を減らす変更の後、古い世代で実行中のスレッドが残っているプロセスの
-    /// スレッドは飛ばす (台帳 MEM-3)。
+    /// スレッドへは貸さない (台帳 MEM-3)。手数は、実行待ちのスレッドの数の対数で済む。
     pub fn grant(&mut self, worker: WorkerId) -> Result<Option<RunPermit>, Error> {
         self.worker_free(worker)?;
-        let mut pick: Option<(usize, Priority)> = None;
-        for (at, thread) in self.ready.iter().enumerate() {
-            let Some(entry) = self.threads.get(*thread) else { continue };
-            let open = self.processes.get(entry.process).is_some_and(|process| process.stale_runners == 0);
-            // 同じ優先度なら、列の前にあるものを残す。
-            if open && pick.is_none_or(|(_, best)| entry.priority > best) {
-                pick = Some((at, entry.priority));
-            }
+        // 列の先頭が、貸せるスレッドの中で最も先に貸すものである ([`crate::runq`])。
+        let at = 0;
+        if self.ready.is_empty() {
+            return Ok(None);
         }
-        let Some((at, _)) = pick else { return Ok(None) };
         self.lend(worker, at).map(Some)
     }
 
@@ -300,19 +295,20 @@ impl Kernel {
     pub fn grant_thread(&mut self, worker: WorkerId, thread: ThreadId) -> Result<RunPermit, Error> {
         let entry = self.threads.find(thread, &self.lineage)?;
         self.worker_free(worker)?;
-        let at = self.ready.position(|queued| *queued == thread).ok_or(Error::Refused(Refusal::NotReady))?;
-        let owner = self.processes.get(entry.process).ok_or(Error::Broken(Invariant::ProcessTree))?;
-        if owner.stale_runners != 0 {
-            return Err(Error::Refused(Refusal::Barrier));
+        if entry.run != Run::Ready || entry.suspend != 0 {
+            return Err(Error::Refused(Refusal::NotReady));
         }
+        // 貸せる状態で列に無いのは、プロセスに古い世代の実行が残っているときだけである。
+        let at = entry.queued.ok_or(Error::Refused(Refusal::Barrier))?;
         self.lend(worker, at)
     }
 
-    /// 実行待ちの列の `at` 番目のスレッド (0 が最も先に実行待ちになったもの)。
+    /// いま貸せるスレッドの `at` 番目。0 番目は [`Kernel::grant`] が次に貸すスレッドである。
+    /// 1 番目から後の並びは、同じ入力列なら同じだが、貸す順でも待った順でもない。
     /// 順序をホストが決めるときに、貸す候補を数えるのに使う。
     #[must_use]
     pub fn ready_thread(&self, at: usize) -> Option<ThreadId> {
-        self.ready.get(at).copied()
+        self.ready.get(at).map(|waiting| waiting.thread)
     }
 
     /// 実行中の `thread` へ中断を要求する (優先度の高いスレッドへ譲らせる、時間切れにする)。
@@ -324,10 +320,14 @@ impl Kernel {
         }
     }
 
-    /// 優先度を変える。変える前の値を返す。実行待ちの列の中の待ち順は変えない。
+    /// 優先度を変える。変える前の値を返す。実行待ちになった順番は変えない。
     pub fn set_priority(&mut self, thread: ThreadId, priority: Priority) -> Result<Priority, Error> {
         let entry = self.threads.find_mut(thread, &self.lineage)?;
-        Ok(core::mem::replace(&mut entry.priority, priority))
+        let previous = core::mem::replace(&mut entry.priority, priority);
+        if let Some(at) = entry.queued {
+            self.requeue(at, priority)?;
+        }
+        Ok(previous)
     }
 
     /// 優先度。
@@ -348,7 +348,7 @@ impl Kernel {
 
     /// 実行待ちの列の `at` 番目のスレッドの実行権を貸す。貸す相手を選ぶ二つの入口が共に通る。
     fn lend(&mut self, worker: WorkerId, at: usize) -> Result<RunPermit, Error> {
-        let thread = *self.ready.get(at).ok_or(Error::Broken(Invariant::RunQueue))?;
+        let thread = self.ready.get(at).ok_or(Error::Broken(Invariant::RunQueue))?.thread;
         let entry = self.threads.get(thread).ok_or(Error::Broken(Invariant::RunQueue))?;
         let process = entry.process;
         let run_gen = entry.run_gen.checked_add(1).ok_or(Error::Exhausted(Resource::Identifiers))?;
@@ -359,7 +359,7 @@ impl Kernel {
         }
         // この実行への中断要求の席。ここから先は失敗しない。
         self.effects.promise(1)?;
-        self.ready.remove(at).ok_or(Error::Broken(Invariant::RunQueue))?;
+        self.unqueue(at)?;
         self.running.push_within(Lent { worker, thread }).map_err(|_| Error::Broken(Invariant::RunOnePermit))?;
         let entry = self.threads.get_mut(thread).ok_or(Error::Broken(Invariant::RunQueue))?;
         entry.run_gen = run_gen;
@@ -443,6 +443,7 @@ impl Kernel {
             owner.stale_runners = owner.stale_runners.checked_sub(1).ok_or(Error::Broken(Invariant::MemBarrier))?;
             if owner.stale_runners == 0 {
                 self.flush_limbo(process)?;
+                self.let_in(process)?;
             }
         }
         match after_stop(stop, kill) {
@@ -468,7 +469,8 @@ impl Kernel {
         self.running.len()
     }
 
-    /// 実行待ちのスレッドの数。
+    /// いま貸せるスレッドの数。実行待ちでも、停止要求があるスレッドと、古い世代の実行が
+    /// 残っているプロセスのスレッドは数えない。
     #[must_use]
     pub fn ready_count(&self) -> usize {
         self.ready.len()

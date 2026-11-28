@@ -13,6 +13,7 @@ use crate::kernel::{Due, Kernel};
 use crate::mem::MapSource;
 use crate::addr::Prot;
 use crate::process::Life;
+use crate::runq::Waiting;
 use crate::thread::Run;
 
 /// 破れていた不変条件。
@@ -49,8 +50,8 @@ impl Kernel {
     pub fn audit(&self) -> Result<(), Violation> {
         self.audit_ids()?;
         self.audit_capacity()?;
-        self.audit_runs()?;
         self.audit_processes()?;
+        self.audit_runs()?;
         self.audit_ios()?;
         self.audit_objects()?;
         self.audit_waits()?;
@@ -130,7 +131,23 @@ impl Kernel {
             ensure(matches, Invariant::RunOnePermit, "貸し出しの記録とスレッドの状態が一致しない")?;
         }
         for (id, thread) in self.threads.iter() {
-            let queued = count(self.ready.iter().filter(|queued| **queued == id));
+            // 列の中の位置を持つスレッドは、その席にちょうど自分がいる。
+            let seated = thread.queued.map(|at| self.ready.get(at).copied());
+            let queued = match seated {
+                None => false,
+                Some(Some(waiting)) => {
+                    ensure(
+                        waiting == Waiting { priority: thread.priority, turn: thread.turn, thread: id },
+                        Invariant::RunQueue,
+                        "スレッドが持つ列の中の位置に、別の席がある",
+                    )?;
+                    true
+                }
+                Some(None) => {
+                    ensure(false, Invariant::RunQueue, "スレッドが持つ列の中の位置が、列の外にある")?;
+                    false
+                }
+            };
             match thread.run {
                 Run::Running { .. } => {
                     ensure(
@@ -138,24 +155,37 @@ impl Kernel {
                         Invariant::RunOnePermit,
                         "実行中のスレッドに貸し出しの記録が無い",
                     )?;
-                    ensure(queued == 0, Invariant::RunQueue, "実行中のスレッドが実行待ちの列にある")?;
+                    ensure(!queued, Invariant::RunQueue, "実行中のスレッドが実行待ちの列にある")?;
                 }
                 Run::Ready => {
-                    let expected = u64::from(thread.suspend == 0);
-                    ensure(queued == expected, Invariant::RunQueue, "実行可能なスレッドと実行待ちの列が一致しない")?;
+                    let open = self.processes.get(thread.process).is_some_and(|process| process.stale_runners == 0);
+                    let expected = thread.suspend == 0 && open;
+                    ensure(queued == expected, Invariant::RunQueue, "貸せるスレッドと実行待ちの列が一致しない")?;
+                    ensure(!queued || thread.turn < self.seq, Invariant::RunQueue, "実行待ちになった順番が、まだ配っていない番号である")?;
                     ensure(thread.kill.is_none(), Invariant::RunQueue, "終了要求が実行待ちのスレッドに残っている")?;
                 }
                 Run::Servicing | Run::Blocked(_) => {
-                    ensure(queued == 0, Invariant::RunQueue, "実行できないスレッドが実行待ちの列にある")?;
+                    ensure(!queued, Invariant::RunQueue, "実行できないスレッドが実行待ちの列にある")?;
                     ensure(thread.kill.is_none(), Invariant::RunQueue, "終了要求が止まっているスレッドに残っている")?;
                 }
             }
         }
-        ensure(
-            self.ready.iter().all(|queued| self.threads.contains(*queued)),
-            Invariant::RunQueue,
-            "実行待ちの列に、終了したスレッドがある",
-        )
+        for (at, waiting) in self.ready.iter().enumerate() {
+            // 席のスレッドは生きていて、その席を自分の位置として持つ (席とスレッドは一対一)。
+            ensure(
+                self.threads.get(waiting.thread).is_some_and(|thread| thread.queued == Some(at)),
+                Invariant::RunQueue,
+                "実行待ちの列の席を、そのスレッドが自分の位置として持っていない",
+            )?;
+            // どの席も、親の席より先には貸さない。だから先頭が、最も先に貸す席である。
+            let parent = at.checked_sub(1).and_then(|below| self.ready.get(below >> 1));
+            ensure(
+                parent.is_none_or(|parent| !waiting.ahead_of(parent)),
+                Invariant::RunQueue,
+                "実行待ちの列で、親の席より先に貸す席が下にある",
+            )?;
+        }
+        Ok(())
     }
 
     fn audit_processes(&self) -> Result<(), Violation> {

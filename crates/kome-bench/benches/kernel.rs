@@ -44,6 +44,17 @@ fn scheduling(bench: &Bench) {
         let permit = some(must(k.grant(W0)));
         must(k.relinquish(permit, Stop::Yielded, Budget::new(0)).map_err(|refused| refused.error()))
     });
+    // 実行待ちが多くても、貸す相手は列の先頭から選ぶ。
+    for waiting in [16u64, 1024] {
+        let (mut k, p) = kernel();
+        for _ in 0..waiting {
+            must(k.create_thread(p, Start::Ready));
+        }
+        bench.measure(&format!("実行権を借りて返す (実行待ち {waiting} 本)"), || {
+            let permit = some(must(k.grant(W0)));
+            must(k.relinquish(permit, Stop::Yielded, Budget::new(0)).map_err(|refused| refused.error()))
+        });
+    }
     for threads in [1u64, 64, 1024] {
         let (mut k, p) = kernel();
         let mut contexts = Contexts::new();

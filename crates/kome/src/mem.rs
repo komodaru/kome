@@ -748,7 +748,12 @@ impl Kernel {
         }
         let owner = self.processes.get_mut(process).ok_or(Error::Broken(Invariant::ProcessTree))?;
         owner.stale_runners = owner.stale_runners.checked_add(newly).ok_or(Error::Broken(Invariant::MemBarrier))?;
-        Ok(owner.stale_runners > 0)
+        let barred = owner.stale_runners > 0;
+        if barred {
+            // 残っている間は、このプロセスのスレッドへ実行権を貸さない (台帳 MEM-3)。
+            self.hold_back(process)?;
+        }
+        Ok(barred)
     }
 
     /// 古い世代の実行が無くなったので、保留していた参照を手放す。

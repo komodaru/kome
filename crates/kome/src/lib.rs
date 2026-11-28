@@ -58,6 +58,7 @@ mod object;
 mod process;
 #[cfg(kani)]
 mod proofs;
+mod runq;
 mod sched;
 mod store;
 #[cfg(test)]

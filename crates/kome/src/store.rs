@@ -102,6 +102,17 @@ impl<T> List<T> {
         if at < self.items.len() { Some(self.items.remove(at)) } else { None }
     }
 
+    /// 二つの位置の要素を入れ替える。どちらかが範囲の外なら何もせず `None`。
+    #[must_use = "入れ替えられなかったこと (None) を呼び出し側が扱う"]
+    pub(crate) fn swap(&mut self, a: usize, b: usize) -> Option<()> {
+        if a < self.items.len() && b < self.items.len() {
+            self.items.swap(a, b);
+            Some(())
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn pop(&mut self) -> Option<T> {
         self.items.pop()
     }
@@ -208,18 +219,10 @@ impl<T> Queue<T> {
         self.items.get(at)
     }
 
-    #[must_use = "取り除けなかったこと (None) を呼び出し側が扱う"]
-    pub(crate) fn remove(&mut self, at: usize) -> Option<T> {
-        self.items.remove(at)
-    }
-
     pub(crate) fn iter(&self) -> alloc::collections::vec_deque::Iter<'_, T> {
         self.items.iter()
     }
 
-    pub(crate) fn position(&self, found: impl FnMut(&T) -> bool) -> Option<usize> {
-        self.items.iter().position(found)
-    }
 }
 
 impl<T: Copy> Queue<T> {

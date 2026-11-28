@@ -9,8 +9,9 @@ use crate::limits::Limits;
 use crate::mem::Backing;
 use crate::object::Object;
 use crate::process::Process;
+use crate::runq::Waiting;
 use crate::sched::WorkerId;
-use crate::store::{List, Queue, TryClone, plain_try_clone};
+use crate::store::{List, TryClone, plain_try_clone};
 use crate::thread::Thread;
 use crate::time::Instant;
 use crate::timer::Timer;
@@ -142,8 +143,8 @@ pub struct Kernel {
     pub(crate) timers: Arena<kind::Timer, Timer>,
     pub(crate) ios: Arena<kind::Io, Io>,
     pub(crate) channels: Arena<kind::Channel, Channel>,
-    /// 実行可能なスレッド。先入れ先出し。
-    pub(crate) ready: Queue<ThreadId>,
+    /// いま貸せるスレッド。先に貸すものが先頭に来るヒープ ([`crate::runq`])。
+    pub(crate) ready: List<Waiting>,
     pub(crate) running: List<Lent>,
     pub(crate) due: List<DueEntry>,
     pub(crate) effects: Effects,
@@ -172,7 +173,7 @@ impl Kernel {
             timers: Arena::new(instance, limits.timers()),
             ios: Arena::new(instance, limits.ios()),
             channels: Arena::new(instance, limits.channels()),
-            ready: Queue::new(),
+            ready: List::new(),
             running,
             due: List::new(),
             effects: Effects::new(limits.effects())?,

@@ -2,6 +2,7 @@
 //!
 //! どの試験も、操作のたびに `audit` を通す (`ok` と `drain`)。
 
+use alloc::collections::BTreeMap;
 use crate::thread::Run;
 use crate::*;
 
@@ -1135,7 +1136,7 @@ fn audit_detects_two_permits_for_one_thread() {
 #[test]
 fn audit_detects_a_runnable_thread_missing_from_the_queue() {
     let mut w = world();
-    assert_eq!(w.k.ready.pop_front(), Some(w.ready));
+    assert_eq!(w.k.ready.pop().map(|waiting| waiting.thread), Some(w.ready));
     assert_eq!(broken(&w.k), Invariant::RunQueue);
 }
 
@@ -1730,11 +1731,39 @@ fn audit_names_every_violation_it_can_report() {
                     thread_mut(&mut w.k, w.ready).run = Run::Running { worker: W1, stale: false, interrupted: false };
                 }),
             ),
-            ("実行可能なスレッドと実行待ちの列が一致しない", bent(|w| assert!(w.k.ready.pop_front().is_some()))),
+            ("貸せるスレッドと実行待ちの列が一致しない", bent(|w| thread_mut(&mut w.k, w.ready).queued = None)),
+            ("スレッドが持つ列の中の位置が、列の外にある", bent(|w| thread_mut(&mut w.k, w.ready).queued = Some(9))),
+            (
+                "スレッドが持つ列の中の位置に、別の席がある",
+                bent(|w| w.k.ready.get_mut(0).unwrap().priority = Priority::new(1)),
+            ),
+            (
+                "実行待ちになった順番が、まだ配っていない番号である",
+                bent(|w| {
+                    thread_mut(&mut w.k, w.ready).turn = u64::MAX;
+                    w.k.ready.get_mut(0).unwrap().turn = u64::MAX;
+                }),
+            ),
+            (
+                "実行待ちの列で、親の席より先に貸す席が下にある",
+                bent(|w| {
+                    let (below, _) = w.k.create_thread(w.p, Start::Ready).unwrap();
+                    let at = thread_mut(&mut w.k, below).queued.unwrap();
+                    assert_ne!(at, 0);
+                    thread_mut(&mut w.k, below).priority = Priority::new(255);
+                    w.k.ready.get_mut(at).unwrap().priority = Priority::new(255);
+                }),
+            ),
             ("終了要求が実行待ちのスレッドに残っている", bent(|w| thread_mut(&mut w.k, w.ready).kill = Some(CODE))),
             ("実行できないスレッドが実行待ちの列にある", bent(|w| thread_mut(&mut w.k, w.ready).run = Run::Servicing)),
             ("終了要求が止まっているスレッドに残っている", bent(|w| thread_mut(&mut w.k, w.blocked).kill = Some(CODE))),
-            ("実行待ちの列に、終了したスレッドがある", bent(|w| assert!(w.k.threads.remove(w.ready).is_some()))),
+            (
+                "実行待ちの列の席を、そのスレッドが自分の位置として持っていない",
+                bent(|w| {
+                    let twice = *w.k.ready.get(0).unwrap();
+                    w.k.ready.push(twice).unwrap();
+                }),
+            ),
             (
                 "スレッドが所属プロセスの一覧にちょうど一度現れない",
                 bent(|w| assert!(process_mut(&mut w.k, w.p).threads.pop().is_some())),
@@ -1893,6 +1922,7 @@ fn audit_names_every_violation_it_can_report() {
                     let running = w.permit.thread();
                     thread_mut(&mut w.k, running).run = Run::Running { worker: W0, stale: true, interrupted: false };
                     process_mut(&mut w.k, w.p).stale_runners = 1;
+                    w.k.hold_back(w.p).unwrap();
                     process_mut(&mut w.k, w.p).space.limbo.push(gone).unwrap();
                 }),
             ),
@@ -1902,6 +1932,7 @@ fn audit_names_every_violation_it_can_report() {
                     let running = w.permit.thread();
                     thread_mut(&mut w.k, running).run = Run::Running { worker: W0, stale: true, interrupted: false };
                     process_mut(&mut w.k, w.p).stale_runners = 1;
+                    w.k.hold_back(w.p).unwrap();
                     process_mut(&mut w.k, w.p).space.limbo.push(w.backing).unwrap();
                     process_mut(&mut w.k, w.p).space.limbo.push(w.backing).unwrap();
                 }),
@@ -3277,6 +3308,210 @@ fn a_named_grant_ignores_the_order_but_not_the_rules() {
     let second = ok!(k, k.grant_thread(W1, a));
     assert_eq!(second.map(), k.map_generation(p).unwrap());
     let _ = k.relinquish(second, Stop::Trap, Budget::new(0));
+}
+
+/// 貸す順序の手本。列を持たず、毎回すべてのスレッドを見て選ぶ。
+struct Plain {
+    process: ProcessId,
+    priority: u8,
+    /// 実行待ちの末尾へ入った順番。
+    arrived: u64,
+    suspend: u32,
+    phase: ThreadPhase,
+    /// 古い世代で実行しているか。
+    stale: bool,
+}
+
+/// 手本が選ぶ、次に貸すスレッド: 貸せるものの中で、優先度が最も高く、最も先に実行待ちになったもの。
+fn plain_pick(model: &BTreeMap<ThreadId, Plain>) -> Option<ThreadId> {
+    let barred = |process: ProcessId| model.values().any(|other| other.process == process && other.stale);
+    model
+        .iter()
+        .filter(|(_, plain)| plain.phase == ThreadPhase::Ready && plain.suspend == 0 && !barred(plain.process))
+        .max_by_key(|(_, plain)| (plain.priority, core::cmp::Reverse(plain.arrived)))
+        .map(|(thread, _)| *thread)
+}
+
+#[test]
+fn the_run_queue_lends_in_the_same_order_as_a_scan_of_every_thread() {
+    // Miri では、同じ経路を少ない種で通す。
+    let seeds = if cfg!(miri) { 1 } else { 40 };
+    for seed in 0..seeds {
+        let mut k = kernel();
+        let processes = [process(&mut k).0, process(&mut k).0];
+        let backings = processes.map(|p| ok!(k, k.create_backing(p, PAGE)));
+        let mut model: BTreeMap<ThreadId, Plain> = BTreeMap::new();
+        let mut held: Vec<RunPermit> = Vec::new();
+        let mut arrivals = 0u64;
+        let mut arrive = || {
+            arrivals += 1;
+            arrivals
+        };
+        let mut state = 0x9e37_79b9_7f4a_7c15u64.wrapping_mul(u64::try_from(seed).unwrap() + 1);
+        let mut next = |bound: usize| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            usize::try_from(state >> 33).unwrap() % bound
+        };
+        for _ in 0..rounds(400) {
+            let any = model.keys().copied().nth(next(model.len().max(1)));
+            match next(10) {
+                0 | 1 => {
+                    let p = processes[next(2)];
+                    let (t, _) = thread(&mut k, p);
+                    let plain = Plain { process: p, priority: Priority::DEFAULT.get(), arrived: arrive(), suspend: 0, phase: ThreadPhase::Ready, stale: false };
+                    model.insert(t, plain);
+                }
+                2 | 3 => {
+                    let Some(worker) = [W0, W1].into_iter().find(|w| held.iter().all(|permit| permit.worker() != *w)) else { continue };
+                    let expected = plain_pick(&model);
+                    assert_eq!(k.ready_thread(0), expected, "seed {seed}");
+                    let permit = ok!(k, k.grant(worker));
+                    assert_eq!(permit.as_ref().map(RunPermit::thread), expected, "seed {seed}");
+                    if let Some(permit) = permit {
+                        model.get_mut(&permit.thread()).unwrap().phase = ThreadPhase::Running;
+                        held.push(permit);
+                    }
+                }
+                4 => {
+                    if held.is_empty() { continue }
+                    let permit = held.swap_remove(next(held.len()));
+                    let thread = permit.thread();
+                    let stop = if next(2) == 0 { Stop::Yielded } else { Stop::Trap };
+                    let fate = ok!(k, k.relinquish(permit, stop, Budget::new(0)));
+                    let plain = model.get_mut(&thread).unwrap();
+                    plain.stale = false;
+                    // 終了は要求していないので、理由のとおりに実行待ちかサービス中になる。
+                    assert_eq!(fate, if stop == Stop::Yielded { ThreadFate::Ready } else { ThreadFate::Servicing });
+                    if stop == Stop::Yielded {
+                        plain.phase = ThreadPhase::Ready;
+                        if plain.suspend == 0 {
+                            plain.arrived = arrive();
+                        }
+                    } else {
+                        plain.phase = ThreadPhase::Servicing;
+                    }
+                }
+                5 => {
+                    let Some(thread) = any else { continue };
+                    let plain = model.get_mut(&thread).unwrap();
+                    if plain.phase == ThreadPhase::Servicing {
+                        ok!(k, k.continue_thread(thread));
+                        plain.phase = ThreadPhase::Ready;
+                        if plain.suspend == 0 {
+                            plain.arrived = arrive();
+                        }
+                    }
+                }
+                6 => {
+                    let Some(thread) = any else { continue };
+                    let level = [1, Priority::DEFAULT.get(), 200][next(3)];
+                    ok!(k, k.set_priority(thread, Priority::new(level)));
+                    model.get_mut(&thread).unwrap().priority = level;
+                }
+                7 => {
+                    let Some(thread) = any else { continue };
+                    let plain = model.get_mut(&thread).unwrap();
+                    if plain.suspend == 0 || next(3) == 0 {
+                        ok!(k, k.suspend_thread(thread));
+                        plain.suspend += 1;
+                    } else {
+                        ok!(k, k.unsuspend_thread(thread));
+                        plain.suspend -= 1;
+                        if plain.suspend == 0 && plain.phase == ThreadPhase::Ready {
+                            plain.arrived = arrive();
+                        }
+                    }
+                }
+                8 => {
+                    // 権限を減らす変更: 実行中のスレッドが古い世代になり、そのプロセスへは貸さなくなる。
+                    let at = next(2);
+                    let (p, backing) = (processes[at], backings[at]);
+                    ok!(k, k.map(p, range(0x1000, PAGE), backed(backing, 0), Prot::READ_WRITE));
+                    ok!(k, k.unmap(p, range(0x1000, PAGE)));
+                    for plain in model.values_mut().filter(|plain| plain.process == p && plain.phase == ThreadPhase::Running) {
+                        plain.stale = true;
+                    }
+                }
+                _ => {
+                    let Some(thread) = any else { continue };
+                    if model.get(&thread).unwrap().phase != ThreadPhase::Running && model.len() > 2 {
+                        let last = model.values().filter(|plain| plain.process == model.get(&thread).unwrap().process).count() == 1;
+                        if !last {
+                            ok!(k, k.terminate_thread(thread, ExitCode::new(0)));
+                            model.remove(&thread);
+                        }
+                    }
+                }
+            }
+            drain(&mut k);
+            // 貸せるスレッドの数と、古い世代の実行が残るプロセスの扱いも手本と同じ。
+            let barred = |process: ProcessId| model.values().any(|other| other.process == process && other.stale);
+            let ready = |plain: &Plain| plain.phase == ThreadPhase::Ready && plain.suspend == 0;
+            assert_eq!(k.ready_count(), model.values().filter(|plain| ready(plain) && !barred(plain.process)).count(), "seed {seed}");
+            assert_eq!(k.ready_thread(0), plain_pick(&model), "seed {seed}");
+        }
+        // 最後に全て貸し切る。優先度と待ち順のとおりに出てくる。
+        for permit in held.drain(..) {
+            let thread = permit.thread();
+            assert_eq!(ok!(k, k.relinquish(permit, Stop::Trap, Budget::new(0))), ThreadFate::Servicing);
+            let plain = model.get_mut(&thread).unwrap();
+            (plain.phase, plain.stale) = (ThreadPhase::Servicing, false);
+        }
+        while let Some(expected) = plain_pick(&model) {
+            let permit = ok!(k, k.grant(W0)).unwrap();
+            assert_eq!(permit.thread(), expected, "seed {seed}");
+            assert_eq!(ok!(k, k.relinquish(permit, Stop::Trap, Budget::new(0))), ThreadFate::Servicing);
+            model.get_mut(&expected).unwrap().phase = ThreadPhase::Servicing;
+        }
+        assert_eq!((k.ready_count(), ok!(k, k.grant(W0))), (0, None));
+    }
+}
+
+#[test]
+fn no_seat_is_lent_before_itself_and_any_two_are_ordered() {
+    let seats = [(1u8, 5u64), (1, 6), (2, 5), (2, 6), (255, 0), (0, u64::MAX)].map(|(level, turn)| (Priority::new(level), turn));
+    for a in seats {
+        assert!(!crate::runq::lent_before(a, a));
+        for b in seats {
+            let expected = a.0 > b.0 || (a.0 == b.0 && a.1 < b.1);
+            assert_eq!(crate::runq::lent_before(a, b), expected, "{a:?} {b:?}");
+            assert_eq!(crate::runq::lent_before(a, b) || crate::runq::lent_before(b, a), a != b);
+        }
+    }
+}
+
+#[test]
+fn threads_held_back_by_old_runs_return_in_their_original_order() {
+    let mut k = kernel();
+    let (p, _) = process(&mut k);
+    let (other, _) = process(&mut k);
+    let (runner, _) = thread(&mut k, p);
+    let (a, _) = thread(&mut k, p);
+    let (outside, _) = thread(&mut k, other);
+    let (b, _) = thread(&mut k, p);
+    ok!(k, k.set_priority(b, Priority::new(200)));
+    let permit = ok!(k, k.grant_thread(W0, runner));
+    let backing = ok!(k, k.create_backing(p, PAGE));
+    ok!(k, k.map(p, range(0x1000, PAGE), backed(backing, 0), Prot::READ_WRITE));
+    assert_eq!((k.ready_count(), k.ready_thread(0)), (3, Some(b)));
+    ok!(k, k.unmap(p, range(0x1000, PAGE)));
+    // 古い世代の実行が残る間、そのプロセスのスレッドは貸せるものに数えない。他のプロセスは貸せる。
+    assert_eq!((k.ready_count(), k.ready_thread(0), k.ready_thread(1)), (1, Some(outside), None));
+    assert_eq!(k.grant_thread(W1, b).map(|_| ()), Err(Error::Refused(Refusal::Barrier)));
+    // 外れている間に実行待ちになったもの、優先度を変えたもの、停止を要求したものも、戻る時に正しく扱う。
+    let (late, _) = thread(&mut k, p);
+    ok!(k, k.set_priority(a, Priority::new(201)));
+    ok!(k, k.suspend_thread(b));
+    assert_eq!(k.ready_count(), 1);
+    assert_eq!(ok!(k, k.relinquish(permit, Stop::Interrupted, Budget::new(0))), ThreadFate::Ready);
+    ok!(k, k.unsuspend_thread(b));
+    // a (優先度 201)、b (200、停止を解いたので末尾の順番)、あとは待った順に outside、late、runner。
+    let mut order = Vec::new();
+    while let Some(permit) = ok!(k, k.grant(W0)) {
+        order.push(permit.thread());
+        assert_eq!(ok!(k, k.relinquish(permit, Stop::Trap, Budget::new(0))), ThreadFate::Servicing);
+    }
+    assert_eq!(order, vec![a, b, outside, late, runner]);
 }
 
 /// 文脈の数を一つ進めるだけの実行器。止まる理由は、決めた順に返す。
