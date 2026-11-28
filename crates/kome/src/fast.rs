@@ -466,6 +466,9 @@ struct Origin {
     writable: bool,
 }
 
+/// 表の形が崩れているときの返事 (項目の位置が、項目の数を超えた)。
+const BROKEN: NotFast = NotFast::Kernel(Error::Broken(Invariant::MemFastPath));
+
 /// プロセスごとの、ゲストの頁から線形領域の中の位置への覚え書き (直接写像)。
 ///
 /// 項目の列は作る時に一度だけ確保し、動かさない。変換したコードは [`SoftTlb::entries`] の番地を
@@ -555,10 +558,9 @@ impl<W: TlbWord> SoftTlb<W> {
         let written = self.dirty.as_slice().binary_search(&origin.page).is_ok();
         let entry = TlbEntry::filled(tag, position, origin.readable, origin.writable && !barred && written);
         let slot = self.slot(addr.get());
-        if let (Some(kept), Some(from)) = (self.entries.get_mut(slot), self.origins.get_mut(slot)) {
-            *kept = entry;
-            *from = Some(origin);
-        }
+        // 項目の位置は、項目の数より小さい (`slot`)。
+        *self.entries.get_mut(slot).ok_or(BROKEN)? = entry;
+        *self.origins.get_mut(slot).ok_or(BROKEN)? = Some(origin);
         Ok(entry)
     }
 
