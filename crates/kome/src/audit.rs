@@ -143,10 +143,7 @@ impl Kernel {
                     )?;
                     true
                 }
-                Some(None) => {
-                    ensure(false, Invariant::RunQueue, "スレッドが持つ列の中の位置が、列の外にある")?;
-                    false
-                }
+                Some(None) => return Err(Violation { invariant: Invariant::RunQueue, detail: "スレッドが持つ列の中の位置が、列の外にある" }),
             };
             match thread.run {
                 Run::Running { .. } => {
@@ -346,10 +343,8 @@ impl Kernel {
     }
 
     fn audit_time(&self) -> Result<(), Violation> {
-        let sorted = self.due.as_slice().windows(2).all(|pair| match pair {
-            [a, b] => (a.at, a.seq) <= (b.at, b.seq),
-            [] | [_] | [_, _, _, ..] => false,
-        });
+        let due = self.due.as_slice();
+        let sorted = due.iter().zip(due.iter().skip(1)).all(|(a, b)| (a.at, a.seq) <= (b.at, b.seq));
         ensure(sorted, Invariant::TimeOrder, "期限の列が (時刻, 登録順) の順でない")?;
         for entry in self.due.iter() {
             let real = match entry.what {

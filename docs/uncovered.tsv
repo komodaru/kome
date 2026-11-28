@@ -1,0 +1,10 @@
+# どの試験も通らないが、それでよい行の一覧 (`scripts/ci/cover.sh`、docs/coverage.md)。
+# 行: ファイル<TAB>行の内容<TAB># 代わりに確かめているもの
+# 不変条件が破れたときの返事 (Error::Broken) の行は、載せなくてよい。
+crates/kome/src/backend.rs	None => Ok(()),	# walk が渡す区間は必ずバッファの中にある (take <= len - done)。外れればデータが抜け、決定的シミュレーションがメモリの内容をモデルと照合する所 (MEM-2) で失敗する
+crates/kome/src/backend.rs	failed.get_or_insert(error);	# executable_views が失敗するのは実体の ID が古いときだけ。ここへ渡すのは、直前に translate が返した生きている実体である (試験 a_write_through_another_view_drops_the_code_of_every_executable_view が成功の側を通す)
+crates/kome/src/exec.rs	Err(NotRelinquished::Failed(error)) => return Err(NotRun::Failed(error)),	# relinquish が Failed を返すのは不変条件が破れたときだけ (Error::Broken)。破れていないことは、決定的シミュレーションが操作のたびに Kernel::audit で確かめる
+crates/kome/src/exec.rs	Err(NotRelinquished::Rejected(permit, error)) => NotRun::Rejected { permit, loaded: None, error },	# hand_back は Kernel::lent が認めた実行権を Trap で返す。stop_allowed は Trap を必ず受け付ける (Kani: a_stop_reason_is_accepted_only_when_it_fits)
+crates/kome/src/exec.rs	Err(NotRelinquished::Failed(error)) => NotRun::Failed(error),	# relinquish が Failed を返すのは不変条件が破れたときだけ (Error::Broken)。破れていないことは、決定的シミュレーションが操作のたびに Kernel::audit で確かめる
+crates/kome/src/id.rs	return Err(Error::Exhausted(Resource::Identifiers));	# スロットの数が u32 に収まらないときの返事。資源の上限 (Limits) は u32 で、live < limit を Flux が示しているので届かない
+crates/kome/src/input.rs	Err(NotRelinquished::Failed(error)) => return Err(error),	# relinquish が Failed を返すのは不変条件が破れたときだけ (Error::Broken)。破れていないことは、決定的シミュレーションが操作のたびに Kernel::audit で確かめる

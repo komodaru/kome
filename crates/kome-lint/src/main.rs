@@ -34,6 +34,22 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    if args.get(1).is_some_and(|arg| arg == "cover") {
+        let Some(Ok(lcov)) = args.get(2).map(std::fs::read_to_string) else {
+            eprintln!("使い方: kome-lint cover <lcov の記録>");
+            return ExitCode::FAILURE;
+        };
+        let problems = kome_lint::check_cover(&repo, &lcov);
+        for problem in &problems {
+            eprintln!("{problem}");
+        }
+        if problems.is_empty() {
+            println!("kome-lint cover: kome の全ての行を、試験か一覧の検証が確かめている");
+            return ExitCode::SUCCESS;
+        }
+        eprintln!("kome-lint cover: {} 件の問題", problems.len());
+        return ExitCode::FAILURE;
+    }
     if args.get(1).is_some_and(|arg| arg == "ran") {
         let log = match args.get(2).map(std::fs::read_to_string) {
             Some(Ok(log)) => log,

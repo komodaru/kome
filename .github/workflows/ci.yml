@@ -57,6 +57,19 @@ jobs:
       - name: よく通る操作が、記録と一つ前のコミットより遅くなっていない
         run: scripts/ci/bench-gate.sh
 
+  cover:
+    name: cover
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: ./.github/actions/rust
+        with:
+          key: cover
+          install: rustup toolchain install && rustup component add llvm-tools
+      - name: kome の全ての行を、試験か一覧の検証が確かめている
+        run: scripts/ci/cover.sh
+
   no-std:
     name: no_std
     runs-on: ubuntu-latest

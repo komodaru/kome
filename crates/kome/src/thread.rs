@@ -169,10 +169,10 @@ impl Kernel {
         entry.suspend = previous.checked_add(1).ok_or(Error::Refused(Refusal::SuspendOverflow))?;
         let (process, queued) = (entry.process, entry.queued);
         match entry.run {
-            Run::Ready if previous == 0 => self.leave(thread, process, queued),
-            Run::Running { .. } => self.interrupt(thread),
-            Run::Ready | Run::Servicing | Run::Blocked(_) => Ok(()),
-        }?;
+            Run::Ready if previous == 0 => self.leave(thread, process, queued)?,
+            Run::Running { .. } => self.interrupt(thread)?,
+            Run::Ready | Run::Servicing | Run::Blocked(_) => {}
+        }
         Ok(previous)
     }
 

@@ -3762,6 +3762,7 @@ fn a_permit_of_another_kernel_never_runs_and_comes_back_whole() {
     assert_eq!((theirs.running_count(), ours == before), (1, true));
     // 返ってきたものを、貸した Kernel へ返せる。
     let ran = ok!(theirs, finish_run(&mut theirs, permit, loaded, stopped, &mut contexts));
+    assert_eq!((ran.stopped().consumed(), theirs.limits().workers()), (Budget::new(1), 2));
     assert_eq!((ran.fate(), theirs.running_count(), contexts.remove(t)), (ThreadFate::Ready, 0, Ok(Some(5))));
     // 取り戻す口も同じものを返す。
     let permit = ok!(theirs, theirs.grant(W0)).unwrap();
@@ -3770,6 +3771,15 @@ fn a_permit_of_another_kernel_never_runs_and_comes_back_whole() {
     let permit = refused.into_permit().unwrap();
     assert_eq!(ok!(theirs, theirs.relinquish(permit, Stop::Yielded, Budget::new(0))), ThreadFate::Ready);
     assert_eq!(NotRun::<u8>::Failed(Error::Foreign).into_permit(), None);
+    // 実行の途中で文脈の記録を取り除かれたら、文脈は戻せない。実行権は返り、スレッドはサービス中になる。
+    let mut fresh: Contexts<u8> = Contexts::default();
+    fresh.insert(t, 6).unwrap();
+    let permit = ok!(theirs, theirs.grant(W0)).unwrap();
+    let (permit, loaded) = start_run(&mut theirs, permit, &mut fresh).unwrap();
+    assert_eq!(fresh.remove(t), Ok(None));
+    let lost = finish_run(&mut theirs, permit, loaded, stopped, &mut fresh).unwrap_err();
+    assert_eq!((lost.error(), theirs.running_count()), (Error::Refused(Refusal::NoContext), 0));
+    assert!(lost.into_permit().is_none());
 }
 
 #[test]
@@ -3806,6 +3816,7 @@ fn a_quota_bounds_one_process_and_leaves_the_others_alone() {
     assert_eq!(k.quota(p), Ok(Quota::UNLIMITED));
     let quota = Quota::UNLIMITED.with_threads(2).with_ios(1).with_holdings(2).with_mappings(2).with_mapped_bytes(2 * PAGE);
     assert_eq!(ok!(k, k.set_quota(p, quota)), Quota::UNLIMITED);
+    assert_eq!(Quota::UNLIMITED.with_named("nothing", 1), None);
     // スレッド。
     let (first, _) = thread(&mut k, p);
     let (_second, _) = thread(&mut k, p);

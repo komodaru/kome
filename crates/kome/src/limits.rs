@@ -184,6 +184,7 @@ mod tests {
         assert_eq!(names.len(), 17);
         // 無い名前と、型に収まらない値は断る。
         assert_eq!(Limits::DEFAULT.with_named("nothing", 1), None);
+        assert_eq!(Limits::default(), Limits::DEFAULT);
         assert_eq!(Limits::DEFAULT.with_named("threads", u64::MAX), None);
         assert_eq!(Limits::DEFAULT.with_named("min_period", 0), None);
         assert_eq!(Limits::DEFAULT.with_named("advance_batch", 0), None);

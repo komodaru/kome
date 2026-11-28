@@ -427,22 +427,24 @@ impl<K: Kind, T> Arena<K, T> {
     #[cfg_attr(flux, flux::spec(fn(self: &strg Arena<K, T>[@arena], id: Id<K>) -> Option<T>[#some] ensures self: Arena<K, T>{after: after.limit == arena.limit && after.live <= arena.live && arena.live <= after.live + 1 && (some && arena.live > 0 => after.live == arena.live - 1)}))]
     pub(crate) fn remove(&mut self, id: Id<K>) -> Option<T> {
         let slot = self.slots.get_mut(usize::try_from(id.slot).ok()?)?;
-        if slot.generation != id.generation || slot.issuer != id.issuer || !matches!(slot.cell, Entry::Live(_)) {
+        if slot.generation != id.generation || slot.issuer != id.issuer {
             return None;
         }
-        let taken = core::mem::replace(&mut slot.cell, Entry::Retired);
-        if let Some(next) = slot.generation.checked_add(1) {
-            // 容量は insert が確保してある。万一無ければ退役のままにする (再利用しないだけで安全)。
-            if self.free.push_within(id.slot).is_ok() {
-                slot.generation = next;
-                slot.cell = Entry::Free;
+        let value = match core::mem::replace(&mut slot.cell, Entry::Retired) {
+            Entry::Live(value) => value,
+            // 世代を使い切って退役したスロットは、最後の ID と同じ世代のまま残る。そのままにする。
+            other @ (Entry::Free | Entry::Retired) => {
+                slot.cell = other;
+                return None;
             }
+        };
+        // 容量は insert が確保してある。万一無ければ退役のままにする (再利用しないだけで安全)。
+        if let Some(next) = slot.generation.checked_add(1) && self.free.push_within(id.slot).is_ok() {
+            slot.generation = next;
+            slot.cell = Entry::Free;
         }
         self.live = self.live.saturating_sub(1);
-        match taken {
-            Entry::Live(value) => Some(value),
-            Entry::Free | Entry::Retired => None,
-        }
+        Some(value)
     }
 
     /// 生きている資源をスロット順に返す。
@@ -507,6 +509,22 @@ mod tests {
     use super::*;
 
     type Things = Arena<kind::Object, u32>;
+
+    /// 世代を使い切ったスロットは退役する。古い ID では読めず、書けず、取り除けず、写しにも退役のまま写る。
+    #[test]
+    fn a_retired_slot_stays_retired_in_a_copy() {
+        let mut arena: Things = Arena::starting_at(InstanceId::new(1), 2, NonZeroU32::MAX);
+        let old = arena.insert(10).unwrap();
+        assert_eq!(arena.remove(old), Some(10));
+        assert_eq!((arena.get(old).is_none(), arena.get_mut(old).is_none(), arena.remove(old)), (true, true, None));
+        let mut copy = arena.try_clone().unwrap();
+        assert!(copy == arena);
+        assert_eq!((copy.get(old).is_none(), copy.get_mut(old).is_none(), copy.remove(old)), (true, true, None));
+        // 退役したスロットは使い回さない。次の資源は別のスロットに入る。
+        let new = copy.insert(20).unwrap();
+        assert_ne!(new.slot(), old.slot());
+        assert_eq!(copy.get(new), Some(&20));
+    }
 
     #[test]
     fn iteration_can_start_at_a_slot() {

@@ -264,6 +264,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_swap_outside_the_list_and_an_extension_past_the_capacity_change_nothing() {
+        let mut list = List::new();
+        list.push(1).unwrap();
+        list.push(2).unwrap();
+        assert_eq!(list.swap(0, 1), Some(()));
+        assert_eq!(list.swap(0, 2), None);
+        assert_eq!(list.swap(2, 0), None);
+        assert_eq!(list.as_slice(), &[2, 1]);
+        let mut queue = Queue::new();
+        queue.reserve_total(2).unwrap();
+        let room = queue.items.capacity();
+        let too_many = vec![7u8; room.saturating_add(1)];
+        assert_eq!(queue.extend_within(&too_many), Err(()));
+        assert_eq!(queue.len(), 0);
+        assert_eq!(queue.extend_within(too_many.get(..room).unwrap()), Ok(()));
+        assert_eq!(queue.len(), room);
+    }
+
+    #[test]
     fn list_keeps_order_and_refuses_bad_insert() {
         let mut list = List::new();
         list.push(1).unwrap();

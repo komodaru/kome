@@ -157,11 +157,8 @@ impl<K: Kind> Holdings<K> {
 
     /// 昇順で、数が 0 の項目が無いか。
     pub(crate) fn well_formed(&self) -> bool {
-        self.list.iter().all(|held| held.count > 0)
-            && self.list.as_slice().windows(2).all(|pair| match pair {
-                [a, b] => a.id < b.id,
-                [] | [_] | [_, _, _, ..] => false,
-            })
+        let list = self.list.as_slice();
+        list.iter().all(|held| held.count > 0) && list.iter().zip(list.iter().skip(1)).all(|(a, b)| a.id < b.id)
     }
 }
 
@@ -484,6 +481,9 @@ mod tests {
         let a = arena.insert(()).unwrap();
         let b = arena.insert(()).unwrap();
         let mut held = Holdings::new();
+        // 空の一覧には、書き換える先頭が無い。
+        held.corrupt_first_count(0);
+        assert!(held.is_empty() && held.well_formed());
         held.add(a, 1).unwrap();
         held.add(a, 1).unwrap();
         assert_eq!(held.add(b, 1), Err(Error::Exhausted(Resource::Holdings)));

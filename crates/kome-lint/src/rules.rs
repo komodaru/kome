@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::scan::{Scan, scan};
-use crate::{Keep, Repo, Report, Rule, dup};
+use crate::{Keep, Repo, Report, Rule, cover, dup};
 
 const KOME_SRC: &str = "crates/kome/src/";
 const KOME_MANIFEST: &str = "crates/kome/Cargo.toml";
@@ -40,6 +40,9 @@ const FOREIGN_REPLY: &str = "assert_eq!(own.k.apply(input), Err(Error::Foreign),
 /// 規則 `dup` の自己試験が足す関数。壊し方は、これと、これを写したものを足す。
 const DUP_FN: &str = "fn dup_first(first: &[u64], second: &[u64]) -> u64 {\n    let mut total = 0u64;\n    for entry in first.iter().chain(second.iter()) {\n        if *entry > 16 && *entry < 4096 {\n            total = total.saturating_add(entry.saturating_mul(3)).saturating_sub(1);\n        }\n    }\n    if total > 65536 {\n        total = total.saturating_sub(first.len().try_into().unwrap_or(u64::MAX));\n    }\n    total\n}\n";
 const DUP_TABLE: &str = "const DUP_ONE: [u32; 24] = [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97];\nconst DUP_TWO: [u32; 24] = [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97];";
+const COVER_SH: &str = "scripts/ci/cover.sh";
+const COVER_RS: &str = "crates/kome-lint/src/cover.rs";
+const ISSUER_GUARD: &str = "if slot.generation != id.generation || slot.issuer != id.issuer {";
 const BENCH_GATE: &str = "docs/bench-gate.tsv";
 const BENCH_LIB: &str = "crates/kome-bench/src/lib.rs";
 const BENCH_SH: &str = "scripts/ci/bench-gate.sh";
@@ -592,6 +595,7 @@ pub const RULES: &[Rule] = &[
             |repo| repo.append(KERNEL_RS, "fn looked(kernel: &Kernel, thread: ThreadId) -> Result<(), Error> {\n    kernel.threads.get(thread).map(|_| ()).ok_or(Error::Stale(crate::id::Tag::Thread))\n}"),
             |repo| repo.edit("crates/kome/src/id.rs", |text| text.replace(STALE_OR_FOREIGN, "Error::Stale(K::TAG)")),
             |repo| repo.edit("crates/kome/src/id.rs", |text| text.replace("slot.generation == id.generation && slot.issuer == id.issuer", "slot.generation == id.generation")),
+            |repo| repo.edit("crates/kome/src/id.rs", |text| text.replacen(ISSUER_GUARD, "if slot.generation != id.generation {", 1)),
         ],
     },
     Rule {
@@ -646,6 +650,27 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("`wait.rs`", "`waiting.rs`")),
             |repo| repo.edit(ARCHITECTURE_MD, |text| text.replace("| IO-1 |", "| IO-7 |")),
             |repo| repo.remove(MEMORY_MD),
+        ],
+    },
+    Rule {
+        id: "lines-covered",
+        about: "kome の全ての行を試験が通る。通らない行は、代わりに確かめているものを docs/uncovered.tsv に載せたものだけ",
+        check: lines_covered,
+        keeps: &[
+            Keep { path: COVER_SH, needle: "export RUSTFLAGS=\"-C instrument-coverage\"\n", why: "通った行を数える", broken: "" },
+            Keep { path: COVER_SH, needle: "cargo test --workspace --locked\n", why: "全ての試験を走らせて測る", broken: "cargo test -p kome --lib --locked\n" },
+            Keep { path: COVER_SH, needle: "--sources \"$PWD/crates/kome/src\"", why: "kome の全てのファイルを測る", broken: "--sources \"$PWD/crates/kome/src/addr.rs\"" },
+            Keep { path: COVER_SH, needle: "cargo run -q --locked -p kome-lint -- cover \"$out/kome.lcov\"\n", why: "測った結果を一覧と照合する", broken: "" },
+            Keep { path: COVER_RS, needle: "if *count != 0 || *number >= until {", why: "一度も通らなかった行を一つずつ調べる", broken: "if *count != 0 || *number >= until || true {" },
+            Keep { path: COVER_RS, needle: "if !used.contains(&entry.line) {", why: "通るようになった行を一覧に残さない", broken: "if false {" },
+            Keep { path: COVER_RS, needle: "if why.chars().count() < 12 {", why: "代わりに確かめているものを書かせる", broken: "if false {" },
+        ],
+        breaks: &[
+            |repo| repo.remove(cover::UNCOVERED),
+            |repo| repo.append(cover::UNCOVERED, "crates/kome/src/backend.rs\tNone => Ok(()),"),
+            |repo| repo.append(cover::UNCOVERED, "crates/kome/src/none.rs\tlet x = 1;\t# 無いファイルの行を載せても、何も確かめていない"),
+            |repo| repo.append(cover::UNCOVERED, "crates/kome/src/backend.rs\tlet nothing = here;\t# 無い行を載せても、何も確かめていない"),
+            |repo| repo.append(cover::UNCOVERED, "crates/kome/src/wait.rs\treturn Err(Error::Broken(Invariant::WaitOnce));\t# 不変条件が破れたときの返事は、載せなくてよい"),
         ],
     },
     Rule {
@@ -1513,12 +1538,14 @@ fn stale_at_lookup(repo: &Repo, report: &mut Report) {
     for needed in [
         STALE_OR_FOREIGN,
         "(slot.generation == id.generation && slot.issuer == id.issuer).then_some(slot)",
-        "if slot.generation != id.generation || slot.issuer != id.issuer {",
-        "if slot.generation != id.generation || slot.issuer != id.issuer || !matches!(slot.cell, Entry::Live(_)) {",
     ] {
         if !repo.text(id_rs).contains(needed) {
             report.add(id_rs, 1, format!("表を引く処理が ID の発行元を照合していない (`{needed}`)"));
         }
+    }
+    // 書き換える口 (get_mut) と取り除く口 (remove) は、同じ照合をそれぞれ持つ。
+    if repo.text(id_rs).matches(ISSUER_GUARD).count() != 2 {
+        report.add(id_rs, 1, format!("書き換える口と取り除く口の両方が ID の発行元を照合していない (`{ISSUER_GUARD}`)"));
     }
 }
 
@@ -2215,6 +2242,29 @@ fn executor_contract(repo: &Repo, report: &mut Report) {
     }
 }
 
+/// 一覧そのものの検査。測った結果との照合は `kome-lint cover` が CI で行う。
+fn lines_covered(repo: &Repo, report: &mut Report) {
+    if !repo.has(cover::UNCOVERED) {
+        report.add(cover::UNCOVERED, 1, "通らなくてよい行の一覧が無い");
+        return;
+    }
+    let list = match cover::excused(repo.text(cover::UNCOVERED)) {
+        Ok(list) => list,
+        Err((line, why)) => {
+            report.add(cover::UNCOVERED, line, format!("一覧の行が決まりに合わない: {why}"));
+            return;
+        }
+    };
+    for entry in &list {
+        if !repo.text(&entry.path).lines().any(|line| line.trim() == entry.code) {
+            report.add(cover::UNCOVERED, entry.line, format!("{} に、この内容の行が無い (`{}`)", entry.path, entry.code));
+        }
+        if cover::replies_broken(&entry.code) {
+            report.add(cover::UNCOVERED, entry.line, "不変条件が破れたときの返事 (Error::Broken) の行は、一覧に載せない");
+        }
+    }
+}
+
 fn dup_free(repo: &Repo, report: &mut Report) {
     let known = match dup::known(repo.text(dup::KNOWN)) {
         Ok(known) => known,
@@ -2412,7 +2462,8 @@ fn quiet_operations(repo: &Repo, report: &mut Report) {
 }
 
 /// CI が必ず実行するコマンドと、それを置くジョブ。ステップの `run` は、この文字列ちょうどである。
-const CI_RUNS: [(&str, &str); 17] = [
+const CI_RUNS: [(&str, &str); 18] = [
+    ("cover", "scripts/ci/cover.sh"),
     ("lint", "cargo run -q --locked -p kome-lint"),
     ("lint", "cargo clippy --workspace --all-targets --locked -- -D warnings"),
     ("test", "scripts/ci/test.sh"),
