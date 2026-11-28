@@ -109,7 +109,7 @@ models = [
     "IoLifecycle:NoWakeBeforeOutput",
     "IoLifecycle:NoReleaseInFlight",
 ]
-proved = "io_step の一歩について、全ての状態・出来事・結果の値。前提は無い。出来事の列についての性質は、一歩の性質の繰り返しとして成り立つ。Kernel が io_step の周りで行う通知・固定・Effect の発行は示していない。"
+proved = "io_step の一歩について、全ての状態・出来事・結果の値。前提は無い。出来事の列 (長さに上限なし) についての性質は Lean が証明する: 終端・Submit・Cancel はそれぞれ多くて一度、終端の後はホストへ何も出さない、状態は後ろへ戻らない (docs/lean.tsv の Kome.Io.*。表は io_step から生成し、試験 the_lean_table_is_io_step が一致を確かめる)。Kernel が io_step の周りで行う通知・固定・Effect の発行は示していない。"
 modelled = "IoLifecycle は一つの要求について、ホストが完了を重複して送る場合と取消の後に完了が届く場合を含む全ての順序を調べる。調べるのは設計であり、Rust のコードではない。要求は一つで、探索は有限。"
 tied = "受理する遷移の表 IoTable は io.rs の io_step から生成し、試験 the_tla_table_is_io_step が実装との一致を確かめる。待機を起こす時点と解放の時点を含む状態と遷移の全体は、scripts/ci/tla.sh が TLC の状態グラフと実際の Kernel の動きを突き合わせて、過不足なく一致することを確かめる (crates/kome/src/conform.rs、docs/tla-conformance.md)。"
 tested = "待機を起こすのが公開の後であること、進行中に解放しないことが実装で成り立つことは、tests の試験と決定的シミュレーションが見る。複数の要求が混ざる場合も同じ。"

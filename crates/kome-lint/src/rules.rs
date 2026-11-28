@@ -56,6 +56,7 @@ const LEAN_INSTALL_SH: &str = "scripts/ci/lean-install.sh";
 const LEAN_TESTS_RS: &str = "crates/kome-testkit/tests/lean.rs";
 const LEAN_TLB: &str = "lean/Kome/Tlb.lean";
 const LEAN_MIRROR: &str = "lean/Mirror.lean";
+const LEAN_IO: &str = "lean/Kome/Io.lean";
 const LEAN_TSV: &str = "docs/lean.tsv";
 const LEAN_MD: &str = "docs/lean.md";
 /// 証明を検査から外す語。`sorry` と `admit` は穴、`axiom` は証明なしの主張、残りは Lean の核の外で
@@ -628,6 +629,9 @@ pub const RULES: &[Rule] = &[
             Keep { path: LEAN_TESTS_RS, needle: "    assert_eq!(got.len(), expected.len(), \"行の数が違う\");\n", why: "モデルが全ての操作に答えたことを確かめる", broken: "" },
             Keep { path: LEAN_TESTS_RS, needle: "    let all = [\"mapped\", \"overlap\", \"done\", \"protected\", \"uncovered\", \"filled\", \"fault\", \"slow\", \"translated\", \"dirty\", \"dirty+\"];\n", why: "突き合わせが、全ての種類の結果を通ることを確かめる", broken: "    let all: [&str; 0] = [];\n" },
             Keep { path: LEAN_TLB, needle: "theorem a_hit_is_allowed_after_any_operations (slots : Nat) (ops : List Op) (p page : Nat) (write : Bool)\n", why: "表に当たるアクセスが許されていることを、全ての操作の列について言う", broken: "theorem a_hit_is_allowed_after_some_operations (slots : Nat) (ops : List Op) (p page : Nat) (write : Bool)\n" },
+            Keep { path: IO_RS, needle: "        crate::tests::golden(\"lean/Kome/IoTable.lean\", &lean_table());\n", why: "Lean が使う I/O の表が、io_step から書き出したものと一致することを確かめる", broken: "" },
+            Keep { path: LEAN_IO, needle: "theorem an_io_settles_at_most_once (s : IoState) (es : List IoEvent) : count settles s es ≤ 1 :=\n", why: "終端が多くて一度であることを、全ての出来事の列について言う", broken: "theorem an_io_settles_at_most_once (s : IoState) (es : List IoEvent) : count settles s es ≤ 2 :=\n" },
+            Keep { path: LEAN_IO, needle: "import Kome.IoTable\n", why: "証明が、実装から生成した表を使う", broken: "" },
             Keep { path: LEAN_MD, needle: "lint `lean-kept`", why: "Lean の使い方と検査の対応が文書にある", broken: "lint" },
         ],
         breaks: &[
@@ -637,6 +641,7 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit(LEAN_TLB, |text| text.replace("namespace Kome.Tlb", "namespace Kome.Table")),
             |repo| repo.edit(LEAN_TSV, |text| text.replace("Kome.Tlb.ok_run\t", "Kome.Tlb.ok_walk\t")),
             |repo| repo.edit(LEAN_TSV, |text| text.replace("Kome.Tlb.ok_run\tMEM-4\t", "Kome.Tlb.ok_run\tMEM-9\t")),
+            |repo| repo.edit(LEAN_TSV, |text| text.replace("Kome.Io.an_io_never_goes_back\t", "Kome.Io.an_io_goes_forward\t")),
             |repo| repo.edit(LEAN_TOOLCHAIN, |_| "leanprover/lean4:v4.35.0\n".to_owned()),
             |repo| repo.remove(LEAN_TSV),
         ],

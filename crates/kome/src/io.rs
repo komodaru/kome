@@ -507,6 +507,41 @@ mod tests {
         crate::tests::golden("tla/IoTable.tla", &tla_table());
     }
 
+    /// `io_step` の受理する遷移を Lean の関数として書き出す。
+    fn lean_table() -> String {
+        let cases = |names: Vec<&str>| names.iter().map(|name| format!("  | {name}\n")).collect::<String>();
+        let mut rows = String::new();
+        for state in STATES {
+            for event in EVENTS {
+                if let Ok((after, emit)) = io_step(state, event) {
+                    let (state, event, after, emit) = (state_name(state), event_name(event), state_name(after), emit_name(emit));
+                    rows.push_str(&format!("  | .{state}, .{event} => some (.{after}, .{emit})\n"));
+                }
+            }
+        }
+        format!(
+            "/-!\ncrates/kome/src/io.rs の io_step から生成した。手で書き換えない。\n\
+             書き直す: KOME_UPDATE_GOLDEN=1 cargo test -p kome the_lean_table_is_io_step\n-/\n\n\
+             namespace Kome.IoTable\n\n\
+             /-- I/O 要求の状態 (結果の値は落としてある)。 -/\ninductive IoState where\n{}deriving DecidableEq, Repr\n\n\
+             /-- 出来事。 -/\ninductive IoEvent where\n{}deriving DecidableEq, Repr\n\n\
+             /-- 遷移がホストへ出すもの。 -/\ninductive IoEmit where\n{}deriving DecidableEq, Repr\n\n\
+             /-- 受理する (状態, 出来事) から (次の状態, 出すもの) への表。載っていない組は拒否する。 -/\n\
+             def ioStep : IoState → IoEvent → Option (IoState × IoEmit)\n{}  | _, _ => none\n\n\
+             end Kome.IoTable\n",
+            cases(STATES.map(state_name).to_vec()),
+            cases(EVENTS.map(event_name).to_vec()),
+            cases([IoEmit::Nothing, IoEmit::Submit, IoEmit::Cancel].map(emit_name).to_vec()),
+            rows
+        )
+    }
+
+    /// Lean の証明 (lean/Kome/Io.lean) が使う表は、この実装そのものである。
+    #[test]
+    fn the_lean_table_is_io_step() {
+        crate::tests::golden("lean/Kome/IoTable.lean", &lean_table());
+    }
+
     /// 内容だけが違う状態・出来事は、遷移の形を変えない (表が内容を落としてよい根拠)。
     #[test]
     fn the_step_shape_ignores_payloads() {
