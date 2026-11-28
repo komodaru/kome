@@ -39,6 +39,9 @@ const EFFECT_RS: &str = "crates/kome/src/effect.rs";
 const ID_RS: &str = "crates/kome/src/id.rs";
 const SCHED_RS: &str = "crates/kome/src/sched.rs";
 const RUNQ_RS: &str = "crates/kome/src/runq.rs";
+const TRACE_RS: &str = "crates/kome-trace/src/lib.rs";
+const TRACE_WORDS_RS: &str = "crates/kome-trace/src/words.rs";
+const TRACE_TESTS_RS: &str = "crates/kome-trace/tests/cases/mod.rs";
 const CAPACITY: &str = "docs/capacity.tsv";
 const WORDS: &str = "crates/kome-lint/src/escape-words.txt";
 
@@ -303,6 +306,23 @@ pub const RULES: &[Rule] = &[
             |repo| repo.edit("crates/kome/src/mem.rs", |text| text.replace("total <= owner.quota.mapped_bytes()", "total <= u64::MAX")),
             |repo| repo.edit("crates/kome/src/process.rs", |text| text.replace("self.limits.holdings().min(quota)", "self.limits.holdings()")),
             |repo| repo.edit(SIM_RS, |text| text.replace("Ok(()) if after > quota => Err(", "Ok(()) if false => Err(")),
+        ],
+    },
+    Rule {
+        id: "trace-complete",
+        about: "記録と再生 (kome-trace) は Input と Reply の全ての項目を扱い、返答の行に状態のあらましを入れ、行ごとに照合値を確かめる",
+        check: trace_complete,
+        breaks: &[
+            |repo| repo.edit(TRACE_WORDS_RS, |text| text.replace("        \"DropTimer\" => {", "        \"DropTimers\" => {")),
+            |repo| repo.edit(TRACE_TESTS_RS, |text| text.replace("\"DisarmTimer\", \"DropTimer\", \"Advance\",", "\"DisarmTimer\", \"Advance\",")),
+            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("    /// [`Kernel::poll_effect`]\n    PollEffect,", "    /// [`Kernel::poll_effect`]\n    PollEffect,\n    /// 何もしない。\n    Idle,")),
+            |repo| repo.edit("crates/kome/src/input.rs", |text| text.replace("    /// 受信の結果。\n    Received(Received),", "    /// 受信の結果。\n    Received(Received),\n    /// 何も無い。\n    Nothing,")),
+            |repo| repo.edit(TRACE_RS, |text| text.replace("        if sum != format!(\"{expected:016x}\") {", "        if sum.len() != 16 || u64::from_str_radix(sum, 16).ok() != Some(expected) {")),
+            |repo| repo.edit(TRACE_RS, |text| text.replace("        if recorded != replayed {", "        if recorded.len() != replayed.len() {")),
+            |repo| repo.edit(TRACE_RS, |text| text.replace("        \"< effects={} ready={} running={} now={} alive={}/{}/{}/{}/{}/{}/{} {result:?}\",", "        \"< effects={} ready={} running={} now={} alive={}/{}/{}/{}/{}/{}/{}\",")),
+            |repo| repo.edit(TRACE_RS, |text| text.replace("            None => self.out.line(&format!(\"? {input:?}\")),", "            None => {}")),
+            |repo| repo.edit("crates/kome-trace/Cargo.toml", |text| text.replace("[dependencies]\nkome = { path = \"../kome\" }\n", "[dependencies]\nkome = { path = \"../kome\" }\nserde = \"1\"\n")),
+            |repo| repo.remove("crates/kome-trace/tests/golden/basic.trace"),
         ],
     },
     Rule {
@@ -1465,6 +1485,61 @@ fn independent_model(repo: &Repo, report: &mut Report) {
         if !repo.text(SIM_RS).contains(needed) {
             report.add(SIM_RS, 1, format!("決定的シミュレーションが、権限の変更の後に項目がまとまったことをモデルと比べていない (`{needed}`)"));
         }
+    }
+}
+
+fn trace_complete(repo: &Repo, report: &mut Report) {
+    let input = "crates/kome/src/input.rs";
+    let variants = scanned(report, input, repo.text(input), true).map(|found| found.variants).unwrap_or_default();
+    let (lib, words, tests) = (repo.text(TRACE_RS), repo.text(TRACE_WORDS_RS), repo.text(TRACE_TESTS_RS));
+    let mut inputs = 0usize;
+    for (of, name) in &variants {
+        if of == "Input" {
+            inputs = inputs.saturating_add(1);
+            // 書く側は Input の全ての項目を並べるので、足りなければコンパイルできない。読む側と試験は名前で分ける。
+            for (path, text, needed, what) in [
+                (TRACE_WORDS_RS, words, format!("        \"{name}\" => {{"), "記録を読む側 (apply_input) に無い"),
+                (TRACE_WORDS_RS, words, format!("Input::{name}"), "記録を書く側 (write_input) に無い"),
+                (TRACE_TESTS_RS, tests, format!("\"{name}\","), "全ての操作を記録して再生する試験の一覧に無い"),
+                (TRACE_TESTS_RS, tests, format!("Input::{name}"), "試験が作る操作に無い"),
+            ] {
+                if !text.contains(&needed) {
+                    report.add(path, 1, format!("Input::{name} が、{what}"));
+                }
+            }
+        }
+        // 返答が返した ID と実行権は、番号の表に入れる。新しい返答は、入れるものが無いことも書く。
+        if of == "Reply" && lib.matches(&format!("Reply::{name}")).count() < 2 {
+            report.add(TRACE_RS, 1, format!("Reply::{name} を、番号の表 (learn) と実行権の保持 (keep) の両方で扱う"));
+        }
+    }
+    if !tests.contains(&format!("const KINDS: u64 = {inputs};")) {
+        report.add(TRACE_TESTS_RS, 1, format!("試験が作る操作の種類の数を、Input の項目の数 ({inputs}) に合わせる"));
+    }
+    let kept = [
+        (TRACE_RS, "        \"< effects={} ready={} running={} now={} alive={}/{}/{}/{}/{}/{}/{} {result:?}\",", "返答の行に、状態のあらましと返答を入れる"),
+        (TRACE_RS, "        if sum != format!(\"{expected:016x}\") {", "行ごとに照合値を、書いたときの綴りのまま比べる (数として読むと大文字や符号の書き換えが通る)"),
+        (TRACE_RS, "        if recorded != replayed {\n            return Err(Stopped::Mismatch {", "返答が記録と違ったら、その行で止まる"),
+        (TRACE_RS, "            None => self.out.line(&format!(\"? {input:?}\")),", "再生できない入力も、記録には残す"),
+        (TRACE_RS, "            return Err(Stopped::NotReplayable { line: at, input: input.to_owned() });", "再生できない入力で止まる"),
+        (TRACE_TESTS_RS, "fn the_saved_recording_still_replays() {", "保存してある記録を再生する試験"),
+        (TRACE_TESTS_RS, "fn any_damage_to_the_text_stops_the_replay(", "記録を壊すと再生が止まる試験"),
+        (TRACE_TESTS_RS, "fn a_missing_input_stops_the_replay(", "入力を抜くと再生が止まる試験"),
+        (TRACE_TESTS_RS, "fn a_changed_reply_is_a_mismatch_at_that_line(", "返答を変えると不一致になる試験"),
+    ];
+    for (path, needed, what) in kept {
+        if !repo.text(path).contains(needed) {
+            report.add(path, 1, format!("記録と再生の約束が崩れている: {what}"));
+        }
+    }
+    if !repo.has("crates/kome-trace/tests/golden/basic.trace") {
+        report.add(TRACE_TESTS_RS, 1, "保存してある記録 (tests/golden/basic.trace) が無い");
+    }
+    // 記録の形式は、kome と標準ライブラリだけで読み書きする。
+    let manifest = repo.text("crates/kome-trace/Cargo.toml");
+    let deps = manifest.split_once("[dependencies]\n").map_or("", |(_, rest)| rest.split("\n[").next().unwrap_or(""));
+    if deps.lines().filter(|line| !line.trim().is_empty()).collect::<Vec<_>>() != ["kome = { path = \"../kome\" }"] {
+        report.add("crates/kome-trace/Cargo.toml", 1, "kome-trace が依存するのは kome だけにする");
     }
 }
 

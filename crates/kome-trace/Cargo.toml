@@ -1,0 +1,18 @@
+[package]
+name = "kome-trace"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+description = "kome に入った入力列の記録と再生: 返答が記録と違った最初の位置で止める"
+
+[dependencies]
+kome = { path = "../kome" }
+
+[dev-dependencies]
+proptest = "1.12"
+
+[lints]
+workspace = true

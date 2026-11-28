@@ -33,8 +33,79 @@ macro_rules! limits {
                     self
                 }
             )*
+
+            /// 全ての上限の名前と値。記録が、どの上限で動かしたかを残すのに使う。
+            pub fn each(&self, mut visit: impl FnMut(&'static str, u64)) {
+                $(visit(stringify!($name), Word::word(self.$name));)*
+            }
+
+            /// 名前で一つの上限を置き換える。その名前の上限が無いか、値が型に収まらなければ `None`。
+            #[must_use]
+            pub fn with_named(mut self, name: &str, value: u64) -> Option<Limits> {
+                $(if name == stringify!($name) {
+                    self.$name = Word::from_word(value)?;
+                    return Some(self);
+                })*
+                None
+            }
         }
     };
+}
+
+/// 一つの整数として書き出せる値。上限と割り当てを、名前と数の組として記録に残すのに使う。
+pub(crate) trait Word: Sized {
+    fn word(self) -> u64;
+    fn from_word(word: u64) -> Option<Self>;
+}
+
+impl Word for u64 {
+    fn word(self) -> u64 {
+        self
+    }
+
+    fn from_word(word: u64) -> Option<u64> {
+        Some(word)
+    }
+}
+
+impl Word for u32 {
+    fn word(self) -> u64 {
+        u64::from(self)
+    }
+
+    fn from_word(word: u64) -> Option<u32> {
+        u32::try_from(word).ok()
+    }
+}
+
+impl Word for NonZeroU32 {
+    fn word(self) -> u64 {
+        u64::from(self.get())
+    }
+
+    fn from_word(word: u64) -> Option<NonZeroU32> {
+        NonZeroU32::new(u32::try_from(word).ok()?)
+    }
+}
+
+impl Word for Budget {
+    fn word(self) -> u64 {
+        self.get()
+    }
+
+    fn from_word(word: u64) -> Option<Budget> {
+        Some(Budget::new(word))
+    }
+}
+
+impl Word for Period {
+    fn word(self) -> u64 {
+        self.get().nanos()
+    }
+
+    fn from_word(word: u64) -> Option<Period> {
+        Period::new(Duration::from_nanos(word))
+    }
 }
 
 limits! {
@@ -94,6 +165,29 @@ impl Default for Limits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_limit_is_written_and_read_back_by_name() {
+        // どの上限も既定値と違う値にして、名前と数の組から同じものを作り直す。
+        let mut changed = Limits::DEFAULT;
+        let mut names = Vec::new();
+        Limits::DEFAULT.each(|name, value| {
+            changed = changed.with_named(name, value / 2 + 3).unwrap();
+            names.push(name);
+        });
+        let mut rebuilt = Limits::DEFAULT;
+        changed.each(|name, value| {
+            assert_ne!(Limits::DEFAULT.with_named(name, value), Some(Limits::DEFAULT), "{name}");
+            rebuilt = rebuilt.with_named(name, value).unwrap();
+        });
+        assert_eq!(rebuilt, changed);
+        assert_eq!(names.len(), 17);
+        // 無い名前と、型に収まらない値は断る。
+        assert_eq!(Limits::DEFAULT.with_named("nothing", 1), None);
+        assert_eq!(Limits::DEFAULT.with_named("threads", u64::MAX), None);
+        assert_eq!(Limits::DEFAULT.with_named("min_period", 0), None);
+        assert_eq!(Limits::DEFAULT.with_named("advance_batch", 0), None);
+    }
 
     #[test]
     fn with_changes_only_that_limit() {

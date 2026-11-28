@@ -20,6 +20,7 @@
 | `crates/kome` | カーネル本体 |
 | `crates/kome-testkit` | 決定的シミュレーション (バイト列 → 操作列)、制御可能なホスト、ページごとの独立モデル |
 | `crates/kome-host-std` | 参照ホスト: 実スレッドの worker が一つの錠を通して kome を動かす。Loom で進み方を試す |
+| `crates/kome-trace` | 入力列の記録と再生: 返答が記録と違った最初の行で止める |
 | `crates/kome-bench` | 性能の測定 (`cargo bench -p kome-bench`) |
 | `crates/kome-lint` | 設計上の規則の検査。規則ごとに、検出しなければならない壊し方を持つ |
 | `docs/architecture.md` | 責務と依存方向、入力と出力、実行権、写しと復元 |

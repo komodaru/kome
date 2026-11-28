@@ -31,10 +31,21 @@ pub enum End {
     Receive,
 }
 
+/// 通信路の形。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Framing {
-    Messages { count: u32, max_len: u32 },
-    Stream { bytes: u32 },
+pub enum Framing {
+    /// 境界を保つメッセージの列。
+    Messages {
+        /// 持てるメッセージの数。
+        count: u32,
+        /// 一つのメッセージの長さの上限。
+        max_len: u32,
+    },
+    /// 境界の無いバイトの流れ。
+    Stream {
+        /// 持てるバイト数。
+        bytes: u32,
+    },
 }
 
 /// 通信路の形と容量。
@@ -54,6 +65,12 @@ impl ChannelSpec {
     #[must_use]
     pub const fn stream(bytes: u32) -> ChannelSpec {
         ChannelSpec { framing: Framing::Stream { bytes } }
+    }
+
+    /// 形と容量。
+    #[must_use]
+    pub const fn framing(&self) -> Framing {
+        self.framing
     }
 
     /// `len` バイトの送信のうち、受け付けるバイト数。空きが無ければ `None`。

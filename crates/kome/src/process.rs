@@ -233,6 +233,21 @@ macro_rules! quota {
                     self
                 }
             )*
+
+            /// 全ての割り当ての名前と値。
+            pub fn each(&self, mut visit: impl FnMut(&'static str, u64)) {
+                $(visit(stringify!($name), crate::limits::Word::word(self.$name));)*
+            }
+
+            /// 名前で一つの割り当てを置き換える。その名前が無いか、値が型に収まらなければ `None`。
+            #[must_use]
+            pub fn with_named(mut self, name: &str, value: u64) -> Option<Quota> {
+                $(if name == stringify!($name) {
+                    self.$name = crate::limits::Word::from_word(value)?;
+                    return Some(self);
+                })*
+                None
+            }
         }
     };
 }

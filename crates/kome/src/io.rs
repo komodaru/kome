@@ -202,6 +202,18 @@ impl IoLinks {
         self.notify = Some(notify);
         self
     }
+
+    /// 固定する、要求の対象を表す資源。
+    #[must_use]
+    pub const fn target(&self) -> Option<ObjectId> {
+        self.target
+    }
+
+    /// 固定する通知先。
+    #[must_use]
+    pub const fn notify(&self) -> Option<ObjectId> {
+        self.notify
+    }
 }
 
 plain_try_clone!(Io);

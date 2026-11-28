@@ -38,6 +38,24 @@ impl SignalSpec {
     pub const fn new(mode: SignalMode, initial: u64, max: u64) -> SignalSpec {
         SignalSpec { mode, initial, max }
     }
+
+    /// 待機が成立したときに数を減らすか。
+    #[must_use]
+    pub const fn mode(&self) -> SignalMode {
+        self.mode
+    }
+
+    /// 作った直後の数。
+    #[must_use]
+    pub const fn initial(&self) -> u64 {
+        self.initial
+    }
+
+    /// 数の上限。
+    #[must_use]
+    pub const fn max(&self) -> u64 {
+        self.max
+    }
 }
 
 /// 数の変更。
