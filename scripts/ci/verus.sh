@@ -20,7 +20,7 @@ if ! grep -q '"errors": 0,' "$out/clean.json"; then
     echo "verus: 証明できない関数がある" >&2
     exit 1
 fi
-listed="$(grep -v '^#' docs/verus.tsv | awk -F '\t' '$2 == "verified" { print $1 }' | sort -u)"
+listed="$(grep -v '^#' docs/verus.tsv | awk -F '\t' '$2 == "verified" || $2 == "lemma" { print $1 }' | sort -u)"
 if [ -z "$listed" ] || [ "$(proved "$out/clean.json")" != "$listed" ]; then
     echo "verus: 証明した関数が docs/verus.tsv と一致しない" >&2
     proved "$out/clean.json" >&2
@@ -38,4 +38,4 @@ if [ "$refused" != "$broken" ] || ! grep -q "\"errors\": $(echo "$broken" | wc -
     cut -c1-300 "$out/broken.log" | tail -40 >&2
     exit 1
 fi
-echo "verus: $(echo "$listed" | wc -l) 個の関数を証明し、わざと誤った定義 $(echo "$broken" | wc -l) 個は拒まれた"
+echo "verus: $(echo "$listed" | wc -l) 個の関数と補題を証明し、わざと誤った定義 $(echo "$broken" | wc -l) 個は拒まれた"

@@ -1,6 +1,12 @@
 # Verus が扱う関数。kome-lint の proofs-kept-verus と scripts/ci/verus.sh が照合する。
-# 列: 関数、扱い (verified = 本体を証明する / trusted = 仕様だけを置き、本体は確かめずに信じる)、言っていること。
+# 列: 関数、扱い (verified = 本体を証明する / lemma = 実行しない証明だけの定義 (proof fn) / trusted = 仕様だけを置き、本体は確かめずに信じる)、言っていること。
 kome::lookup::first_ending_at_or_after	verified	昇順で重ならない表で、返した位置より前は全て addr より前に終わり、以降は全て addr 以降に終わる
 kome::lookup::containing	verified	昇順で重ならない表で、返した位置のマッピングは addr を含み、None なら addr を含むマッピングは無い
+kome::lookup::free_at	verified	昇順で重ならない表で、真なら at 番目から後ろは全て last より後に始まり、偽なら at 番目が last 以前に始まる
+kome::lookup::inserting_into_a_gap_keeps_the_order	lemma	空いた所へ項目を入れた表は、昇順で重ならない (map)
+kome::lookup::removing_keeps_the_order	lemma	項目を一つ取り除いた表は、昇順で重ならない (unmap)
+kome::lookup::narrowing_keeps_the_order	lemma	項目を元の範囲の内側へ縮めた表は、昇順で重ならない (unmap と protect が端を切る)
+kome::lookup::splitting_keeps_the_order	lemma	項目を間の空いた二つへ分けた表は、昇順で重ならない (unmap と protect の分割)
+kome::lookup::joining_keeps_the_order	lemma	隣り合う二つの項目を一つにまとめた表は、昇順で重ならない (protect のまとめ)
 kome::mem::Mapping::start	trusted	先頭のアドレス (欄をそのまま返す一行)
 kome::mem::Mapping::last	trusted	最後のバイトのアドレス (欄をそのまま返す一行)

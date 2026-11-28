@@ -385,7 +385,7 @@ impl Kernel {
         let owner = self.alive(process)?;
         let space = &owner.space;
         let (start, last, place) = space.locate(range)?;
-        if space.maps.get(place).is_some_and(|next| next.start <= last) {
+        if !lookup::free_at(space.maps.as_slice(), place, last) {
             return Err(Error::Refused(Refusal::Overlap));
         }
         if u64::try_from(space.maps.len()).unwrap_or(u64::MAX) >= u64::from(self.mappings_limit(process)) {

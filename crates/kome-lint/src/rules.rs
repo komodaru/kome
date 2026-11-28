@@ -565,6 +565,7 @@ pub const RULES: &[Rule] = &[
         check: verus_kept,
         keeps: &[
             Keep { path: MEM_RS, needle: "        lookup::containing(self.maps.as_slice(), addr).and_then(|at| self.maps.get(at))", why: "アドレスを引く経路が、証明した関数を使っていない", broken: "        self.maps.iter().find(|mapping| mapping.start <= addr && addr <= mapping.last)" },
+            Keep { path: MEM_RS, needle: "        if !lookup::free_at(space.maps.as_slice(), place, last) {", why: "map が、入れられるかどうかを証明した関数で決めていない", broken: "        if space.maps.get(place).is_some_and(|next| next.start <= last) {" },
             Keep { path: MEM_RS, needle: "        lookup::first_ending_at_or_after(self.maps.as_slice(), addr)", why: "アドレスを引く経路が、証明した関数を使っていない", broken: "        self.maps.as_slice().partition_point(|mapping| mapping.last < addr)" },
             Keep { path: VERUS_SH, needle: "if [ -z \"$listed\" ] || [ \"$(proved \"$out/clean.json\")\" != \"$listed\" ]; then", why: "証明した関数が一覧とちょうど同じであることを確かめる", broken: "if false; then" },
         ],
@@ -576,6 +577,9 @@ pub const RULES: &[Rule] = &[
                 format!("{before}{after}")
             }),
             |repo| repo.edit(VERUS_TSV, |text| text.replace("kome::lookup::containing\tverified", "kome::lookup::contains\tverified")),
+            |repo| repo.edit(VERUS_TSV, |text| text.replace("kome::lookup::joining_keeps_the_order\tlemma", "kome::lookup::joining_keeps_the_order\tverified")),
+            |repo| repo.edit(LOOKUP_RS, |text| text.replace("pub proof fn removing_keeps_the_order(", "pub proof fn removing_is_fine(")),
+            |repo| repo.edit(VERUS_SH, |text| text.replace(" || $2 == \"lemma\"", "")),
             |repo| repo.append(LOOKUP_RS, "#[cfg_attr(verus_keep_ghost, verus_verify(external_body), verus_spec(r => ensures r == 0))]\nfn zero() -> u64 { 0 }"),
             |repo| repo.append(LOOKUP_RS, "#[cfg(verus_keep_ghost)]\nverus! { proof fn anything() ensures false { assume(false); } }"),
             |repo| repo.append(LOOKUP_RS, &format!("#[cfg(verus_keep_ghost)]\nverus! {{ proof fn anything() ensures false {{ {}(); }} }}", ["ad", "mit"].concat())),
@@ -2161,12 +2165,13 @@ fn verus_kept(repo: &Repo, report: &mut Report) {
             Some((columns.next()?, columns.next()?))
         })
         .collect();
-    let (mut specs, mut trusted, mut loops, mut broken) = (0usize, 0usize, 0usize, 0usize);
+    let (mut specs, mut trusted, mut loops, mut broken, mut lemmas) = (0usize, 0usize, 0usize, 0usize, 0usize);
     for (path, text) in repo.under(KOME_SRC, ".rs") {
         specs = specs.saturating_add(text.matches("verus_spec(").count());
         trusted = trusted.saturating_add(text.matches("verus_verify(external_body)").count());
         loops = loops.saturating_add(text.matches("verus_spec(\n        invariant\n").count());
         broken = broken.saturating_add(text.matches("fn verus_broken_").count());
+        lemmas = lemmas.saturating_add(text.matches("\npub proof fn ").count());
         // 証明を飛ばす語は、どの形でも置かない。Mapping を中身の見えない型として渡す一か所だけを除く。
         let skip = ["ad", "mit()"].concat();
         for (at, line) in text.lines().enumerate() {
@@ -2183,7 +2188,10 @@ fn verus_kept(repo: &Repo, report: &mut Report) {
         report.add(VERUS_TSV, 1, format!("本体を確かめずに信じる定義が {trusted} 個 (一覧では {} 個)。増やさない", want("trusted")));
     }
     let functions = specs.saturating_sub(loops).saturating_sub(broken);
-    if functions != listed.len() || want("verified") == 0 {
+    if lemmas != want("lemma") {
+        report.add(VERUS_TSV, 1, format!("Verus の補題 (pub proof fn) が {lemmas} 個 (一覧では {} 個)。減らさない。増やしたら一覧を直す", want("lemma")));
+    }
+    if functions.saturating_add(lemmas) != listed.len() || want("verified") == 0 {
         report.add(VERUS_TSV, 1, format!("Verus の仕様つきの関数が {functions} 個 (一覧では {} 個)。減らさない。増やしたら一覧を直す", listed.len()));
     }
     if broken != 1 {
@@ -2195,14 +2203,15 @@ fn verus_kept(repo: &Repo, report: &mut Report) {
         let module = parts.next().unwrap_or("");
         let name = function.rsplit("::").next().unwrap_or("");
         let text = repo.text(&format!("{KOME_SRC}{module}.rs"));
-        let defined = text.match_indices(&format!("fn {name}(")).any(|(at, _)| {
+        let lemma = *kind == "lemma" && text.contains(&format!("\npub proof fn {name}("));
+        let defined = lemma || text.match_indices(&format!("fn {name}(")).any(|(at, _)| {
             let before = text.get(..at).unwrap_or("");
             let attribute = before.rfind("#[cfg_attr(verus_keep_ghost, ").map_or("", |from| before.get(from..).unwrap_or(""));
             let own = !attribute.is_empty() && !attribute.contains("\n}\n");
             let body_trusted = attribute.contains("verus_verify(external_body)");
             own && attribute.contains("verus_spec(") && (body_trusted == (*kind == "trusted"))
         });
-        if !defined || (*kind != "verified" && *kind != "trusted") {
+        if !defined || (*kind != "verified" && *kind != "trusted" && *kind != "lemma") {
             report.add(VERUS_TSV, 1, format!("{function} ({kind}) に当たる、Verus の仕様つきの関数が無い"));
         }
     }
@@ -2216,6 +2225,7 @@ fn verus_kept(repo: &Repo, report: &mut Report) {
         ("if ! grep -q '\"errors\": 0,' \"$out/clean.json\"; then\n", "証明できない関数が無いことを確かめる"),
         ("if \"${check[@]}\" --cfg verus_broken >\"$out/broken.json\" 2>\"$out/broken.log\"; then\n", "わざと誤った定義が拒まれることを確かめる"),
         ("if [ \"$refused\" != \"$broken\" ] ||", "拒まれた定義が、わざと誤った定義とちょうど同じであることを確かめる"),
+        ("awk -F '\\t' '$2 == \"verified\" || $2 == \"lemma\" { print $1 }'", "補題も、証明した一覧と照合する"),
     ] {
         if !script.contains(needed) {
             report.add(VERUS_SH, 1, format!("Verus のスクリプトが足りない: {why}"));
